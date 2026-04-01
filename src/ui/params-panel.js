@@ -116,11 +116,10 @@ export function createTransformPanel(transform, onChange) {
   const el = document.createElement('div');
   el.className = 'param-group';
 
-  const defs = [
+  const sliderDefs = [
     { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
     { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05 },
     { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
-    { key: 'metaballStrength', label: 'Contrast', min: 0, max: 1, default: 0, step: 0.05 },
   ];
 
   function render() {
@@ -129,7 +128,7 @@ export function createTransformPanel(transform, onChange) {
     title.textContent = 'Transform';
     el.appendChild(title);
 
-    for (const def of defs) {
+    for (const def of sliderDefs) {
       const row = document.createElement('div');
       row.className = 'param-row';
 

@@ -223,13 +223,13 @@ export function renderEditPage(app, charId) {
   );
   sidebar.appendChild(paramsPanel.el);
 
-  // Stretch params (global)
+  // Stretch params (global) — will be placed in canvas area later
   const stretchPanel = createStretchPanel(global, (key, val) => {
     global[key] = val;
     saveGlobal(global);
     redraw();
   });
-  sidebar.appendChild(stretchPanel.el);
+  stretchPanel.el.className = 'floating-panel';
 
   // Transform params (per-character)
   const transformPanel = createTransformPanel(transform, (key, val) => {
@@ -311,6 +311,7 @@ export function renderEditPage(app, charId) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   canvasArea.appendChild(canvas);
+  canvasArea.appendChild(stretchPanel.el);
 
   editPage.appendChild(sidebar);
   editPage.appendChild(canvasArea);

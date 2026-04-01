@@ -51,12 +51,9 @@ export function renderCanvas(ctx, layers, opts = {}) {
 
   ctx.globalAlpha = 1;
 
-  // Apply blur + contrast (metaball) to the cell fills
-  if (t.metaballRadius > 0 || t.metaballStrength > 0) {
-    const blur = t.metaballRadius || 0;
-    // Map strength 0-1 to contrast 1x-100x
-    const contrast = 1 + (t.metaballStrength || 0) * 99;
-    applyMetaballFilter(ctx, blur, contrast);
+  // Apply blur + contrast to the cell fills (auto-contrast when blur > 0)
+  if (t.metaballRadius > 0) {
+    applyMetaballFilter(ctx, t.metaballRadius, 100);
   }
 
   // ── 2. Source image — multiply blend (middle) ──
