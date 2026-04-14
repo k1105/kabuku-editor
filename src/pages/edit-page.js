@@ -1,12 +1,12 @@
-import { getGrid, getAllGrids } from '../grids/grid-plugin.js';
-import { createLayer, regenerateCells } from '../core/layer.js';
 import { autoMesh } from '../core/mesh.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
 import { exportLayerToSVG, exportAllLayersToSVG, downloadSVG } from '../render/svg-exporter.js';
-import { getCharacter, saveCharacter, getAllCharIds, serializeLayerData, getGlobal, saveGlobal, DEFAULT_LAYER, DEFAULT_TRANSFORM } from '../core/project.js';
+import { getCharacter, saveCharacter, getAllCharIds, serializeLayerOverrides, getGlobal, resolveTransform } from '../core/project.js';
+import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { createToolbar } from '../ui/toolbar.js';
-import { createParamsPanel, createStretchPanel, createTransformPanel } from '../ui/params-panel.js';
+import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
+import { regenerateCells } from '../core/layer.js';
 
 const GLYPH_SIZE = 512;
 
@@ -20,45 +20,21 @@ export function renderEditPage(app, charId) {
   let activeLayerIdx = 0;
   let currentTool = 'paint';
   let backgroundImage = null;
-  let global = getGlobal();
-  let transform = { ...DEFAULT_TRANSFORM };
+  const global = getGlobal();
+  let transformOverrides = {};
+  let transform = resolveTransform(global, {});
   let isPainting = false;
 
   // Restore state from saved data
   if (charData) {
-    if (charData.transform) Object.assign(transform, charData.transform);
-    if (charData.layers && charData.layers.length > 0) {
-      for (const ld of charData.layers) {
-        const gridPlugin = getGrid(ld.gridName);
-        if (!gridPlugin) continue;
-        const layer = createLayer(gridPlugin, ld.gridParams);
-        layer.id = ld.id;
-        layer.name = ld.name;
-        layer.opacity = ld.opacity ?? 1;
-        layer.visible = ld.visible ?? true;
-        regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
-        // Restore filled state
-        if (ld.cells) {
-          for (let i = 0; i < Math.min(layer.cells.length, ld.cells.length); i++) {
-            layer.cells[i].filled = ld.cells[i].filled;
-            layer.cells[i].manualOverride = ld.cells[i].manualOverride;
-          }
-        }
-        layers.push(layer);
-      }
-    }
+    transformOverrides = charData.transformOverrides || {};
+    transform = resolveTransform(global, transformOverrides);
   }
 
-  // Default layer if none
-  if (layers.length === 0) {
-    const defaultGrid = getGrid(DEFAULT_LAYER.gridName);
-    const layer = createLayer(defaultGrid, DEFAULT_LAYER.gridParams);
-    regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
-    layers.push(layer);
-  }
+  // Build layers from global structure + character overrides
+  layers = buildRuntimeLayers(global, charData, GLYPH_SIZE);
 
   // === Layout ===
-  // Header
   const header = document.createElement('div');
   header.className = 'header';
 
@@ -92,56 +68,22 @@ export function renderEditPage(app, charId) {
   header.appendChild(title);
   header.appendChild(nav);
 
-  // Edit page container
   const editPage = document.createElement('div');
   editPage.className = 'edit-page';
 
-  // Sidebar
   const sidebar = document.createElement('div');
   sidebar.className = 'sidebar';
 
-  // Grid type selector
-  const gridSection = document.createElement('div');
-  gridSection.className = 'param-group';
-  const gridTitle = document.createElement('h3');
-  gridTitle.textContent = 'Grid Type';
-  gridSection.appendChild(gridTitle);
+  // (Grid type change is global-only — not available on local edit page)
 
-  const gridSelect = document.createElement('select');
-  for (const g of getAllGrids()) {
-    const opt = document.createElement('option');
-    opt.value = g.name;
-    opt.textContent = g.name;
-    if (layers[activeLayerIdx]?.gridPlugin.name === g.name) opt.selected = true;
-    gridSelect.appendChild(opt);
-  }
-  gridSelect.addEventListener('change', () => {
-    const grid = getGrid(gridSelect.value);
-    const layer = layers[activeLayerIdx];
-    layer.gridPlugin = grid;
-    // Reset params to defaults
-    const defaults = {};
-    for (const def of grid.getParamDefs()) defaults[def.key] = def.default;
-    layer.gridParams = defaults;
-    regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
-    layer.name = `${grid.name} ${activeLayerIdx + 1}`;
-    paramsPanel.update(grid.getParamDefs(), layer.gridParams);
-    layerPanel.update(layers, activeLayerIdx);
-    redraw();
-    save();
-  });
-  gridSection.appendChild(gridSelect);
-  sidebar.appendChild(gridSection);
-
-  // Tools
+  // Tools (paint/erase only — preview moved to canvas)
   let previewMode = false;
   const toolbar = createToolbar(
     (tool) => { currentTool = tool; },
-    (isPreview) => { previewMode = isPreview; redraw(); }
+    (isPreview) => { previewMode = isPreview; previewToggleBtn.classList.toggle('active', isPreview); redraw(); }
   );
-  sidebar.appendChild(toolbar.el);
 
-  // Image import for this character
+  // Image import
   const imgSection = document.createElement('div');
   imgSection.className = 'param-group';
   const imgTitle = document.createElement('h3');
@@ -161,7 +103,6 @@ export function renderEditPage(app, charId) {
   meshBtn.addEventListener('click', doAutoMesh);
   imgSection.appendChild(meshBtn);
 
-  // Threshold slider
   const threshRow = document.createElement('div');
   threshRow.className = 'param-row';
   threshRow.style.marginTop = '8px';
@@ -184,7 +125,6 @@ export function renderEditPage(app, charId) {
   threshRow.appendChild(threshVal);
   imgSection.appendChild(threshRow);
 
-  // Background opacity
   const bgOpRow = document.createElement('div');
   bgOpRow.className = 'param-row';
   const bgOpLabel = document.createElement('label');
@@ -207,75 +147,85 @@ export function renderEditPage(app, charId) {
   bgOpRow.appendChild(bgOpVal);
   imgSection.appendChild(bgOpRow);
 
-  sidebar.appendChild(imgSection);
-
-  // Grid params
+  // Grid params (local overrides only)
   const activeLayer = layers[activeLayerIdx];
+  const activeGridDefaults = global.gridDefaults?.[activeLayer.gridPlugin.name] || {};
   const paramsPanel = createParamsPanel(
     activeLayer.gridPlugin.getParamDefs(),
     activeLayer.gridParams,
-    (key, val) => {
-      activeLayer.gridParams[key] = val;
-      regenerateCells(layers[activeLayerIdx], GLYPH_SIZE, GLYPH_SIZE);
-      redraw();
-      save();
+    activeGridDefaults,
+    {
+      localOnly: true,
+      onLocalChange(key, val) {
+        const layer = layers[activeLayerIdx];
+        layer.gridParams[key] = val;
+        const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
+        if (val === gd[key]) {
+          delete layer.gridParamOverrides[key];
+        } else {
+          if (!layer.gridParamOverrides) layer.gridParamOverrides = {};
+          layer.gridParamOverrides[key] = val;
+        }
+        regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
+        redraw();
+        save();
+      },
+      onGlobalChange() {},
+      onReset(key) {
+        const layer = layers[activeLayerIdx];
+        const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
+        layer.gridParams[key] = gd[key];
+        delete layer.gridParamOverrides[key];
+        regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
+        redraw();
+        save();
+      },
     }
   );
-  sidebar.appendChild(paramsPanel.el);
-
-  // Stretch params (global) — will be placed in canvas area later
-  const stretchPanel = createStretchPanel(global, (key, val) => {
-    global[key] = val;
-    saveGlobal(global);
-    redraw();
+  // Transform params (local overrides only)
+  const transformPanel = createTransformPanel(transform, global, {
+    localOnly: true,
+    onLocalChange(key, val) {
+      transform[key] = val;
+      if (val === global[key]) {
+        delete transformOverrides[key];
+      } else {
+        transformOverrides[key] = val;
+      }
+      redraw();
+      save();
+    },
+    onGlobalChange() {},
+    onReset(key) {
+      transform[key] = global[key];
+      delete transformOverrides[key];
+      transformPanel.render();
+      redraw();
+      save();
+    },
   });
-  stretchPanel.el.className = 'floating-panel';
-
-  // Transform params (per-character)
-  const transformPanel = createTransformPanel(transform, (key, val) => {
-    transform[key] = val;
-    redraw();
-    save();
-  });
-  sidebar.appendChild(transformPanel.el);
-
-  // Layer panel
+  // Layer panel (read-only: no add/delete/type change — those are global-only)
   const layerPanel = createLayerPanel(layers, activeLayerIdx, {
+    readOnly: true,
     onSelect(idx) {
       activeLayerIdx = idx;
       const layer = layers[idx];
-      gridSelect.value = layer.gridPlugin.name;
-      paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams);
+      const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
+      paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams, gd);
       layerPanel.update(layers, activeLayerIdx);
       redraw();
     },
     onVisibilityChange() { redraw(); save(); },
     onOpacityChange() { redraw(); save(); },
-    onDelete(idx) {
-      layers.splice(idx, 1);
-      if (activeLayerIdx >= layers.length) activeLayerIdx = layers.length - 1;
-      layerPanel.update(layers, activeLayerIdx);
-      const layer = layers[activeLayerIdx];
-      gridSelect.value = layer.gridPlugin.name;
-      paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams);
-      redraw();
-      save();
-    },
-    onAdd() {
-      const grid = getGrid(gridSelect.value);
-      const layer = createLayer(grid);
-      regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
-      layers.push(layer);
-      activeLayerIdx = layers.length - 1;
-      layerPanel.update(layers, activeLayerIdx);
-      paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams);
-      redraw();
-      save();
-    },
   });
+  // Sidebar order: Layers → Grid Params → Transform → Tools → Image → Export
   sidebar.appendChild(layerPanel.el);
+  sidebar.appendChild(paramsPanel.el);
+  sidebar.appendChild(transformPanel.el);
+  sidebar.appendChild(toolbar.el);
+  sidebar.appendChild(imgSection);
 
-  // SVG Export section
+  // SVG Export
   const svgSection = document.createElement('div');
   svgSection.className = 'param-group';
   const svgTitle = document.createElement('h3');
@@ -311,7 +261,17 @@ export function renderEditPage(app, charId) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   canvasArea.appendChild(canvas);
-  canvasArea.appendChild(stretchPanel.el);
+
+  // Preview toggle — top-right of canvas area
+  const previewToggleBtn = document.createElement('button');
+  previewToggleBtn.className = 'tool-btn preview-toggle-btn';
+  previewToggleBtn.textContent = 'Preview';
+  previewToggleBtn.addEventListener('click', () => {
+    previewMode = !previewMode;
+    previewToggleBtn.classList.toggle('active', previewMode);
+    redraw();
+  });
+  canvasArea.appendChild(previewToggleBtn);
 
   editPage.appendChild(sidebar);
   editPage.appendChild(canvasArea);
@@ -319,7 +279,6 @@ export function renderEditPage(app, charId) {
   app.appendChild(header);
   app.appendChild(editPage);
 
-  // Resize canvas to fill canvas-area (1:1 logical pixels, no DPR scaling)
   function resizeCanvas() {
     const rect = canvasArea.getBoundingClientRect();
     const w = Math.floor(rect.width);
@@ -332,10 +291,8 @@ export function renderEditPage(app, charId) {
 
   const resizeObserver = new ResizeObserver(() => resizeCanvas());
   resizeObserver.observe(canvasArea);
-  // Initial sizing after layout
   requestAnimationFrame(() => resizeCanvas());
 
-  // Load background image if saved
   if (charData?.imagePath) {
     const img = new Image();
     img.onload = () => {
@@ -375,11 +332,8 @@ export function renderEditPage(app, charId) {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
 
-    // Glyph area offset within canvas
     const ox = (canvas.width - GLYPH_SIZE) / 2;
     const oy = (canvas.height - GLYPH_SIZE) / 2;
-
-    // Convert to glyph-local coords for hit testing against cell paths
     const gx = x - ox;
     const gy = y - oy;
 
@@ -397,25 +351,22 @@ export function renderEditPage(app, charId) {
     }
   }
 
-  function getCombinedTransform() {
-    return { ...transform, stretchAngle: global.stretchAngle, stretchAmount: global.stretchAmount };
-  }
-
   function redraw() {
     renderCanvas(ctx, layers, {
       backgroundImage,
       backgroundOpacity: parseFloat(bgOpInput.value),
-      transform: getCombinedTransform(),
+      transform,
       glyphSize: GLYPH_SIZE,
       preview: previewMode,
     });
   }
 
   function save() {
+    const overrides = Object.keys(transformOverrides).length > 0 ? transformOverrides : undefined;
     saveCharacter(charId, {
       imagePath: charData?.imagePath || '',
-      layers: serializeLayerData(layers),
-      transform,
+      layerOverrides: serializeLayerOverrides(layers, global),
+      transformOverrides: overrides,
     });
   }
 
@@ -437,8 +388,8 @@ export function renderEditPage(app, charId) {
         backgroundImage = img;
         saveCharacter(charId, {
           imagePath: dataUrl,
-          layers: serializeLayerData(layers),
-          transform,
+          layerOverrides: serializeLayerOverrides(layers, global),
+          transformOverrides: Object.keys(transformOverrides).length > 0 ? transformOverrides : undefined,
         });
         redraw();
       };
@@ -452,7 +403,6 @@ export function renderEditPage(app, charId) {
       alert('Load an image first.');
       return;
     }
-    // Draw image to offscreen canvas for pixel analysis
     const offscreen = document.createElement('canvas');
     offscreen.width = GLYPH_SIZE;
     offscreen.height = GLYPH_SIZE;
@@ -466,6 +416,5 @@ export function renderEditPage(app, charId) {
     save();
   }
 
-  // Initial draw
   redraw();
 }

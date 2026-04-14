@@ -1,29 +1,86 @@
 /**
- * Creates slider UI for grid parameters.
+ * Creates a Global/Local toggle header row.
+ * Returns { el, isGlobal() }
  */
-export function createParamsPanel(paramDefs, values, onChange) {
+function createModeToggle(titleText, initialMode, onToggle) {
+  const header = document.createElement('div');
+  header.className = 'param-header';
+
+  const title = document.createElement('h3');
+  title.textContent = titleText;
+
+  const toggle = document.createElement('button');
+  toggle.className = 'mode-toggle';
+  let mode = initialMode; // 'global' or 'local'
+
+  function updateToggle() {
+    toggle.textContent = mode === 'global' ? 'Global' : 'Local';
+    toggle.classList.toggle('mode-global', mode === 'global');
+    toggle.classList.toggle('mode-local', mode === 'local');
+  }
+  updateToggle();
+
+  toggle.addEventListener('click', () => {
+    mode = mode === 'global' ? 'local' : 'global';
+    updateToggle();
+    onToggle(mode);
+  });
+
+  header.appendChild(title);
+  header.appendChild(toggle);
+  return { el: header, isGlobal: () => mode === 'global' };
+}
+
+/**
+ * Creates slider UI for grid parameters.
+ * Supports Global/Local toggle.
+ *
+ * callbacks:
+ *   onLocalChange(key, val)  — edit per-character override
+ *   onGlobalChange(key, val) — edit global default
+ *   onReset(key)             — reset local override to global
+ */
+export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) {
   const el = document.createElement('div');
   el.className = 'param-group';
+  const localOnly = !!callbacks.localOnly;
+  let mode = localOnly ? 'local' : 'global';
+
+  const modeToggle = localOnly ? null : createModeToggle('Grid Parameters', mode, (m) => {
+    mode = m;
+    render();
+  });
 
   function render() {
     el.innerHTML = '';
-    const title = document.createElement('h3');
-    title.textContent = 'Grid Parameters';
-    el.appendChild(title);
+    if (modeToggle) {
+      el.appendChild(modeToggle.el);
+    } else {
+      const title = document.createElement('h3');
+      title.textContent = 'Grid Parameters';
+      el.appendChild(title);
+    }
+
+    const isGlobal = mode === 'global';
+    const activeValues = isGlobal ? globalDefaults : values;
 
     for (const def of paramDefs) {
       const row = document.createElement('div');
       row.className = 'param-row';
 
+      const isOverridden = !isGlobal && globalDefaults && def.key in globalDefaults &&
+        values[def.key] !== undefined && values[def.key] !== globalDefaults[def.key];
+
       const label = document.createElement('label');
       label.textContent = def.label;
+      if (isOverridden) label.classList.add('overridden');
 
       const input = document.createElement('input');
       input.type = 'range';
       input.min = def.min;
       input.max = def.max;
       input.step = def.step;
-      input.value = values[def.key] ?? def.default;
+      input.value = activeValues[def.key] ?? def.default;
 
       const valSpan = document.createElement('span');
       valSpan.className = 'value';
@@ -31,14 +88,31 @@ export function createParamsPanel(paramDefs, values, onChange) {
 
       input.addEventListener('input', () => {
         const v = parseFloat(input.value);
-        values[def.key] = v;
         valSpan.textContent = v;
-        onChange(def.key, v);
+        if (isGlobal) {
+          callbacks.onGlobalChange(def.key, v);
+        } else {
+          activeValues[def.key] = v;
+          callbacks.onLocalChange(def.key, v);
+        }
       });
 
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(valSpan);
+
+      if (isOverridden && callbacks.onReset) {
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'reset-btn';
+        resetBtn.textContent = '\u21A9';
+        resetBtn.title = 'Reset to global';
+        resetBtn.addEventListener('click', () => {
+          callbacks.onReset(def.key);
+          render();
+        });
+        row.appendChild(resetBtn);
+      }
+
       el.appendChild(row);
     }
   }
@@ -47,9 +121,10 @@ export function createParamsPanel(paramDefs, values, onChange) {
 
   return {
     el,
-    update(newParamDefs, newValues) {
+    update(newParamDefs, newValues, newGlobalDefaults) {
       paramDefs = newParamDefs;
       values = newValues;
+      if (newGlobalDefaults !== undefined) globalDefaults = newGlobalDefaults;
       render();
     },
   };
@@ -110,11 +185,19 @@ export function createStretchPanel(global, onChange) {
 }
 
 /**
- * Creates slider UI for per-character transform parameters.
+ * Creates slider UI for transform parameters.
+ * Supports Global/Local toggle.
+ *
+ * callbacks:
+ *   onLocalChange(key, val)  — edit per-character override
+ *   onGlobalChange(key, val) — edit global default
+ *   onReset(key)             — reset local override to global
  */
-export function createTransformPanel(transform, onChange) {
+export function createTransformPanel(transform, globalValues, callbacks) {
   const el = document.createElement('div');
   el.className = 'param-group';
+  const localOnly = !!callbacks.localOnly;
+  let mode = localOnly ? 'local' : 'global';
 
   const sliderDefs = [
     { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
@@ -122,25 +205,40 @@ export function createTransformPanel(transform, onChange) {
     { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
   ];
 
+  const modeToggle = localOnly ? null : createModeToggle('Transform', mode, (m) => {
+    mode = m;
+    render();
+  });
+
   function render() {
     el.innerHTML = '';
-    const title = document.createElement('h3');
-    title.textContent = 'Transform';
-    el.appendChild(title);
+    if (modeToggle) {
+      el.appendChild(modeToggle.el);
+    } else {
+      const title = document.createElement('h3');
+      title.textContent = 'Transform (Local Override)';
+      el.appendChild(title);
+    }
+
+    const isGlobal = mode === 'global';
 
     for (const def of sliderDefs) {
       const row = document.createElement('div');
       row.className = 'param-row';
 
+      const isOverridden = !isGlobal && globalValues && def.key in globalValues &&
+        transform[def.key] !== undefined && transform[def.key] !== globalValues[def.key];
+
       const label = document.createElement('label');
       label.textContent = def.label;
+      if (isOverridden) label.classList.add('overridden');
 
       const input = document.createElement('input');
       input.type = 'range';
       input.min = def.min;
       input.max = def.max;
       input.step = def.step;
-      input.value = transform[def.key] ?? def.default;
+      input.value = isGlobal ? (globalValues[def.key] ?? def.default) : (transform[def.key] ?? def.default);
 
       const valSpan = document.createElement('span');
       valSpan.className = 'value';
@@ -148,14 +246,31 @@ export function createTransformPanel(transform, onChange) {
 
       input.addEventListener('input', () => {
         const v = parseFloat(input.value);
-        transform[def.key] = v;
         valSpan.textContent = v;
-        onChange(def.key, v);
+        if (isGlobal) {
+          callbacks.onGlobalChange(def.key, v);
+        } else {
+          transform[def.key] = v;
+          callbacks.onLocalChange(def.key, v);
+        }
       });
 
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(valSpan);
+
+      if (isOverridden && callbacks.onReset) {
+        const resetBtn = document.createElement('button');
+        resetBtn.className = 'reset-btn';
+        resetBtn.textContent = '\u21A9';
+        resetBtn.title = 'Reset to global';
+        resetBtn.addEventListener('click', () => {
+          callbacks.onReset(def.key);
+          render();
+        });
+        row.appendChild(resetBtn);
+      }
+
       el.appendChild(row);
     }
   }

@@ -4,6 +4,7 @@ import { createLayer } from '../core/layer.js';
 export function createLayerPanel(layers, activeLayerIdx, callbacks) {
   const el = document.createElement('div');
   el.className = 'param-group';
+  const readOnly = !!callbacks.readOnly;
 
   function render() {
     el.innerHTML = '';
@@ -45,34 +46,38 @@ export function createLayerPanel(layers, activeLayerIdx, callbacks) {
         callbacks.onOpacityChange(i);
       });
 
-      const del = document.createElement('span');
-      del.className = 'visibility';
-      del.textContent = 'x';
-      del.addEventListener('click', (e) => {
-        e.stopPropagation();
-        callbacks.onDelete(i);
-      });
-
       li.addEventListener('click', () => callbacks.onSelect(i));
       li.appendChild(vis);
       li.appendChild(name);
       li.appendChild(opSlider);
-      if (layers.length > 1) li.appendChild(del);
+
+      if (!readOnly && layers.length > 1) {
+        const del = document.createElement('span');
+        del.className = 'visibility';
+        del.textContent = 'x';
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          callbacks.onDelete(i);
+        });
+        li.appendChild(del);
+      }
+
       list.appendChild(li);
     });
 
     el.appendChild(list);
 
-    // Add layer button
-    const actions = document.createElement('div');
-    actions.className = 'layer-actions';
+    if (!readOnly) {
+      const actions = document.createElement('div');
+      actions.className = 'layer-actions';
 
-    const addBtn = document.createElement('button');
-    addBtn.textContent = '+ Add Layer';
-    addBtn.addEventListener('click', () => callbacks.onAdd());
-    actions.appendChild(addBtn);
+      const addBtn = document.createElement('button');
+      addBtn.textContent = '+ Add Layer';
+      addBtn.addEventListener('click', () => callbacks.onAdd());
+      actions.appendChild(addBtn);
 
-    el.appendChild(actions);
+      el.appendChild(actions);
+    }
   }
 
   render();
