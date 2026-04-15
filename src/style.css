@@ -412,6 +412,52 @@ body {
   background: var(--bg);
 }
 
+/* === Compose Page === */
+.compose-textarea {
+  width: 100%;
+  min-height: 100px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 14px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.6;
+}
+
+.compose-canvas-area {
+  flex: 1;
+  position: relative;
+  overflow: auto;
+  background: #e0e0e0;
+  padding: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.compose-canvas-area canvas {
+  display: block;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+
+.compose-char-list {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.writing-mode-toggle {
+  display: flex;
+  gap: 4px;
+}
+
 .tool-buttons {
   display: flex;
   gap: 4px;

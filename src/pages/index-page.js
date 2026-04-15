@@ -71,9 +71,14 @@ export function renderIndexPage(app) {
     input.click();
   });
 
+  const composeBtn = document.createElement('button');
+  composeBtn.textContent = 'Compose';
+  composeBtn.addEventListener('click', () => { location.hash = '#/compose'; });
+
   headerActions.appendChild(importBtn);
   headerActions.appendChild(exportBtn);
   headerActions.appendChild(importJsonBtn);
+  headerActions.appendChild(composeBtn);
   header.appendChild(headerActions);
 
   // === Main layout ===
