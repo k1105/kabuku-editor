@@ -1,12 +1,32 @@
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
-import { resolveTransform } from '../core/project.js';
 
 const RENDER_SIZE = 512;
 
+export { RENDER_SIZE };
+
+/**
+ * Scale factor (relative to glyph size) needed to contain the glyph
+ * after the current transform without cropping.
+ *
+ * For a unit square stretched by (1+A) along an arbitrary axis, the worst-case
+ * bounding-box side is 1 + (1+√2)/2 * A, achieved around ±22.5° from the axis.
+ * Gap and blur add a constant pixel margin on top.
+ */
+export function computeCacheScale(transform) {
+  const A = transform?.stretchAmount || 0;
+  const gap = transform?.baseGap || 0;
+  const blur = transform?.metaballRadius || 0;
+  const stretchFactor = 1 + ((1 + Math.SQRT2) / 2) * A;
+  // Safety margin: cell extent (up to ~32px), gap, blur bleed, anti-aliasing
+  const extraPx = 64 + gap * 2 + blur * 4;
+  return stretchFactor + extraPx / RENDER_SIZE;
+}
+
 /**
  * Creates a glyph bitmap cache.
- * Each character is rendered once at 512x512 and stored as an offscreen canvas.
+ * Cache canvas size grows with the current transform so that stretched glyphs
+ * are never clipped at the edges of the offscreen canvas.
  */
 export function createGlyphCache() {
   const cache = new Map();
@@ -27,9 +47,11 @@ export function createGlyphCache() {
       const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
       if (layers.length === 0) return null;
 
+      const scale = computeCacheScale(transform);
+      const canvasSize = Math.ceil(RENDER_SIZE * scale);
       const offscreen = document.createElement('canvas');
-      offscreen.width = RENDER_SIZE;
-      offscreen.height = RENDER_SIZE;
+      offscreen.width = canvasSize;
+      offscreen.height = canvasSize;
       const offCtx = offscreen.getContext('2d');
 
       renderCanvas(offCtx, layers, {

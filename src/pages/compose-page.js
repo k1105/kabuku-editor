@@ -1,6 +1,6 @@
 import { loadProject, getGlobal, resolveTransform } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
-import { createGlyphCache } from '../compose/glyph-cache.js';
+import { createGlyphCache, computeCacheScale } from '../compose/glyph-cache.js';
 
 export function renderComposePage(app) {
   const project = loadProject();
@@ -142,11 +142,11 @@ export function renderComposePage(app) {
     textBoxWidth = v;
     redraw();
   });
-  addSlider(typoGroup, 'Kerning', kerning, -20, 50, 1, (v) => {
+  addSlider(typoGroup, 'Kerning', kerning, -40, 100, 1, (v) => {
     kerning = v;
     redraw();
   });
-  addSlider(typoGroup, 'Line Height', lineHeight, 0.8, 3.0, 0.1, (v) => {
+  addSlider(typoGroup, 'Line Height', lineHeight, 0.4, 6.0, 0.1, (v) => {
     lineHeight = v;
     redraw();
   });
@@ -245,14 +245,14 @@ export function renderComposePage(app) {
     const positions = layoutText(inputText, charIds, {
       fontSize, textBoxWidth, kerning, lineHeight, writingMode,
     });
-    const overflow = fontSize * Math.max(stretchAmount, 0.5);
-    const pad = 32 + overflow;
+    // Match the draw size to the cache canvas so stretched glyphs never clip
+    const cacheScale = computeCacheScale(getTransform());
+    const drawSize = fontSize * cacheScale;
+    const drawOffset = (drawSize - fontSize) / 2;
+    const pad = 32 + drawOffset;
     const bounds = layoutBounds(positions, fontSize);
     const cw = Math.max(bounds.width + pad * 2, 200);
     const ch = Math.max(bounds.height + pad * 2, 200);
-    // Expanded draw area per glyph so stretch doesn't clip
-    const drawSize = fontSize + overflow * 2;
-    const drawOffset = (drawSize - fontSize) / 2;
     return { positions, pad, cw, ch, drawSize, drawOffset };
   }
 
@@ -307,7 +307,7 @@ export function renderComposePage(app) {
   function redrawFast() {
     const layout = computeLayout();
     prepareCanvas(layout);
-    const { positions, pad, drawSize, drawOffset } = layout;
+    const { positions, pad } = layout;
 
     // Stretch matrix: rotate(angle) * scaleX(1+amount) * rotate(-angle)
     const rad = (stretchAngle * Math.PI) / 180;
@@ -321,11 +321,8 @@ export function renderComposePage(app) {
     for (const pos of positions) {
       const gx = pad + pos.x;
       const gy = pad + pos.y;
-      // Draw at same expanded size as redraw
-      const dx = gx - drawOffset;
-      const dy = gy - drawOffset;
-      const cx = dx + drawSize / 2;
-      const cy = dy + drawSize / 2;
+      const cx = gx + fontSize / 2;
+      const cy = gy + fontSize / 2;
 
       if (pos.missing) {
         drawMissing(gx, gy);
@@ -337,9 +334,9 @@ export function renderComposePage(app) {
 
       ctx.save();
       ctx.globalCompositeOperation = 'multiply';
-      // Apply stretch around glyph center
+      // Draw source image at its natural glyph size, then stretch around center
       ctx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
-      ctx.drawImage(srcImg, dx, dy, drawSize, drawSize);
+      ctx.drawImage(srcImg, gx, gy, fontSize, fontSize);
       ctx.restore();
     }
   }
