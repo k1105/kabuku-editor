@@ -10,6 +10,7 @@ export function renderIndexPage(app) {
   const project = loadProject();
   const charIds = Object.keys(project.characters);
   let global = getGlobal();
+  project.global = global;
   let selectedCharId = charIds.length > 0 ? charIds[0] : null;
   let previewImageCache = {};
 
@@ -125,6 +126,7 @@ export function renderIndexPage(app) {
         saveGlobal(global);
         redrawPreview();
       });
+      input.addEventListener('change', () => refreshAllThumbnails());
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(valSpan);
@@ -228,6 +230,7 @@ export function renderIndexPage(app) {
         saveGlobalLayers();
         redrawPreview();
       });
+      input.addEventListener('change', () => refreshAllThumbnails());
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(valSpan);
@@ -343,6 +346,7 @@ export function renderIndexPage(app) {
       saveGlobal(global);
       redrawPreview();
     });
+    input.addEventListener('change', () => refreshAllThumbnails());
     row.appendChild(label);
     row.appendChild(input);
     row.appendChild(valSpan);
