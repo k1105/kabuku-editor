@@ -7,6 +7,7 @@ import { createToolbar } from '../ui/toolbar.js';
 import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
 import { regenerateCells } from '../core/layer.js';
+import { createPreviewControls, getPreviewMode } from '../ui/preview-controls.js';
 
 const GLYPH_SIZE = 512;
 
@@ -45,8 +46,8 @@ export function renderEditPage(app, charId) {
   const title = document.createElement('h1');
   title.textContent = charId;
 
-  const nav = document.createElement('div');
-  nav.className = 'header-nav';
+  const centerNav = document.createElement('div');
+  centerNav.className = 'header-center-nav';
 
   const prevBtn = document.createElement('button');
   prevBtn.textContent = 'Prev';
@@ -62,11 +63,11 @@ export function renderEditPage(app, charId) {
     if (charIndex < allCharIds.length - 1) location.hash = `#/edit/${encodeURIComponent(allCharIds[charIndex + 1])}`;
   });
 
-  nav.appendChild(prevBtn);
-  nav.appendChild(nextBtn);
+  centerNav.appendChild(prevBtn);
+  centerNav.appendChild(title);
+  centerNav.appendChild(nextBtn);
   header.appendChild(backBtn);
-  header.appendChild(title);
-  header.appendChild(nav);
+  header.appendChild(centerNav);
 
   const editPage = document.createElement('div');
   editPage.className = 'edit-page';
@@ -77,11 +78,8 @@ export function renderEditPage(app, charId) {
   // (Grid type change is global-only — not available on local edit page)
 
   // Tools (paint/erase only — preview moved to canvas)
-  let previewMode = false;
-  const toolbar = createToolbar(
-    (tool) => { currentTool = tool; },
-    (isPreview) => { previewMode = isPreview; previewToggleBtn.classList.toggle('active', isPreview); redraw(); }
-  );
+  let previewMode = getPreviewMode();
+  const toolbar = createToolbar((tool) => { currentTool = tool; });
 
   // Image import
   const imgSection = document.createElement('div');
@@ -262,16 +260,16 @@ export function renderEditPage(app, charId) {
   const ctx = canvas.getContext('2d');
   canvasArea.appendChild(canvas);
 
-  // Preview toggle — top-right of canvas area
-  const previewToggleBtn = document.createElement('button');
-  previewToggleBtn.className = 'tool-btn preview-toggle-btn';
-  previewToggleBtn.textContent = 'Preview';
-  previewToggleBtn.addEventListener('click', () => {
-    previewMode = !previewMode;
-    previewToggleBtn.classList.toggle('active', previewMode);
-    redraw();
+  // Preview / Angle / Stretch controls — top-right of canvas area
+  const previewControls = createPreviewControls({
+    global,
+    onPreviewChange: (v) => { previewMode = v; redraw(); },
+    onStretchInput: (key) => {
+      if (!(key in transformOverrides)) transform[key] = global[key];
+      redraw();
+    },
   });
-  canvasArea.appendChild(previewToggleBtn);
+  canvasArea.appendChild(previewControls.el);
 
   editPage.appendChild(sidebar);
   editPage.appendChild(canvasArea);

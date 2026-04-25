@@ -15,6 +15,58 @@ const DEFAULT_GLOBAL = {
   ],
 };
 
+export const ANIMATED_PARAM_KEYS = [
+  'stretchAngle',
+  'stretchAmount',
+  'baseGap',
+  'gapDirectionWeight',
+  'metaballRadius',
+  'fontSize',
+  'textBoxWidth',
+  'kerning',
+  'lineHeight',
+  'cameraX',
+  'cameraY',
+  'cameraDistance',
+];
+
+export const DEFAULT_ANIMATION_BASE_VALUES = {
+  stretchAngle: 0,
+  stretchAmount: 0,
+  baseGap: 0,
+  gapDirectionWeight: 0,
+  metaballRadius: 8,
+  fontSize: 64,
+  textBoxWidth: 800,
+  kerning: 0,
+  lineHeight: 1.5,
+  cameraX: 0,
+  cameraY: 0,
+  cameraDistance: 1,
+};
+
+function initialTracks(baseValues) {
+  const out = {};
+  for (const key of ANIMATED_PARAM_KEYS) {
+    out[key] = [{ time: 0, value: baseValues[key], easing: 'linear' }];
+  }
+  return out;
+}
+
+export function createDefaultAnimation() {
+  const baseValues = { ...DEFAULT_ANIMATION_BASE_VALUES };
+  return {
+    duration: 5,
+    fps: 30,
+    text: '',
+    writingMode: 'horizontal',
+    tracks: initialTracks(baseValues),
+    baseValues,
+  };
+}
+
+export const DEFAULT_ANIMATION = createDefaultAnimation();
+
 export const DEFAULT_LAYER = {
   gridName: 'FibonacciGrid',
   gridParams: { count: 500, scale: 10, dotRadius: 7, rotation: 228 },
@@ -160,12 +212,22 @@ function migrateV2toV3(data) {
   return data;
 }
 
+/** Migrate v3 → v4 (add animation data). */
+function migrateV3toV4(data) {
+  if (!data.animation) data.animation = createDefaultAnimation();
+  data.version = 4;
+  return data;
+}
+
 function migrateProject(data) {
   if (!data.version || data.version < 2) {
     data = migrateV1toV2(data);
   }
   if (data.version < 3) {
     data = migrateV2toV3(data);
+  }
+  if (data.version < 4) {
+    data = migrateV3toV4(data);
   }
   return data;
 }
@@ -228,7 +290,12 @@ export function loadProject() {
   } catch (e) {
     console.warn('Failed to load project:', e);
   }
-  return { characters: {}, global: { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults() }, version: 3 };
+  return {
+    characters: {},
+    global: { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults() },
+    animation: createDefaultAnimation(),
+    version: 4,
+  };
 }
 
 export function saveProject(data) {
@@ -253,6 +320,29 @@ export function getGlobal() {
 export function saveGlobal(global) {
   const project = loadProject();
   project.global = global;
+  saveProject(project);
+}
+
+export function getAnimation() {
+  const p = loadProject();
+  if (!p.animation) p.animation = createDefaultAnimation();
+  p.animation.baseValues = { ...DEFAULT_ANIMATION_BASE_VALUES, ...(p.animation.baseValues || {}) };
+  // cameraDistance must be > 0; fix any zero/invalid values left over from earlier loads
+  const cdTrack = p.animation.tracks?.cameraDistance;
+  if (cdTrack) {
+    for (const kf of cdTrack) {
+      if (!(kf.value > 0)) kf.value = 1;
+    }
+  }
+  if (!(p.animation.baseValues.cameraDistance > 0)) {
+    p.animation.baseValues.cameraDistance = 1;
+  }
+  return p.animation;
+}
+
+export function saveAnimation(animation) {
+  const project = loadProject();
+  project.animation = animation;
   saveProject(project);
 }
 

@@ -5,6 +5,7 @@ import { renderCanvas } from '../render/canvas-renderer.js';
 import { autoMesh } from '../core/mesh.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
+import { createPreviewControls, getPreviewMode } from '../ui/preview-controls.js';
 
 export function renderIndexPage(app) {
   const project = loadProject();
@@ -38,9 +39,6 @@ export function renderIndexPage(app) {
 
   const headerActions = document.createElement('div');
   headerActions.className = 'header-nav';
-
-  const importBtn = document.createElement('button');
-  importBtn.textContent = 'Import Images';
 
   const exportBtn = document.createElement('button');
   exportBtn.textContent = 'Export JSON';
@@ -76,10 +74,14 @@ export function renderIndexPage(app) {
   composeBtn.textContent = 'Compose';
   composeBtn.addEventListener('click', () => { location.hash = '#/compose'; });
 
-  headerActions.appendChild(importBtn);
+  const animationBtn = document.createElement('button');
+  animationBtn.textContent = 'Animation';
+  animationBtn.addEventListener('click', () => { location.hash = '#/animation'; });
+
   headerActions.appendChild(exportBtn);
   headerActions.appendChild(importJsonBtn);
   headerActions.appendChild(composeBtn);
+  headerActions.appendChild(animationBtn);
   header.appendChild(headerActions);
 
   // === Main layout ===
@@ -90,7 +92,7 @@ export function renderIndexPage(app) {
   const sidebar = document.createElement('div');
   sidebar.className = 'sidebar';
 
-  let previewMode = false;
+  let previewMode = getPreviewMode();
 
   // Transform (global)
   const transformDefs = [
@@ -298,60 +300,22 @@ export function renderIndexPage(app) {
   previewCanvas.className = 'index-preview-canvas';
   previewSection.appendChild(previewCanvas);
 
-  // Preview toggle — top-right of preview area
-  const previewBtn = document.createElement('button');
-  previewBtn.className = 'tool-btn preview-toggle-btn';
-  previewBtn.textContent = 'Preview';
-  previewBtn.addEventListener('click', () => {
-    previewMode = !previewMode;
-    previewBtn.classList.toggle('active', previewMode);
-    redrawPreview();
+  // Preview / Angle / Stretch controls — top-right of preview area
+  const previewControls = createPreviewControls({
+    global,
+    onPreviewChange: (v) => { previewMode = v; redrawPreview(); },
+    onStretchInput: () => redrawPreview(),
+    onStretchRelease: () => refreshAllThumbnails(),
   });
-  previewSection.appendChild(previewBtn);
+  previewSection.appendChild(previewControls.el);
 
-  // Bottom bar: char label + stretch controls + LOCAL EDIT button
+  // Bottom bar: char label + LOCAL EDIT button
   const previewBar = document.createElement('div');
   previewBar.className = 'index-preview-bar';
 
   const previewLabel = document.createElement('span');
   previewLabel.className = 'index-preview-label';
   previewLabel.textContent = selectedCharId || '';
-
-  // Stretch controls inline
-  const stretchControls = document.createElement('div');
-  stretchControls.className = 'index-stretch-controls';
-
-  const stretchDefs = [
-    { key: 'stretchAngle', label: 'Angle', min: 0, max: 180, default: 0, step: 1 },
-    { key: 'stretchAmount', label: 'Stretch', min: 0, max: 2, default: 0, step: 0.05 },
-  ];
-  for (const def of stretchDefs) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const label = document.createElement('label');
-    label.textContent = def.label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = def.min;
-    input.max = def.max;
-    input.step = def.step;
-    input.value = global[def.key] ?? def.default;
-    const valSpan = document.createElement('span');
-    valSpan.className = 'value';
-    valSpan.textContent = input.value;
-    input.addEventListener('input', () => {
-      const v = parseFloat(input.value);
-      global[def.key] = v;
-      valSpan.textContent = v;
-      saveGlobal(global);
-      redrawPreview();
-    });
-    input.addEventListener('change', () => refreshAllThumbnails());
-    row.appendChild(label);
-    row.appendChild(input);
-    row.appendChild(valSpan);
-    stretchControls.appendChild(row);
-  }
 
   const localEditBtn = document.createElement('button');
   localEditBtn.className = 'tool-btn local-edit-btn';
@@ -368,7 +332,6 @@ export function renderIndexPage(app) {
   autoMeshOneBtn.addEventListener('click', () => autoMeshSelected());
 
   previewBar.appendChild(previewLabel);
-  previewBar.appendChild(stretchControls);
   previewBar.appendChild(autoMeshOneBtn);
   previewBar.appendChild(localEditBtn);
   previewSection.appendChild(previewBar);
@@ -376,7 +339,7 @@ export function renderIndexPage(app) {
   if (charIds.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = `<p>No characters yet.</p><p>Click "Import Images" to load PNG files.</p>`;
+    empty.innerHTML = `<p>No characters yet.</p><p>Click the "+" tile below to add a glyph.</p>`;
     previewSection.appendChild(empty);
     previewCanvas.style.display = 'none';
     previewBar.style.display = 'none';
@@ -400,7 +363,14 @@ export function renderIndexPage(app) {
   autoMeshAllBtn.className = 'tool-btn';
   autoMeshAllBtn.textContent = 'Auto Mesh All';
   autoMeshAllBtn.addEventListener('click', () => autoMeshAll());
-  charStripHeader.appendChild(autoMeshAllBtn);
+
+  const autoMeshSection = document.createElement('div');
+  autoMeshSection.className = 'param-group';
+  const autoMeshTitle = document.createElement('h3');
+  autoMeshTitle.textContent = 'Actions';
+  autoMeshSection.appendChild(autoMeshTitle);
+  autoMeshSection.appendChild(autoMeshAllBtn);
+  sidebar.appendChild(autoMeshSection);
 
   charStripWrap.appendChild(charStripHeader);
 
@@ -416,6 +386,15 @@ export function renderIndexPage(app) {
     cardElements[charId] = card;
     charStrip.appendChild(card);
   }
+
+  // "+" add-glyph tile — always last
+  const addGlyphTile = document.createElement('button');
+  addGlyphTile.className = 'char-card add-glyph-tile';
+  addGlyphTile.title = 'Add glyph';
+  addGlyphTile.textContent = '+';
+  addGlyphTile.addEventListener('click', () => triggerImport());
+  charStrip.appendChild(addGlyphTile);
+
   charStripWrap.appendChild(charStrip);
   mainArea.appendChild(charStripWrap);
 
@@ -425,28 +404,30 @@ export function renderIndexPage(app) {
   app.appendChild(header);
   app.appendChild(page);
 
-  // Import images wiring
-  importBtn.addEventListener('click', () => importImages(project, {
-    progressWrap, progressBar, progressText,
-    getStrip: () => charStrip,
-    createCard: (charId, charData) => {
-      const card = createCharCard(charId, charData, (id) => { selectChar(id); });
-      cardElements[charId] = card;
-      return card;
-    },
-    onDone: () => {
-      // If no char was selected, select the first imported
-      if (!selectedCharId && Object.keys(project.characters).length > 0) {
-        const firstId = Object.keys(project.characters)[0];
-        selectChar(firstId);
-        previewCanvas.style.display = '';
-        previewBar.style.display = '';
-        const empty = previewSection.querySelector('.empty-state');
-        if (empty) empty.remove();
-      }
-      redrawPreview();
-    },
-  }));
+  // Import images handler — invoked by the "+" tile
+  function triggerImport() {
+    importImages(project, {
+      progressWrap, progressBar, progressText,
+      getStrip: () => charStrip,
+      insertBefore: () => addGlyphTile,
+      createCard: (charId, charData) => {
+        const card = createCharCard(charId, charData, (id) => { selectChar(id); });
+        cardElements[charId] = card;
+        return card;
+      },
+      onDone: () => {
+        if (!selectedCharId && Object.keys(project.characters).length > 0) {
+          const firstId = Object.keys(project.characters)[0];
+          selectChar(firstId);
+          previewCanvas.style.display = '';
+          previewBar.style.display = '';
+          const empty = previewSection.querySelector('.empty-state');
+          if (empty) empty.remove();
+        }
+        redrawPreview();
+      },
+    });
+  }
 
   // === Refresh all thumbnails ===
   function refreshAllThumbnails() {
@@ -751,7 +732,13 @@ function importImages(project, ui) {
         };
         project.characters[charId] = charData;
 
-        strip.appendChild(ui.createCard(charId, charData));
+        const card = ui.createCard(charId, charData);
+        const before = ui.insertBefore?.();
+        if (before && before.parentNode === strip) {
+          strip.insertBefore(card, before);
+        } else {
+          strip.appendChild(card);
+        }
       }
 
       done++;

@@ -1,9 +1,8 @@
 /**
- * Toolbar: paint/erase tool switching + preview toggle
+ * Toolbar: paint/erase tool switching
  */
-export function createToolbar(onToolChange, onPreviewChange) {
+export function createToolbar(onToolChange) {
   let currentTool = 'paint';
-  let preview = false;
 
   const el = document.createElement('div');
   el.className = 'param-group';
@@ -24,28 +23,15 @@ export function createToolbar(onToolChange, onPreviewChange) {
 
     for (const tool of tools) {
       const btn = document.createElement('button');
-      btn.className = `tool-btn${currentTool === tool.id && !preview ? ' active' : ''}`;
+      btn.className = `tool-btn${currentTool === tool.id ? ' active' : ''}`;
       btn.textContent = tool.label;
       btn.addEventListener('click', () => {
         currentTool = tool.id;
-        preview = false;
         onToolChange(currentTool);
-        onPreviewChange(false);
         render();
       });
       btns.appendChild(btn);
     }
-
-    // Preview toggle
-    const previewBtn = document.createElement('button');
-    previewBtn.className = `tool-btn${preview ? ' active' : ''}`;
-    previewBtn.textContent = 'Preview';
-    previewBtn.addEventListener('click', () => {
-      preview = !preview;
-      onPreviewChange(preview);
-      render();
-    });
-    btns.appendChild(previewBtn);
 
     el.appendChild(btns);
   }
@@ -55,6 +41,5 @@ export function createToolbar(onToolChange, onPreviewChange) {
   return {
     el,
     getTool() { return currentTool; },
-    isPreview() { return preview; },
   };
 }
