@@ -1,19 +1,44 @@
-import { loadProject, saveProject, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, resolveGridParams } from '../core/project.js';
+import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, resolveGridParams } from '../core/project.js';
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
 import { autoMesh } from '../core/mesh.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
+import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
+import { createToolbar } from '../ui/toolbar.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
-import { createPreviewControls, getPreviewMode } from '../ui/preview-controls.js';
+import { exportLayerToSVG, exportAllLayersToSVG, downloadSVG } from '../render/svg-exporter.js';
+import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
+
+const GLYPH_SIZE = 512;
+const MODE_KEY = 'kabuku.editMode';
 
 export function renderIndexPage(app) {
   const project = loadProject();
-  const charIds = Object.keys(project.characters);
   let global = getGlobal();
   project.global = global;
-  let selectedCharId = charIds.length > 0 ? charIds[0] : null;
-  let previewImageCache = {};
+  let selectedCharId = Object.keys(project.characters)[0] ?? null;
+
+  // Mode: 'global' | 'local'
+  let mode = sessionStorage.getItem(MODE_KEY) === 'local' ? 'local' : 'global';
+
+  // Preview / paint state
+  let previewMode = getPreviewMode();
+  let currentTool = 'paint';
+  let isPainting = false;
+  let backgroundImage = null;
+  let bgOpacity = 0.3;
+
+  // Global-mode state
+  let globalLayers = [];
+  let activeGlobalLayerIdx = 0;
+  rebuildGlobalLayers();
+
+  // Local-mode state (rebuilt on char/mode change)
+  let localLayers = [];
+  let activeLocalLayerIdx = 0;
+  let localTransformOverrides = {};
+  let localTransform = resolveTransform(global, {});
 
   // === Header ===
   const header = document.createElement('div');
@@ -88,25 +113,385 @@ export function renderIndexPage(app) {
   const page = document.createElement('div');
   page.className = 'edit-page';
 
-  // --- Sidebar: Global controls ---
+  // === Sidebar ===
   const sidebar = document.createElement('div');
   sidebar.className = 'sidebar';
 
-  let previewMode = getPreviewMode();
+  // Mode toggle
+  const modeBar = document.createElement('div');
+  modeBar.className = 'mode-bar';
+  const globalBtn = document.createElement('button');
+  globalBtn.className = 'mode-tab';
+  globalBtn.textContent = 'Global';
+  const localBtn = document.createElement('button');
+  localBtn.className = 'mode-tab';
+  localBtn.textContent = 'Local';
+  modeBar.appendChild(globalBtn);
+  modeBar.appendChild(localBtn);
+  sidebar.appendChild(modeBar);
 
-  // Transform (global)
-  const transformDefs = [
-    { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
-    { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05 },
-    { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
-  ];
-  const transformGroup = document.createElement('div');
-  transformGroup.className = 'param-group';
-  function renderTransformSliders() {
-    transformGroup.innerHTML = '';
-    const h = document.createElement('h3');
-    h.textContent = 'Transform';
-    transformGroup.appendChild(h);
+  function syncModeButtons() {
+    globalBtn.classList.toggle('active', mode === 'global');
+    localBtn.classList.toggle('active', mode === 'local');
+  }
+  syncModeButtons();
+
+  globalBtn.addEventListener('click', () => setMode('global'));
+  localBtn.addEventListener('click', () => setMode('local'));
+
+  const sidebarBody = document.createElement('div');
+  sidebarBody.className = 'sidebar-body';
+  sidebar.appendChild(sidebarBody);
+
+  // === Main area ===
+  const mainArea = document.createElement('div');
+  mainArea.className = 'index-main';
+
+  const previewSection = document.createElement('div');
+  previewSection.className = 'index-preview';
+
+  const previewCanvas = document.createElement('canvas');
+  previewCanvas.className = 'index-preview-canvas';
+  const previewCtx = previewCanvas.getContext('2d');
+  previewSection.appendChild(previewCanvas);
+
+  const previewControls = createPreviewControls({
+    global,
+    onPreviewChange: (v) => { previewMode = v; redraw(); },
+    onStretchInput: () => { localTransform = resolveTransform(global, localTransformOverrides); redraw(); },
+    onStretchRelease: () => refreshAllThumbnails(),
+    onScaleChange: () => redraw(),
+  });
+  previewSection.appendChild(previewControls.el);
+
+  const emptyState = document.createElement('div');
+  emptyState.className = 'empty-state';
+  emptyState.innerHTML = `<p>No characters yet.</p><p>Click the "+" tile below to add a glyph.</p>`;
+  if (selectedCharId) {
+    emptyState.style.display = 'none';
+  } else {
+    previewCanvas.style.display = 'none';
+  }
+  previewSection.appendChild(emptyState);
+
+  mainArea.appendChild(previewSection);
+
+  // === Char strip ===
+  const charStripWrap = document.createElement('div');
+  charStripWrap.className = 'index-char-strip-wrap';
+
+  const charStripHeader = document.createElement('div');
+  charStripHeader.className = 'index-char-strip-header';
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'tool-btn';
+  refreshBtn.textContent = 'Refresh All';
+  refreshBtn.addEventListener('click', () => refreshAllThumbnails());
+  charStripHeader.appendChild(refreshBtn);
+  charStripWrap.appendChild(charStripHeader);
+
+  const charStrip = document.createElement('div');
+  charStrip.className = 'index-char-strip';
+
+  const cardElements = {};
+  for (const charId of Object.keys(project.characters)) {
+    const card = createCharCard(charId, project.characters[charId], (id) => selectChar(id));
+    if (charId === selectedCharId) card.classList.add('selected');
+    cardElements[charId] = card;
+    charStrip.appendChild(card);
+  }
+
+  const addGlyphTile = document.createElement('button');
+  addGlyphTile.className = 'char-card add-glyph-tile';
+  addGlyphTile.title = 'Add glyph';
+  addGlyphTile.textContent = '+';
+  addGlyphTile.addEventListener('click', () => triggerImport());
+  charStrip.appendChild(addGlyphTile);
+
+  charStripWrap.appendChild(charStrip);
+  mainArea.appendChild(charStripWrap);
+
+  page.appendChild(sidebar);
+  page.appendChild(mainArea);
+
+  app.appendChild(header);
+  app.appendChild(page);
+
+  // Canvas fills the preview area; glyph is rendered at GLYPH_SIZE centered
+  function resizeCanvas() {
+    const rect = previewSection.getBoundingClientRect();
+    const w = Math.max(GLYPH_SIZE, Math.floor(rect.width));
+    const h = Math.max(GLYPH_SIZE, Math.floor(rect.height));
+    if (previewCanvas.width === w && previewCanvas.height === h) return;
+    previewCanvas.width = w;
+    previewCanvas.height = h;
+    redraw();
+  }
+  const resizeObserver = new ResizeObserver(() => resizeCanvas());
+  resizeObserver.observe(previewSection);
+  requestAnimationFrame(() => resizeCanvas());
+
+  previewCanvas.addEventListener('mousedown', (e) => {
+    if (mode !== 'local') return;
+    isPainting = true;
+    handlePaint(e);
+  });
+  previewCanvas.addEventListener('mousemove', (e) => {
+    if (!isPainting) return;
+    handlePaint(e);
+  });
+  previewCanvas.addEventListener('mouseup', () => {
+    if (!isPainting) return;
+    isPainting = false;
+    saveLocalChar();
+    refreshSelectedThumbnail();
+  });
+  previewCanvas.addEventListener('mouseleave', () => {
+    if (!isPainting) return;
+    isPainting = false;
+    saveLocalChar();
+    refreshSelectedThumbnail();
+  });
+
+  function handlePaint(e) {
+    if (!selectedCharId || localLayers.length === 0) return;
+    const rect = previewCanvas.getBoundingClientRect();
+    const sx = previewCanvas.width / rect.width;
+    const sy = previewCanvas.height / rect.height;
+    const px = (e.clientX - rect.left) * sx;
+    const py = (e.clientY - rect.top) * sy;
+    // Glyph is drawn scaled & centered: width = GLYPH_SIZE * s
+    const s = getPreviewScale();
+    const dw = GLYPH_SIZE * s;
+    const dh = GLYPH_SIZE * s;
+    const dx = (previewCanvas.width - dw) / 2;
+    const dy = (previewCanvas.height - dh) / 2;
+    const gx = (px - dx) / s;
+    const gy = (py - dy) / s;
+    const layer = localLayers[activeLocalLayerIdx];
+    if (!layer) return;
+    for (const cell of layer.cells) {
+      if (offCtx.isPointInPath(cell.path, gx, gy)) {
+        const newFilled = currentTool === 'paint';
+        if (cell.filled !== newFilled) {
+          cell.filled = newFilled;
+          cell.manualOverride = true;
+          redraw();
+        }
+        break;
+      }
+    }
+  }
+
+  // === Init ===
+  rebuildLocalState();
+  loadBackgroundImage();
+  renderSidebarBody();
+
+  // ============ Functions ============
+  function setMode(newMode) {
+    if (mode === newMode) return;
+    mode = newMode;
+    sessionStorage.setItem(MODE_KEY, mode);
+    syncModeButtons();
+    if (mode === 'local') rebuildLocalState();
+    renderSidebarBody();
+    redraw();
+  }
+
+  function rebuildGlobalLayers() {
+    globalLayers = [];
+    for (const ld of global.defaultLayers || []) {
+      const gridPlugin = getGrid(ld.gridName);
+      if (!gridPlugin) continue;
+      const layer = createLayer(gridPlugin, { ...ld.gridParams });
+      layer.name = ld.name || gridPlugin.name;
+      globalLayers.push(layer);
+    }
+    if (activeGlobalLayerIdx >= globalLayers.length) {
+      activeGlobalLayerIdx = Math.max(0, globalLayers.length - 1);
+    }
+  }
+
+  function saveGlobalLayers() {
+    global.defaultLayers = globalLayers.map(layer => ({
+      gridName: layer.gridPlugin.name,
+      gridParams: { ...layer.gridParams },
+      name: layer.name,
+    }));
+    saveGlobal(global);
+  }
+
+  function rebuildLocalState() {
+    if (!selectedCharId) {
+      localLayers = [];
+      localTransformOverrides = {};
+      localTransform = resolveTransform(global, {});
+      backgroundImage = null;
+      return;
+    }
+    const cd = project.characters[selectedCharId];
+    localLayers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
+    activeLocalLayerIdx = Math.min(activeLocalLayerIdx, Math.max(0, localLayers.length - 1));
+    localTransformOverrides = { ...(cd.transformOverrides || {}) };
+    localTransform = resolveTransform(global, localTransformOverrides);
+  }
+
+  function loadBackgroundImage() {
+    backgroundImage = null;
+    if (!selectedCharId) { redraw(); return; }
+    const cd = project.characters[selectedCharId];
+    if (!cd?.imagePath) { redraw(); return; }
+    const img = new Image();
+    img.onload = () => { backgroundImage = img; redraw(); };
+    img.src = cd.imagePath;
+  }
+
+  function saveLocalChar() {
+    if (!selectedCharId) return;
+    const cd = project.characters[selectedCharId];
+    const overrides = Object.keys(localTransformOverrides).length > 0 ? localTransformOverrides : undefined;
+    saveCharacter(selectedCharId, {
+      imagePath: cd?.imagePath || '',
+      layerOverrides: serializeLayerOverrides(localLayers, global),
+      transformOverrides: overrides,
+    });
+    project.characters[selectedCharId] = {
+      ...cd,
+      layerOverrides: serializeLayerOverrides(localLayers, global),
+      transformOverrides: overrides,
+    };
+  }
+
+  // === Sidebar bodies ===
+  function renderSidebarBody() {
+    sidebarBody.innerHTML = '';
+    if (mode === 'global') renderGlobalSidebar();
+    else renderLocalSidebar();
+  }
+
+  function renderGlobalSidebar() {
+    // Layers
+    const globalLayerPanel = createLayerPanel(globalLayers, activeGlobalLayerIdx, {
+      onSelect(idx) {
+        activeGlobalLayerIdx = idx;
+        const layer = globalLayers[idx];
+        gridSelect.value = layer.gridPlugin.name;
+        renderGridParamSliders();
+        globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
+      },
+      onVisibilityChange() { saveGlobalLayers(); redraw(); refreshAllThumbnails(); },
+      onOpacityChange() { saveGlobalLayers(); redraw(); refreshAllThumbnails(); },
+      onDelete(idx) {
+        globalLayers.splice(idx, 1);
+        if (activeGlobalLayerIdx >= globalLayers.length) activeGlobalLayerIdx = globalLayers.length - 1;
+        globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
+        if (globalLayers.length > 0) gridSelect.value = globalLayers[activeGlobalLayerIdx].gridPlugin.name;
+        renderGridParamSliders();
+        saveGlobalLayers();
+        redraw();
+      },
+      onAdd() {
+        const grid = getGrid(gridSelect.value);
+        const defaults = {};
+        for (const def of grid.getParamDefs()) defaults[def.key] = def.default;
+        const gd = global.gridDefaults?.[grid.name] || {};
+        const layer = createLayer(grid, { ...defaults, ...gd });
+        globalLayers.push(layer);
+        activeGlobalLayerIdx = globalLayers.length - 1;
+        globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
+        renderGridParamSliders();
+        saveGlobalLayers();
+        redraw();
+      },
+    });
+    sidebarBody.appendChild(globalLayerPanel.el);
+
+    // Grid Type
+    const gridSection = document.createElement('div');
+    gridSection.className = 'param-group';
+    const gridSectionTitle = document.createElement('h3');
+    gridSectionTitle.textContent = 'Grid Type';
+    gridSection.appendChild(gridSectionTitle);
+    const gridSelect = document.createElement('select');
+    for (const g of getAllGrids()) {
+      const opt = document.createElement('option');
+      opt.value = g.name;
+      opt.textContent = g.name;
+      gridSelect.appendChild(opt);
+    }
+    if (globalLayers.length > 0) gridSelect.value = globalLayers[activeGlobalLayerIdx].gridPlugin.name;
+    gridSelect.addEventListener('change', () => {
+      if (globalLayers.length === 0) return;
+      const grid = getGrid(gridSelect.value);
+      const layer = globalLayers[activeGlobalLayerIdx];
+      layer.gridPlugin = grid;
+      const defaults = {};
+      for (const def of grid.getParamDefs()) defaults[def.key] = def.default;
+      const gd = global.gridDefaults?.[grid.name] || {};
+      layer.gridParams = { ...defaults, ...gd };
+      layer.name = grid.name;
+      renderGridParamSliders();
+      globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
+      saveGlobalLayers();
+      redraw();
+    });
+    gridSection.appendChild(gridSelect);
+    sidebarBody.appendChild(gridSection);
+
+    // Grid Params
+    const gridParamGroup = document.createElement('div');
+    gridParamGroup.className = 'param-group';
+    sidebarBody.appendChild(gridParamGroup);
+
+    function renderGridParamSliders() {
+      gridParamGroup.innerHTML = '';
+      if (globalLayers.length === 0) return;
+      const layer = globalLayers[activeGlobalLayerIdx];
+      if (!layer) return;
+      const h = document.createElement('h3');
+      h.textContent = 'Grid Parameters';
+      gridParamGroup.appendChild(h);
+      for (const def of layer.gridPlugin.getParamDefs()) {
+        const row = document.createElement('div');
+        row.className = 'param-row';
+        const label = document.createElement('label');
+        label.textContent = def.label;
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = def.min;
+        input.max = def.max;
+        input.step = def.step;
+        input.value = layer.gridParams[def.key] ?? def.default;
+        const valSpan = document.createElement('span');
+        valSpan.className = 'value';
+        valSpan.textContent = input.value;
+        input.addEventListener('input', () => {
+          const v = parseFloat(input.value);
+          layer.gridParams[def.key] = v;
+          valSpan.textContent = v;
+          saveGlobalLayers();
+          redraw();
+        });
+        input.addEventListener('change', () => refreshAllThumbnails());
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(valSpan);
+        gridParamGroup.appendChild(row);
+      }
+    }
+    renderGridParamSliders();
+
+    // Transform (global)
+    const transformDefs = [
+      { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
+      { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05 },
+      { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
+    ];
+    const transformGroup = document.createElement('div');
+    transformGroup.className = 'param-group';
+    const transformTitle = document.createElement('h3');
+    transformTitle.textContent = 'Transform';
+    transformGroup.appendChild(transformTitle);
     for (const def of transformDefs) {
       const row = document.createElement('div');
       row.className = 'param-row';
@@ -126,7 +511,7 @@ export function renderIndexPage(app) {
         global[def.key] = v;
         valSpan.textContent = v;
         saveGlobal(global);
-        redrawPreview();
+        redraw();
       });
       input.addEventListener('change', () => refreshAllThumbnails());
       row.appendChild(label);
@@ -134,284 +519,264 @@ export function renderIndexPage(app) {
       row.appendChild(valSpan);
       transformGroup.appendChild(row);
     }
+    sidebarBody.appendChild(transformGroup);
+
+    // Auto Mesh All
+    const autoMeshSection = document.createElement('div');
+    autoMeshSection.className = 'param-group';
+    const autoMeshTitle = document.createElement('h3');
+    autoMeshTitle.textContent = 'Actions';
+    autoMeshSection.appendChild(autoMeshTitle);
+    const autoMeshAllBtn = document.createElement('button');
+    autoMeshAllBtn.className = 'tool-btn';
+    autoMeshAllBtn.textContent = 'Auto Mesh All';
+    autoMeshAllBtn.addEventListener('click', () => autoMeshAll(autoMeshAllBtn));
+    autoMeshSection.appendChild(autoMeshAllBtn);
+    sidebarBody.appendChild(autoMeshSection);
   }
-  renderTransformSliders();
 
-  // === Global Layers ===
-  // Build runtime layer objects from global.defaultLayers
-  const GLYPH_SIZE_SIDEBAR = 512;
-  let globalLayers = [];
-  let activeGlobalLayerIdx = 0;
-
-  function rebuildGlobalLayers() {
-    globalLayers = [];
-    for (const ld of global.defaultLayers) {
-      const gridPlugin = getGrid(ld.gridName);
-      if (!gridPlugin) continue;
-      const layer = createLayer(gridPlugin, { ...ld.gridParams });
-      layer.name = ld.name || gridPlugin.name;
-      globalLayers.push(layer);
+  function renderLocalSidebar() {
+    if (!selectedCharId) {
+      const msg = document.createElement('div');
+      msg.className = 'param-group';
+      msg.style.color = 'var(--text-dim)';
+      msg.style.fontSize = '12px';
+      msg.textContent = 'Select a glyph below to edit.';
+      sidebarBody.appendChild(msg);
+      return;
     }
-    if (activeGlobalLayerIdx >= globalLayers.length) {
-      activeGlobalLayerIdx = Math.max(0, globalLayers.length - 1);
-    }
-  }
-  rebuildGlobalLayers();
 
-  function saveGlobalLayers() {
-    global.defaultLayers = globalLayers.map(layer => ({
-      gridName: layer.gridPlugin.name,
-      gridParams: { ...layer.gridParams },
-      name: layer.name,
-    }));
-    saveGlobal(global);
-  }
-
-  // Grid type selector for active layer
-  const gridSection = document.createElement('div');
-  gridSection.className = 'param-group';
-  const gridSectionTitle = document.createElement('h3');
-  gridSectionTitle.textContent = 'Grid Type';
-  gridSection.appendChild(gridSectionTitle);
-
-  const gridSelect = document.createElement('select');
-  for (const g of getAllGrids()) {
-    const opt = document.createElement('option');
-    opt.value = g.name;
-    opt.textContent = g.name;
-    gridSelect.appendChild(opt);
-  }
-  gridSelect.addEventListener('change', () => {
-    if (globalLayers.length === 0) return;
-    const grid = getGrid(gridSelect.value);
-    const layer = globalLayers[activeGlobalLayerIdx];
-    layer.gridPlugin = grid;
-    const defaults = {};
-    for (const def of grid.getParamDefs()) defaults[def.key] = def.default;
-    // Use existing gridDefaults for this type if available
-    const gd = global.gridDefaults?.[grid.name] || {};
-    layer.gridParams = { ...defaults, ...gd };
-    layer.name = grid.name;
-    renderGridParamSliders();
-    globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
-    saveGlobalLayers();
-    redrawPreview();
-  });
-  gridSection.appendChild(gridSelect);
-
-  // Grid param sliders for active layer
-  const gridParamGroup = document.createElement('div');
-  gridParamGroup.className = 'param-group';
-
-  function renderGridParamSliders() {
-    gridParamGroup.innerHTML = '';
-    if (globalLayers.length === 0) return;
-    const layer = globalLayers[activeGlobalLayerIdx];
-    if (!layer) return;
-    const h = document.createElement('h3');
-    h.textContent = 'Grid Parameters';
-    gridParamGroup.appendChild(h);
-    for (const def of layer.gridPlugin.getParamDefs()) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
-      input.value = layer.gridParams[def.key] ?? def.default;
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = input.value;
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        layer.gridParams[def.key] = v;
-        valSpan.textContent = v;
-        saveGlobalLayers();
-        redrawPreview();
-      });
-      input.addEventListener('change', () => refreshAllThumbnails());
-      row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
-      gridParamGroup.appendChild(row);
-    }
-  }
-  renderGridParamSliders();
-
-  // Layer panel
-  const globalLayerPanel = createLayerPanel(globalLayers, activeGlobalLayerIdx, {
-    onSelect(idx) {
-      activeGlobalLayerIdx = idx;
-      const layer = globalLayers[idx];
-      gridSelect.value = layer.gridPlugin.name;
-      renderGridParamSliders();
-      globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
-    },
-    onVisibilityChange() { saveGlobalLayers(); redrawPreview(); },
-    onOpacityChange() { saveGlobalLayers(); redrawPreview(); },
-    onDelete(idx) {
-      globalLayers.splice(idx, 1);
-      if (activeGlobalLayerIdx >= globalLayers.length) activeGlobalLayerIdx = globalLayers.length - 1;
-      globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
-      if (globalLayers.length > 0) {
-        gridSelect.value = globalLayers[activeGlobalLayerIdx].gridPlugin.name;
-      }
-      renderGridParamSliders();
-      saveGlobalLayers();
-      redrawPreview();
-    },
-    onAdd() {
-      const grid = getGrid(gridSelect.value);
-      const defaults = {};
-      for (const def of grid.getParamDefs()) defaults[def.key] = def.default;
-      const gd = global.gridDefaults?.[grid.name] || {};
-      const layer = createLayer(grid, { ...defaults, ...gd });
-      globalLayers.push(layer);
-      activeGlobalLayerIdx = globalLayers.length - 1;
-      globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
-      renderGridParamSliders();
-      saveGlobalLayers();
-      redrawPreview();
-    },
-  });
-  // Sync gridSelect with initial layer
-  if (globalLayers.length > 0) {
-    gridSelect.value = globalLayers[activeGlobalLayerIdx].gridPlugin.name;
-  }
-
-  // Sidebar order: Layers → Grid Type → Grid Params → Transform
-  sidebar.appendChild(globalLayerPanel.el);
-  sidebar.appendChild(gridSection);
-  sidebar.appendChild(gridParamGroup);
-  sidebar.appendChild(transformGroup);
-
-  // --- Main area ---
-  const mainArea = document.createElement('div');
-  mainArea.className = 'index-main';
-
-  // Preview section
-  const previewSection = document.createElement('div');
-  previewSection.className = 'index-preview';
-
-  const previewCanvas = document.createElement('canvas');
-  previewCanvas.className = 'index-preview-canvas';
-  previewSection.appendChild(previewCanvas);
-
-  // Preview / Angle / Stretch controls — top-right of preview area
-  const previewControls = createPreviewControls({
-    global,
-    onPreviewChange: (v) => { previewMode = v; redrawPreview(); },
-    onStretchInput: () => redrawPreview(),
-    onStretchRelease: () => refreshAllThumbnails(),
-  });
-  previewSection.appendChild(previewControls.el);
-
-  // Bottom bar: char label + LOCAL EDIT button
-  const previewBar = document.createElement('div');
-  previewBar.className = 'index-preview-bar';
-
-  const previewLabel = document.createElement('span');
-  previewLabel.className = 'index-preview-label';
-  previewLabel.textContent = selectedCharId || '';
-
-  const localEditBtn = document.createElement('button');
-  localEditBtn.className = 'tool-btn local-edit-btn';
-  localEditBtn.textContent = 'Local Edit';
-  localEditBtn.addEventListener('click', () => {
-    if (selectedCharId) {
-      location.hash = `#/edit/${encodeURIComponent(selectedCharId)}`;
-    }
-  });
-
-  const autoMeshOneBtn = document.createElement('button');
-  autoMeshOneBtn.className = 'tool-btn';
-  autoMeshOneBtn.textContent = 'Auto Mesh';
-  autoMeshOneBtn.addEventListener('click', () => autoMeshSelected());
-
-  previewBar.appendChild(previewLabel);
-  previewBar.appendChild(autoMeshOneBtn);
-  previewBar.appendChild(localEditBtn);
-  previewSection.appendChild(previewBar);
-
-  if (charIds.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.innerHTML = `<p>No characters yet.</p><p>Click the "+" tile below to add a glyph.</p>`;
-    previewSection.appendChild(empty);
-    previewCanvas.style.display = 'none';
-    previewBar.style.display = 'none';
-  }
-
-  mainArea.appendChild(previewSection);
-
-  // Character strip at bottom
-  const charStripWrap = document.createElement('div');
-  charStripWrap.className = 'index-char-strip-wrap';
-
-  const charStripHeader = document.createElement('div');
-  charStripHeader.className = 'index-char-strip-header';
-  const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'tool-btn';
-  refreshBtn.textContent = 'Refresh All';
-  refreshBtn.addEventListener('click', () => refreshAllThumbnails());
-  charStripHeader.appendChild(refreshBtn);
-
-  const autoMeshAllBtn = document.createElement('button');
-  autoMeshAllBtn.className = 'tool-btn';
-  autoMeshAllBtn.textContent = 'Auto Mesh All';
-  autoMeshAllBtn.addEventListener('click', () => autoMeshAll());
-
-  const autoMeshSection = document.createElement('div');
-  autoMeshSection.className = 'param-group';
-  const autoMeshTitle = document.createElement('h3');
-  autoMeshTitle.textContent = 'Actions';
-  autoMeshSection.appendChild(autoMeshTitle);
-  autoMeshSection.appendChild(autoMeshAllBtn);
-  sidebar.appendChild(autoMeshSection);
-
-  charStripWrap.appendChild(charStripHeader);
-
-  const charStrip = document.createElement('div');
-  charStrip.className = 'index-char-strip';
-
-  const cardElements = {};
-  for (const charId of charIds) {
-    const card = createCharCard(charId, project.characters[charId], (id) => {
-      selectChar(id);
+    // Layer panel (read-only)
+    const layerPanel = createLayerPanel(localLayers, activeLocalLayerIdx, {
+      readOnly: true,
+      onSelect(idx) {
+        activeLocalLayerIdx = idx;
+        const layer = localLayers[idx];
+        const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
+        paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams, gd);
+        layerPanel.update(localLayers, activeLocalLayerIdx);
+        redraw();
+      },
+      onVisibilityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); },
+      onOpacityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); },
     });
-    if (charId === selectedCharId) card.classList.add('selected');
-    cardElements[charId] = card;
-    charStrip.appendChild(card);
+    sidebarBody.appendChild(layerPanel.el);
+
+    // Grid params (local override)
+    const activeLayer = localLayers[activeLocalLayerIdx];
+    const activeGridDefaults = activeLayer ? (global.gridDefaults?.[activeLayer.gridPlugin.name] || {}) : {};
+    const paramsPanel = createParamsPanel(
+      activeLayer ? activeLayer.gridPlugin.getParamDefs() : [],
+      activeLayer ? activeLayer.gridParams : {},
+      activeGridDefaults,
+      {
+        localOnly: true,
+        onLocalChange(key, val) {
+          const layer = localLayers[activeLocalLayerIdx];
+          if (!layer) return;
+          layer.gridParams[key] = val;
+          const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
+          if (val === gd[key]) {
+            delete layer.gridParamOverrides[key];
+          } else {
+            if (!layer.gridParamOverrides) layer.gridParamOverrides = {};
+            layer.gridParamOverrides[key] = val;
+          }
+          regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
+          redraw();
+          saveLocalChar();
+        },
+        onGlobalChange() {},
+        onReset(key) {
+          const layer = localLayers[activeLocalLayerIdx];
+          if (!layer) return;
+          const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
+          layer.gridParams[key] = gd[key];
+          delete layer.gridParamOverrides[key];
+          regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
+          redraw();
+          saveLocalChar();
+        },
+      }
+    );
+    sidebarBody.appendChild(paramsPanel.el);
+
+    // Transform (local override)
+    const transformPanel = createTransformPanel(localTransform, global, {
+      localOnly: true,
+      onLocalChange(key, val) {
+        localTransform[key] = val;
+        if (val === global[key]) {
+          delete localTransformOverrides[key];
+        } else {
+          localTransformOverrides[key] = val;
+        }
+        redraw();
+        saveLocalChar();
+      },
+      onGlobalChange() {},
+      onReset(key) {
+        localTransform[key] = global[key];
+        delete localTransformOverrides[key];
+        transformPanel.render();
+        redraw();
+        saveLocalChar();
+      },
+    });
+    sidebarBody.appendChild(transformPanel.el);
+
+    // Tools
+    const toolbar = createToolbar((tool) => { currentTool = tool; });
+    sidebarBody.appendChild(toolbar.el);
+
+    // Source image
+    const imgSection = document.createElement('div');
+    imgSection.className = 'param-group';
+    const imgTitle = document.createElement('h3');
+    imgTitle.textContent = 'Source Image';
+    imgSection.appendChild(imgTitle);
+
+    const imgBtn = document.createElement('button');
+    imgBtn.className = 'tool-btn';
+    imgBtn.textContent = 'Load Image';
+    imgBtn.addEventListener('click', loadLocalImage);
+    imgSection.appendChild(imgBtn);
+
+    const meshBtn = document.createElement('button');
+    meshBtn.className = 'tool-btn';
+    meshBtn.textContent = 'Auto Mesh';
+    meshBtn.style.marginLeft = '4px';
+    meshBtn.addEventListener('click', () => doAutoMesh(parseFloat(threshInput.value)));
+    imgSection.appendChild(meshBtn);
+
+    const threshRow = document.createElement('div');
+    threshRow.className = 'param-row';
+    threshRow.style.marginTop = '8px';
+    const threshLabel = document.createElement('label');
+    threshLabel.textContent = 'Threshold';
+    const threshInput = document.createElement('input');
+    threshInput.type = 'range';
+    threshInput.min = 0;
+    threshInput.max = 1;
+    threshInput.step = 0.05;
+    threshInput.value = 0.5;
+    const threshVal = document.createElement('span');
+    threshVal.className = 'value';
+    threshVal.textContent = '0.5';
+    threshInput.addEventListener('input', () => { threshVal.textContent = threshInput.value; });
+    threshRow.appendChild(threshLabel);
+    threshRow.appendChild(threshInput);
+    threshRow.appendChild(threshVal);
+    imgSection.appendChild(threshRow);
+
+    const bgOpRow = document.createElement('div');
+    bgOpRow.className = 'param-row';
+    const bgOpLabel = document.createElement('label');
+    bgOpLabel.textContent = 'BG Opacity';
+    const bgOpInput = document.createElement('input');
+    bgOpInput.type = 'range';
+    bgOpInput.min = 0;
+    bgOpInput.max = 1;
+    bgOpInput.step = 0.05;
+    bgOpInput.value = bgOpacity;
+    const bgOpVal = document.createElement('span');
+    bgOpVal.className = 'value';
+    bgOpVal.textContent = bgOpacity;
+    bgOpInput.addEventListener('input', () => {
+      bgOpacity = parseFloat(bgOpInput.value);
+      bgOpVal.textContent = bgOpInput.value;
+      redraw();
+    });
+    bgOpRow.appendChild(bgOpLabel);
+    bgOpRow.appendChild(bgOpInput);
+    bgOpRow.appendChild(bgOpVal);
+    imgSection.appendChild(bgOpRow);
+
+    sidebarBody.appendChild(imgSection);
+
+    // SVG Export
+    const svgSection = document.createElement('div');
+    svgSection.className = 'param-group';
+    const svgTitle = document.createElement('h3');
+    svgTitle.textContent = 'Export';
+    svgSection.appendChild(svgTitle);
+    const svgLayerBtn = document.createElement('button');
+    svgLayerBtn.className = 'tool-btn';
+    svgLayerBtn.textContent = 'SVG (Layer)';
+    svgLayerBtn.addEventListener('click', () => {
+      const layer = localLayers[activeLocalLayerIdx];
+      if (!layer) return;
+      const svg = exportLayerToSVG(layer, GLYPH_SIZE, GLYPH_SIZE);
+      downloadSVG(svg, `${selectedCharId}_${layer.name}.svg`);
+    });
+    const svgAllBtn = document.createElement('button');
+    svgAllBtn.className = 'tool-btn';
+    svgAllBtn.textContent = 'SVG (All)';
+    svgAllBtn.style.marginLeft = '4px';
+    svgAllBtn.addEventListener('click', () => {
+      const svg = exportAllLayersToSVG(localLayers, GLYPH_SIZE, GLYPH_SIZE);
+      downloadSVG(svg, `${selectedCharId}_all.svg`);
+    });
+    svgSection.appendChild(svgLayerBtn);
+    svgSection.appendChild(svgAllBtn);
+    sidebarBody.appendChild(svgSection);
   }
 
-  // "+" add-glyph tile — always last
-  const addGlyphTile = document.createElement('button');
-  addGlyphTile.className = 'char-card add-glyph-tile';
-  addGlyphTile.title = 'Add glyph';
-  addGlyphTile.textContent = '+';
-  addGlyphTile.addEventListener('click', () => triggerImport());
-  charStrip.appendChild(addGlyphTile);
+  function loadLocalImage() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg';
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const dataUrl = await fileToDataURL(file);
+      const img = new Image();
+      img.onload = () => {
+        backgroundImage = img;
+        const cd = project.characters[selectedCharId];
+        saveCharacter(selectedCharId, {
+          imagePath: dataUrl,
+          layerOverrides: serializeLayerOverrides(localLayers, global),
+          transformOverrides: Object.keys(localTransformOverrides).length > 0 ? localTransformOverrides : undefined,
+        });
+        project.characters[selectedCharId] = {
+          ...cd,
+          imagePath: dataUrl,
+        };
+        redraw();
+        refreshSelectedThumbnail();
+      };
+      img.src = dataUrl;
+    });
+    input.click();
+  }
 
-  charStripWrap.appendChild(charStrip);
-  mainArea.appendChild(charStripWrap);
+  function doAutoMesh(threshold) {
+    if (!backgroundImage) {
+      alert('Load an image first.');
+      return;
+    }
+    const offscreen = document.createElement('canvas');
+    offscreen.width = GLYPH_SIZE;
+    offscreen.height = GLYPH_SIZE;
+    const offCtx = offscreen.getContext('2d');
+    offCtx.drawImage(backgroundImage, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
+    const layer = localLayers[activeLocalLayerIdx];
+    if (!layer) return;
+    autoMesh(offCtx, layer.cells, threshold);
+    redraw();
+    saveLocalChar();
+    refreshSelectedThumbnail();
+  }
 
-  page.appendChild(sidebar);
-  page.appendChild(mainArea);
-
-  app.appendChild(header);
-  app.appendChild(page);
-
-  // Import images handler — invoked by the "+" tile
+  // === Char import ===
   function triggerImport() {
     importImages(project, {
       progressWrap, progressBar, progressText,
       getStrip: () => charStrip,
       insertBefore: () => addGlyphTile,
       createCard: (charId, charData) => {
-        const card = createCharCard(charId, charData, (id) => { selectChar(id); });
+        const card = createCharCard(charId, charData, (id) => selectChar(id));
         cardElements[charId] = card;
         return card;
       },
@@ -419,80 +784,60 @@ export function renderIndexPage(app) {
         if (!selectedCharId && Object.keys(project.characters).length > 0) {
           const firstId = Object.keys(project.characters)[0];
           selectChar(firstId);
-          previewCanvas.style.display = '';
-          previewBar.style.display = '';
-          const empty = previewSection.querySelector('.empty-state');
-          if (empty) empty.remove();
         }
-        redrawPreview();
+        redraw();
       },
     });
   }
 
-  // === Refresh all thumbnails ===
+  // === Selection ===
+  function selectChar(charId) {
+    if (selectedCharId && cardElements[selectedCharId]) {
+      cardElements[selectedCharId].classList.remove('selected');
+    }
+    selectedCharId = charId;
+    if (cardElements[charId]) cardElements[charId].classList.add('selected');
+    emptyState.style.display = 'none';
+    previewCanvas.style.display = '';
+    rebuildLocalState();
+    loadBackgroundImage();
+    if (mode === 'local') renderSidebarBody();
+    redraw();
+  }
+
+  function refreshSelectedThumbnail() {
+    if (!selectedCharId) return;
+    const card = cardElements[selectedCharId];
+    if (!card) return;
+    const canvas = card.querySelector('canvas');
+    if (canvas) renderThumbnail(canvas, project.characters[selectedCharId]);
+  }
+
   function refreshAllThumbnails() {
-    for (const charId of charIds) {
+    for (const charId of Object.keys(project.characters)) {
       const card = cardElements[charId];
       if (!card) continue;
       const canvas = card.querySelector('canvas');
-      if (canvas) {
-        renderThumbnail(canvas, project.characters[charId]);
-      }
+      if (canvas) renderThumbnail(canvas, project.characters[charId]);
     }
   }
 
-  // === Auto Mesh Selected ===
-  function autoMeshSelected() {
-    if (!selectedCharId) return;
-    const cd = project.characters[selectedCharId];
-    if (!cd?.imagePath) return;
-
-    const img = new Image();
-    img.onload = () => {
-      const offscreen = document.createElement('canvas');
-      offscreen.width = GLYPH_SIZE;
-      offscreen.height = GLYPH_SIZE;
-      const offCtx = offscreen.getContext('2d');
-      offCtx.drawImage(img, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
-
-      const layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
-      for (const layer of layers) {
-        autoMesh(offCtx, layer.cells, 0.5);
-      }
-      cd.layerOverrides = serializeLayerOverrides(layers, global);
-      saveProject(project);
-
-      // Update thumbnail
-      const card = cardElements[selectedCharId];
-      if (card) {
-        const canvas = card.querySelector('canvas');
-        if (canvas) renderThumbnail(canvas, cd);
-      }
-      redrawPreview();
-    };
-    img.src = cd.imagePath;
-  }
-
   // === Auto Mesh All ===
-  async function autoMeshAll() {
-    autoMeshAllBtn.disabled = true;
-    autoMeshAllBtn.textContent = 'Meshing...';
+  async function autoMeshAll(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Meshing...';
     progressWrap.style.display = '';
-
-    const targets = charIds.filter(cid => project.characters[cid]?.imagePath);
+    const targets = Object.keys(project.characters).filter(cid => project.characters[cid]?.imagePath);
     const total = targets.length;
     let done = 0;
     progressBar.style.width = '0%';
     progressText.textContent = `0 / ${total}`;
-
     const offscreen = document.createElement('canvas');
     offscreen.width = GLYPH_SIZE;
     offscreen.height = GLYPH_SIZE;
     const offCtx = offscreen.getContext('2d');
-
     for (const cid of targets) {
       const cd = project.characters[cid];
-
       const img = await new Promise((resolve) => {
         const im = new Image();
         im.onload = () => resolve(im);
@@ -500,127 +845,74 @@ export function renderIndexPage(app) {
         im.src = cd.imagePath;
       });
       if (!img) { done++; continue; }
-
       offCtx.clearRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
       offCtx.drawImage(img, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
-
       const layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
-      for (const layer of layers) {
-        autoMesh(offCtx, layer.cells, 0.5);
-      }
-
+      for (const layer of layers) autoMesh(offCtx, layer.cells, 0.5);
       cd.layerOverrides = serializeLayerOverrides(layers, global);
-
       done++;
-      const pct = Math.round((done / total) * 100);
-      progressBar.style.width = pct + '%';
+      progressBar.style.width = Math.round((done / total) * 100) + '%';
       progressText.textContent = `${done} / ${total}`;
-
-      // Yield to browser for repaint
       await new Promise(r => requestAnimationFrame(r));
     }
-
     saveProject(project);
+    if (mode === 'local') rebuildLocalState();
     refreshAllThumbnails();
-    redrawPreview();
-
+    redraw();
     progressWrap.style.display = 'none';
-    autoMeshAllBtn.disabled = false;
-    autoMeshAllBtn.textContent = 'Auto Mesh All';
+    btn.disabled = false;
+    btn.textContent = 'Auto Mesh All';
   }
 
-  // === Selection ===
-  function selectChar(charId) {
-    // Remove old selection
-    if (selectedCharId && cardElements[selectedCharId]) {
-      cardElements[selectedCharId].classList.remove('selected');
-    }
-    selectedCharId = charId;
-    if (cardElements[charId]) {
-      cardElements[charId].classList.add('selected');
-    }
-    previewLabel.textContent = charId;
-    previewImageCache = {}; // reset cached image for new char
-    redrawPreview();
-  }
+  // === Render preview ===
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = GLYPH_SIZE;
+  offCanvas.height = GLYPH_SIZE;
+  const offCtx = offCanvas.getContext('2d');
 
-  // === Preview rendering ===
-  function redrawPreview() {
+  function redraw() {
+    previewCtx.fillStyle = '#fff';
+    previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
     if (!selectedCharId) return;
-    const charData = project.characters[selectedCharId];
-    if (!charData) return;
-
-    const size = Math.min(
-      previewSection.clientWidth - 32,
-      previewSection.clientHeight - 80,
-      512
-    );
-    if (size <= 0) return;
-    previewCanvas.width = size;
-    previewCanvas.height = size;
-
-    const layers = buildRuntimeLayers(global, charData, GLYPH_SIZE);
-    const transformOverrides = charData.transformOverrides || {};
-    const transform = resolveTransform(global, transformOverrides);
-
-    const offscreen = document.createElement('canvas');
-    offscreen.width = GLYPH_SIZE;
-    offscreen.height = GLYPH_SIZE;
-    const offCtx = offscreen.getContext('2d');
-
-    const drawFinal = (bgImg) => {
-      renderCanvas(offCtx, layers, {
-        backgroundImage: bgImg || null,
-        backgroundOpacity: bgImg ? 0.3 : 0,
-        transform,
-        glyphSize: GLYPH_SIZE,
-        preview: previewMode,
-      });
-      const ctx = previewCanvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
-      ctx.drawImage(offscreen, 0, 0, previewCanvas.width, previewCanvas.height);
-    };
-
-    if (charData.imagePath) {
-      if (previewImageCache[selectedCharId]) {
-        drawFinal(previewImageCache[selectedCharId]);
-      } else {
-        const img = new Image();
-        img.onload = () => {
-          previewImageCache[selectedCharId] = img;
-          drawFinal(img);
-        };
-        img.src = charData.imagePath;
-      }
+    let layers, transform;
+    if (mode === 'local') {
+      layers = localLayers;
+      transform = localTransform;
     } else {
-      drawFinal(null);
+      const cd = project.characters[selectedCharId];
+      layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
+      transform = resolveTransform(global, cd.transformOverrides || {});
     }
+    offCtx.fillStyle = '#fff';
+    offCtx.fillRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
+    renderCanvas(offCtx, layers, {
+      backgroundImage: mode === 'local' ? backgroundImage : null,
+      backgroundOpacity: bgOpacity,
+      transform,
+      glyphSize: GLYPH_SIZE,
+      preview: previewMode,
+    });
+    const s = getPreviewScale();
+    const dw = GLYPH_SIZE * s;
+    const dh = GLYPH_SIZE * s;
+    const dx = (previewCanvas.width - dw) / 2;
+    const dy = (previewCanvas.height - dh) / 2;
+    previewCtx.imageSmoothingEnabled = true;
+    previewCtx.drawImage(offCanvas, dx, dy, dw, dh);
   }
-
-  const resizeObserver = new ResizeObserver(() => redrawPreview());
-  resizeObserver.observe(previewSection);
-  requestAnimationFrame(() => redrawPreview());
 }
-
-const GLYPH_SIZE = 512;
 
 function createCharCard(charId, charData, onSelect) {
   const card = document.createElement('div');
   card.className = 'char-card';
-  card.addEventListener('click', () => {
-    onSelect(charId);
-  });
-
+  card.addEventListener('click', () => onSelect(charId));
   const canvas = document.createElement('canvas');
   canvas.width = 80;
   canvas.height = 80;
   renderThumbnail(canvas, charData);
-
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = charId;
-
   card.appendChild(canvas);
   card.appendChild(label);
   return card;
@@ -633,17 +925,14 @@ function renderThumbnail(canvas, charData) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     return;
   }
-
   const offscreen = document.createElement('canvas');
   offscreen.width = GLYPH_SIZE;
   offscreen.height = GLYPH_SIZE;
   const offCtx = offscreen.getContext('2d');
-
   const global = getGlobal();
   const layers = buildRuntimeLayers(global, charData, GLYPH_SIZE);
   const transformOverrides = charData.transformOverrides || {};
   const transform = resolveTransform(global, transformOverrides);
-
   if (charData.imagePath) {
     const img = new Image();
     img.onload = () => {
@@ -678,35 +967,26 @@ function importImages(project, ui) {
   input.type = 'file';
   input.accept = 'image/png,image/jpeg,image/gif';
   input.multiple = true;
-
   input.addEventListener('change', async () => {
     const files = Array.from(input.files);
     if (files.length === 0) return;
-
     const empty = document.querySelector('.empty-state');
-    if (empty) empty.remove();
-
+    if (empty) empty.style.display = 'none';
     ui.progressWrap.style.display = '';
     const total = files.length;
     let done = 0;
     ui.progressText.textContent = `0 / ${total}`;
     ui.progressBar.style.width = '0%';
-
     const offscreen = document.createElement('canvas');
     offscreen.width = GLYPH_SIZE;
     offscreen.height = GLYPH_SIZE;
     const offCtx = offscreen.getContext('2d');
-
     const strip = ui.getStrip();
-
     for (const file of files) {
       const charId = file.name.replace(/\.[^.]+$/, '');
-
       if (!project.characters[charId]) {
         const imageData = await fileToDataURL(file);
         const g = getGlobal();
-
-        // Build layers from global.defaultLayers
         const importLayers = [];
         for (const gl of g.defaultLayers) {
           const gridPlugin = getGrid(gl.gridName);
@@ -717,21 +997,15 @@ function importImages(project, ui) {
           regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
           importLayers.push(layer);
         }
-
-        // Auto-mesh on all layers
         const img = await loadImage(imageData);
         offCtx.clearRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
         offCtx.drawImage(img, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
-        for (const layer of importLayers) {
-          autoMesh(offCtx, layer.cells, 0.5);
-        }
-
+        for (const layer of importLayers) autoMesh(offCtx, layer.cells, 0.5);
         const charData = {
           imagePath: imageData,
           layerOverrides: serializeLayerOverrides(importLayers, g),
         };
         project.characters[charId] = charData;
-
         const card = ui.createCard(charId, charData);
         const before = ui.insertBefore?.();
         if (before && before.parentNode === strip) {
@@ -740,20 +1014,15 @@ function importImages(project, ui) {
           strip.appendChild(card);
         }
       }
-
       done++;
-      const pct = Math.round((done / total) * 100);
-      ui.progressBar.style.width = pct + '%';
+      ui.progressBar.style.width = Math.round((done / total) * 100) + '%';
       ui.progressText.textContent = `${done} / ${total}`;
-
       await new Promise(r => requestAnimationFrame(r));
     }
-
     saveProject(project);
     ui.progressWrap.style.display = 'none';
     if (ui.onDone) ui.onDone();
   });
-
   input.click();
 }
 

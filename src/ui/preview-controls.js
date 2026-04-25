@@ -1,8 +1,13 @@
 import { saveGlobal } from '../core/project.js';
 
 const STATE_KEY = 'kabuku.previewMode';
+const SCALE_KEY = 'kabuku.previewScale';
 
 let _previewMode = sessionStorage.getItem(STATE_KEY) === '1';
+let _previewScale = (() => {
+  const v = parseFloat(sessionStorage.getItem(SCALE_KEY));
+  return Number.isFinite(v) && v > 0 ? v : 1;
+})();
 
 export function getPreviewMode() {
   return _previewMode;
@@ -12,6 +17,15 @@ export function setPreviewMode(v) {
   _previewMode = !!v;
   if (_previewMode) sessionStorage.setItem(STATE_KEY, '1');
   else sessionStorage.removeItem(STATE_KEY);
+}
+
+export function getPreviewScale() {
+  return _previewScale;
+}
+
+export function setPreviewScale(v) {
+  _previewScale = v;
+  sessionStorage.setItem(SCALE_KEY, String(v));
 }
 
 const STRETCH_DEFS = [
@@ -25,7 +39,7 @@ const STRETCH_DEFS = [
  * stretch params are stored on the shared `global` object and saved to
  * project storage.
  */
-export function createPreviewControls({ global, onPreviewChange, onStretchInput, onStretchRelease }) {
+export function createPreviewControls({ global, onPreviewChange, onStretchInput, onStretchRelease, onScaleChange }) {
   const el = document.createElement('div');
   el.className = 'preview-controls';
 
@@ -39,6 +53,33 @@ export function createPreviewControls({ global, onPreviewChange, onStretchInput,
     onPreviewChange?.(_previewMode);
   });
   el.appendChild(previewBtn);
+
+  // Scale slider
+  {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+    const label = document.createElement('label');
+    label.textContent = 'Scale';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = 0.25;
+    input.max = 3;
+    input.step = 0.05;
+    input.value = _previewScale;
+    const valSpan = document.createElement('span');
+    valSpan.className = 'value';
+    valSpan.textContent = _previewScale.toFixed(2);
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      setPreviewScale(v);
+      valSpan.textContent = v.toFixed(2);
+      onScaleChange?.(v);
+    });
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(valSpan);
+    el.appendChild(row);
+  }
 
   const inputs = {};
   for (const def of STRETCH_DEFS) {

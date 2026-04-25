@@ -135,20 +135,17 @@ body {
 
 .index-preview {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   min-height: 0;
-  padding: 16px;
   position: relative;
+  overflow: hidden;
 }
 
 .index-preview-canvas {
-  max-width: 100%;
-  max-height: 100%;
-  border-radius: 8px;
+  display: block;
+  width: 100%;
+  height: 100%;
   background: #fff;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+  cursor: crosshair;
 }
 
 .index-char-strip-wrap {
@@ -218,30 +215,6 @@ body {
   color: var(--accent);
 }
 
-.index-preview-bar {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 16px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  white-space: nowrap;
-}
-
-.index-preview-label {
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  min-width: 24px;
-  text-align: center;
-}
-
 .preview-toggle-btn {
   position: absolute;
   top: 12px;
@@ -287,13 +260,6 @@ body {
   min-width: 28px;
   font-size: 11px;
   text-align: right;
-}
-
-.local-edit-btn {
-  background: var(--accent) !important;
-  color: #fff !important;
-  border-color: var(--accent) !important;
-  font-weight: 600;
 }
 
 .import-progress {
@@ -408,6 +374,44 @@ body {
 
 .sidebar h3:first-child {
   margin-top: 0;
+}
+
+.mode-bar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 4px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+.mode-tab {
+  flex: 1;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mode-tab:hover {
+  color: var(--text);
+}
+
+.mode-tab.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--accent);
+}
+
+.sidebar-body {
+  display: flex;
+  flex-direction: column;
 }
 
 .canvas-area {
