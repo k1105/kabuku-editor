@@ -70,6 +70,8 @@ const TRANSLATIONS = {
   "Import Images": "画像取込",
   "Import JSON": "JSON取込",
   "Export JSON": "JSON書出",
+  Export: "エクスポート",
+  "Import (.json)": "インポート(.json)",
   "SVG (Layer)": "SVG (レイヤー)",
   "SVG (All)": "SVG (全レイヤー)",
   "PNG Seq": "PNG連番",

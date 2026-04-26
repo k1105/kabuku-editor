@@ -50,10 +50,11 @@ export function renderIndexPage(app) {
   const progressBar = progressEl.bar;
   const progressText = progressEl.text;
 
-  const exportBtn = iconButton('download', 'Export JSON', {
+  const exportBtn = iconButton('download', 'Export', {
+    withText: true,
     title: 'Export full project (includes base images as data URLs)',
   });
-  exportBtn.addEventListener('click', () => {
+  exportBtn.addEventListener('click', async () => {
     // Strip session-level globals (preview stretch state) so re-importing
     // doesn't lock in a transient view.
     const out = JSON.parse(JSON.stringify(project));
@@ -63,15 +64,14 @@ export function renderIndexPage(app) {
     }
     const json = JSON.stringify(out, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'kabuku_project.json';
-    a.click();
-    URL.revokeObjectURL(url);
+    await saveBlobWithPicker(blob, 'kabuku_project.json', {
+      description: 'KABUKU project',
+      accept: { 'application/json': ['.json'] },
+    });
   });
 
-  const importJsonBtn = iconButton('upload', 'Import JSON', {
+  const importJsonBtn = iconButton('upload', 'Import (.json)', {
+    withText: true,
     title: 'Import a JSON project file',
   });
   importJsonBtn.addEventListener('click', () => {
@@ -1314,4 +1314,33 @@ function loadImage(src) {
     img.onload = () => resolve(img);
     img.src = src;
   });
+}
+
+/**
+ * Save a Blob through the OS save dialog (Chrome/Edge) so the user picks the
+ * filename and folder. Falls back to anchor-download on Safari/Firefox.
+ * Silently no-ops if the user cancels the picker.
+ */
+async function saveBlobWithPicker(blob, suggestedName, { description = '', accept } = {}) {
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: accept ? [{ description, accept }] : undefined,
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      console.warn('Save picker failed, falling back to download:', e);
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = suggestedName;
+  a.click();
+  URL.revokeObjectURL(url);
 }
