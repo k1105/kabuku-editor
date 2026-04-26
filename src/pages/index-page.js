@@ -11,17 +11,24 @@ import { exportLayerToSVG, exportAllLayersToSVG, downloadSVG } from '../render/s
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
 import { iconButton, iconEl } from '../ui/icons.js';
 import { createPageHeader } from '../ui/page-header.js';
+import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
 
 const GLYPH_SIZE = 1024;
 const MODE_KEY = 'kabuku.editMode';
+const SEL_CHAR_KEY = 'kabuku.selectedChar';
 
 export function renderIndexPage(app) {
   const project = loadProject();
   let global = getGlobal();
   project.global = global;
-  let selectedCharId = Object.keys(project.characters)[0] ?? null;
+  // Restore last-selected char so undo/redo (which re-renders the page) keeps
+  // the user's context.
+  const savedSel = sessionStorage.getItem(SEL_CHAR_KEY);
+  let selectedCharId = (savedSel && project.characters[savedSel])
+    ? savedSel
+    : (Object.keys(project.characters)[0] ?? null);
 
   // Mode: 'global' | 'local'
   let mode = sessionStorage.getItem(MODE_KEY) === 'local' ? 'local' : 'global';
@@ -176,19 +183,6 @@ export function renderIndexPage(app) {
   const charStripWrap = document.createElement('div');
   charStripWrap.className = 'index-char-strip-wrap';
 
-  const charStripHeader = document.createElement('div');
-  charStripHeader.className = 'index-char-strip-header';
-  const refreshBtn = document.createElement('button');
-  refreshBtn.className = 'tool-btn';
-  refreshBtn.title = 'Refresh all thumbnails';
-  refreshBtn.appendChild(iconEl('refresh'));
-  const refreshLabel = document.createElement('span');
-  refreshLabel.textContent = 'Refresh All';
-  refreshBtn.appendChild(refreshLabel);
-  refreshBtn.addEventListener('click', () => refreshAllThumbnails());
-  charStripHeader.appendChild(refreshBtn);
-  charStripWrap.appendChild(charStripHeader);
-
   const charStrip = document.createElement('div');
   charStrip.className = 'index-char-strip';
 
@@ -247,12 +241,14 @@ export function renderIndexPage(app) {
     isPainting = false;
     saveLocalChar();
     refreshSelectedThumbnail();
+    historyCommit('paint');
   });
   previewCanvas.addEventListener('mouseleave', () => {
     if (!isPainting) return;
     isPainting = false;
     saveLocalChar();
     refreshSelectedThumbnail();
+    historyCommit('paint');
   });
 
   function handlePaint(e) {
@@ -308,6 +304,8 @@ export function renderIndexPage(app) {
       if (!gridPlugin) continue;
       const layer = createLayer(gridPlugin, { ...ld.gridParams });
       layer.name = ld.name || gridPlugin.name;
+      if (ld.opacity !== undefined) layer.opacity = ld.opacity;
+      if (ld.visible !== undefined) layer.visible = ld.visible;
       globalLayers.push(layer);
     }
     if (activeGlobalLayerIdx >= globalLayers.length) {
@@ -320,8 +318,23 @@ export function renderIndexPage(app) {
       gridName: layer.gridPlugin.name,
       gridParams: { ...layer.gridParams },
       name: layer.name,
+      opacity: layer.opacity,
+      visible: layer.visible,
     }));
-    saveGlobal(global);
+    // Drop per-char opacity/visible overrides that match the new global value
+    // so glyphs follow global edits unless they intentionally diverge.
+    for (const cd of Object.values(project.characters)) {
+      const overrides = cd.layerOverrides || [];
+      overrides.forEach((lo, i) => {
+        if (!lo) return;
+        const gl = global.defaultLayers[i];
+        if (!gl) return;
+        if (lo.opacity === gl.opacity) delete lo.opacity;
+        if (lo.visible === gl.visible) delete lo.visible;
+      });
+    }
+    project.global = global;
+    saveProject(project);
   }
 
   function rebuildLocalState() {
@@ -382,7 +395,9 @@ export function renderIndexPage(app) {
         renderGridParamSliders();
         globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
       },
-      onVisibilityChange() { saveGlobalLayers(); redraw(); refreshAllThumbnails(); },
+      onVisibilityChange() { saveGlobalLayers(); redraw(); refreshAllThumbnails(); historyCommit('layer-visibility'); },
+      // Opacity slider commits via the delegated 'change' listener on release;
+      // committing here would fire on every input event during the drag.
       onOpacityChange() { saveGlobalLayers(); redraw(); refreshAllThumbnails(); },
       onDelete(idx) {
         globalLayers.splice(idx, 1);
@@ -392,6 +407,7 @@ export function renderIndexPage(app) {
         renderGridParamSliders();
         saveGlobalLayers();
         redraw();
+        historyCommit('layer-delete');
       },
       onAdd() {
         const grid = getGrid(gridSelect.value);
@@ -405,6 +421,7 @@ export function renderIndexPage(app) {
         renderGridParamSliders();
         saveGlobalLayers();
         redraw();
+        historyCommit('layer-add');
       },
     });
     sidebarBody.appendChild(globalLayerPanel.el);
@@ -645,7 +662,8 @@ export function renderIndexPage(app) {
         layerPanel.update(localLayers, activeLocalLayerIdx);
         redraw();
       },
-      onVisibilityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); },
+      onVisibilityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); historyCommit('local-layer-visibility'); },
+      // Opacity slider commits via delegated 'change' on release.
       onOpacityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); },
     });
     sidebarBody.appendChild(layerPanel.el);
@@ -915,6 +933,7 @@ export function renderIndexPage(app) {
         };
         redraw();
         refreshSelectedThumbnail();
+        historyCommit('load-image');
       };
       img.src = dataUrl;
     });
@@ -947,6 +966,7 @@ export function renderIndexPage(app) {
     redraw();
     saveLocalChar();
     refreshSelectedThumbnail();
+    historyCommit('auto-mesh');
   }
 
   // === Empty glyph creation ===
@@ -960,6 +980,7 @@ export function renderIndexPage(app) {
     emptyState.style.display = 'none';
     previewCanvas.style.display = '';
     selectChar(newId);
+    historyCommit('add-glyph');
   }
 
   // === Char rename ===
@@ -983,6 +1004,8 @@ export function renderIndexPage(app) {
       if (label) label.textContent = trimmed;
     }
     selectedCharId = trimmed;
+    sessionStorage.setItem(SEL_CHAR_KEY, trimmed);
+    historyCommit('rename-glyph');
     return { ok: true };
   }
 
@@ -1009,6 +1032,7 @@ export function renderIndexPage(app) {
     loadBackgroundImage();
     renderSidebarBody();
     redraw();
+    historyCommit('delete-glyph');
   }
 
   // === Char import ===
@@ -1028,6 +1052,7 @@ export function renderIndexPage(app) {
           selectChar(firstId);
         }
         redraw();
+        historyCommit('import-images');
       },
     });
   }
@@ -1038,6 +1063,8 @@ export function renderIndexPage(app) {
       cardElements[selectedCharId].classList.remove('selected');
     }
     selectedCharId = charId;
+    if (charId) sessionStorage.setItem(SEL_CHAR_KEY, charId);
+    else sessionStorage.removeItem(SEL_CHAR_KEY);
     if (cardElements[charId]) cardElements[charId].classList.add('selected');
     emptyState.style.display = 'none';
     previewCanvas.style.display = '';
@@ -1109,6 +1136,7 @@ export function renderIndexPage(app) {
     progressWrap.style.display = 'none';
     btn.disabled = false;
     btn.textContent = 'Auto Mesh All';
+    historyCommit('auto-mesh-all');
   }
 
   // === Render preview ===

@@ -32,6 +32,10 @@ const PATHS = {
   play:       '<path d="M6 4l14 8-14 8z"/>',
   pause:      '<path d="M7 4h4v16H7z"/><path d="M13 4h4v16h-4z"/>',
 
+  // history
+  undo:       '<path d="M9 14l-5-5 5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  redo:       '<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
+
   // misc
   globe:      '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>',
   preview:    '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/><circle cx="7" cy="7" r="0.5"/><circle cx="9" cy="7" r="0.5"/>',

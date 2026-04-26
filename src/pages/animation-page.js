@@ -7,6 +7,7 @@ import { renderFrames } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { iconEl, iconSvg } from '../ui/icons.js';
+import { commit as historyCommit } from '../core/history.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -62,6 +63,10 @@ export function renderAnimationPage(app) {
   function persist() {
     saveAnimation(animation);
   }
+  // Wrap to commit a history snapshot — used at action boundaries
+  // (keyframe edits, button clicks, mode changes). Continuous slider/text
+  // input is captured by the document-level 'change' listener in main.js.
+  function commitHistory(label) { historyCommit(label); }
 
   function markDirty() {
     renderDirty = true;
@@ -125,12 +130,12 @@ export function renderAnimationPage(app) {
   hBtn.addEventListener('click', () => {
     animation.writingMode = 'horizontal';
     hBtn.classList.add('active'); vBtn.classList.remove('active');
-    persist(); markDirty(); redrawPreview();
+    persist(); markDirty(); redrawPreview(); commitHistory('writing-mode');
   });
   vBtn.addEventListener('click', () => {
     animation.writingMode = 'vertical';
     vBtn.classList.add('active'); hBtn.classList.remove('active');
-    persist(); markDirty(); redrawPreview();
+    persist(); markDirty(); redrawPreview(); commitHistory('writing-mode');
   });
   modeWrap.appendChild(hBtn);
   modeWrap.appendChild(vBtn);
@@ -353,7 +358,7 @@ export function renderAnimationPage(app) {
       updateTimeDisplay();
       redrawPreview();
     },
-    onChange: () => { persist(); markDirty(); },
+    onChange: () => { persist(); markDirty(); commitHistory('keyframe-edit'); },
     getCurrentTime: () => currentTime,
   });
   timelineWrap.appendChild(timeline.el);

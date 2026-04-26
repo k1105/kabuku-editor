@@ -122,9 +122,14 @@ body {
   transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .icon-btn.active {
@@ -243,13 +248,6 @@ body {
   flex-shrink: 0;
   border-top: 1px solid var(--border);
   background: var(--surface);
-}
-
-.index-char-strip-header {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 4px 8px 0;
 }
 
 .index-char-strip {

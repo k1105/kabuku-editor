@@ -1,4 +1,5 @@
-import { iconEl } from './icons.js';
+import { iconEl, iconButton } from './icons.js';
+import { undo, redo, subscribe } from '../core/history.js';
 
 /**
  * Build the shared top header used across all pages.
@@ -61,6 +62,25 @@ export function createPageHeader({ activePage, title = 'KABUKU Editor' } = {}) {
   // Right-side actions slot (lang toggle injected here by main.js)
   const headerNav = document.createElement('div');
   headerNav.className = 'header-nav';
+
+  // Undo / Redo first in nav so they sit in a stable position across pages.
+  const undoBtn = iconButton('undo', 'Undo', { title: 'Undo (⌘Z)' });
+  undoBtn.addEventListener('click', () => undo());
+  const redoBtn = iconButton('redo', 'Redo', { title: 'Redo (⌘⇧Z)' });
+  redoBtn.addEventListener('click', () => redo());
+  headerNav.appendChild(undoBtn);
+  headerNav.appendChild(redoBtn);
+  // Lazy self-cleanup: when this header gets detached (page re-render or
+  // route change), the next history notify unsubscribes the stale handler.
+  // `unsub` is forward-declared because `subscribe` invokes the callback
+  // synchronously on registration to deliver the initial state.
+  let unsub;
+  unsub = subscribe(({ canUndo, canRedo }) => {
+    if (!header.isConnected) { unsub?.(); return; }
+    undoBtn.disabled = !canUndo;
+    redoBtn.disabled = !canRedo;
+  });
+
   header.appendChild(headerNav);
 
   return {

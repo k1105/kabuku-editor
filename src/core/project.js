@@ -507,8 +507,11 @@ export function resolveCharacterLayers(global, charData) {
       cells: (!charOverride.gridName || charOverride.gridName === globalLayer.gridName)
         ? (charOverride.cells || null)
         : null,
-      opacity: charOverride.opacity ?? 1,
-      visible: charOverride.visible ?? true,
+      // Inherit visibility/opacity from the global layer when the char doesn't
+      // override them. Without this fallback, global toggles never reach the
+      // render pipeline because every char has an explicit serialized value.
+      opacity: charOverride.opacity ?? globalLayer.opacity ?? 1,
+      visible: charOverride.visible ?? globalLayer.visible ?? true,
     };
   });
 }
@@ -520,7 +523,7 @@ export function serializeLayerOverrides(layers, global) {
     if (!globalLayer) return null;
     // Compare against the layer's own gridParams, not the per-type gridDefaults
     const overrides = computeOverrides(layer.gridParams, globalLayer.gridParams || {});
-    return {
+    const out = {
       gridName: globalLayer.gridName,
       gridParamOverrides: overrides,
       cells: layer.cells.map(c => ({
@@ -528,9 +531,14 @@ export function serializeLayerOverrides(layers, global) {
         manualOverride: c.manualOverride,
         center: c.center,
       })),
-      opacity: layer.opacity,
-      visible: layer.visible,
     };
+    // Only persist opacity/visible when they diverge from the global default,
+    // so that future global edits propagate to chars that haven't overridden.
+    const gOpacity = globalLayer.opacity ?? 1;
+    const gVisible = globalLayer.visible ?? true;
+    if (layer.opacity !== gOpacity) out.opacity = layer.opacity;
+    if (layer.visible !== gVisible) out.visible = layer.visible;
+    return out;
   }).filter(Boolean);
 }
 

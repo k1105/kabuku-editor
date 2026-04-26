@@ -66,7 +66,6 @@ const TRANSLATIONS = {
   "Load Image": "画像読込",
   "Auto Mesh": "自動分割",
   "Auto Mesh All": "全て自動分割",
-  "Refresh All": "全て再描画",
   "Import Images": "画像取込",
   "Import JSON": "JSON取込",
   "Export JSON": "JSON書出",
