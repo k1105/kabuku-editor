@@ -1,7 +1,7 @@
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
 
-const RENDER_SIZE = 512;
+const RENDER_SIZE = 1024;
 
 export { RENDER_SIZE };
 
@@ -9,15 +9,16 @@ export { RENDER_SIZE };
  * Scale factor (relative to glyph size) needed to contain the glyph
  * after the current transform without cropping.
  *
- * For a unit square stretched by (1+A) along an arbitrary axis, the worst-case
- * bounding-box side is 1 + (1+√2)/2 * A, achieved around ±22.5° from the axis.
+ * Stretch is now anchored to the baseline (off-center pivot), so the worst-case
+ * bbox is asymmetric and larger than the symmetric center-pivot case. Use a
+ * conservative `1 + 2*A` bound that covers any baseline position in [0,1].
  * Gap and blur add a constant pixel margin on top.
  */
 export function computeCacheScale(transform) {
   const A = transform?.stretchAmount || 0;
   const gap = transform?.baseGap || 0;
   const blur = transform?.metaballRadius || 0;
-  const stretchFactor = 1 + ((1 + Math.SQRT2) / 2) * A;
+  const stretchFactor = 1 + 2 * A;
   // Safety margin: cell extent (up to ~32px), gap, blur bleed, anti-aliasing
   const extraPx = 64 + gap * 2 + blur * 4;
   return stretchFactor + extraPx / RENDER_SIZE;
@@ -58,6 +59,7 @@ export function createGlyphCache() {
         transform,
         glyphSize: RENDER_SIZE,
         preview: true,
+        fontMetrics: global?.fontMetrics,
       });
 
       cache.set(charId, offscreen);

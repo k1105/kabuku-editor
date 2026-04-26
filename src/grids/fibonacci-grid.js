@@ -5,9 +5,9 @@ export const FibonacciGrid = {
 
   getParamDefs() {
     return [
-      { key: 'count', label: 'Count', min: 10, max: 500, default: 150, step: 5 },
-      { key: 'scale', label: 'Scale', min: 1, max: 20, default: 8, step: 0.5 },
-      { key: 'dotRadius', label: 'Dot Radius', min: 2, max: 15, default: 5, step: 1 },
+      { key: 'count', label: 'Count', min: 10, max: 1000, default: 300, step: 5 },
+      { key: 'scale', label: 'Scale', min: 1, max: 40, default: 16, step: 0.5 },
+      { key: 'dotRadius', label: 'Dot Radius', min: 2, max: 30, default: 10, step: 1 },
       { key: 'rotation', label: 'Rotation', min: 0, max: 360, default: 0, step: 1 },
     ];
   },

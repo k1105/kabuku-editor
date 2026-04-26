@@ -1,6 +1,6 @@
 import { loadProject, getGlobal, resolveTransform } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
-import { createGlyphCache, computeCacheScale } from '../compose/glyph-cache.js';
+import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 
 export function renderComposePage(app) {
   const project = loadProject();
@@ -318,11 +318,12 @@ export function renderComposePage(app) {
     const b = cos * sin * (s - 1);
     const d = sin * sin * s + cos * cos;
 
+    const baselineRatio = global.fontMetrics?.baseline ?? 0.5;
     for (const pos of positions) {
       const gx = pad + pos.x;
       const gy = pad + pos.y;
       const cx = gx + fontSize / 2;
-      const cy = gy + fontSize / 2;
+      const cy = gy + fontSize * baselineRatio;
 
       if (pos.missing) {
         drawMissing(gx, gy);
@@ -332,11 +333,20 @@ export function renderComposePage(app) {
       const srcImg = sourceImageCache.get(pos.charId);
       if (!srcImg) continue;
 
+      const cd = project.characters[pos.charId] || {};
+      const imgScale = cd.imageScale ?? 1;
+      const imgOffPx = fontSize / RENDER_SIZE; // map glyph-space px → fontSize-space px
+      const imgDx = (cd.imageOffsetX ?? 0) * imgOffPx;
+      const imgDy = (cd.imageOffsetY ?? 0) * imgOffPx;
+      const drawSize = fontSize * imgScale;
+      const ix = gx + (fontSize - drawSize) / 2 + imgDx;
+      const iy = gy + (fontSize - drawSize) / 2 + imgDy;
+
       ctx.save();
       ctx.globalCompositeOperation = 'multiply';
       // Draw source image at its natural glyph size, then stretch around center
       ctx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
-      ctx.drawImage(srcImg, gx, gy, fontSize, fontSize);
+      ctx.drawImage(srcImg, ix, iy, drawSize, drawSize);
       ctx.restore();
     }
   }

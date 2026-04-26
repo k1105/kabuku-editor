@@ -43,7 +43,7 @@ const TRANSLATIONS = {
   "Box Width": "枠の幅",
   Kerning: "字間",
   "Line Height": "行送り",
-  Direction: "書字方向",
+  Direction: "組み方向",
   Threshold: "しきい値",
   "BG Opacity": "背景濃度",
   Distance: "距離",

@@ -1,4 +1,24 @@
 /**
+ * Build the override-state circle button. Always present in the row layout
+ * (visibility hidden when off-without-callback) so labels stay aligned.
+ * When `isOverridden` is true the circle is filled accent and clicking it
+ * triggers `onClick` (intended to reset the override).
+ */
+function createOverrideBadge(isOverridden, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'override-badge';
+  if (isOverridden) {
+    btn.title = 'Click to reset override';
+    btn.addEventListener('click', onClick);
+  } else {
+    btn.classList.add('is-off');
+    btn.tabIndex = -1;
+  }
+  return btn;
+}
+
+/**
  * Creates a Global/Local toggle header row.
  * Returns { el, isGlobal() }
  */
@@ -71,6 +91,11 @@ export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) 
       const isOverridden = !isGlobal && globalDefaults && def.key in globalDefaults &&
         values[def.key] !== undefined && values[def.key] !== globalDefaults[def.key];
 
+      const badge = createOverrideBadge(isOverridden, () => {
+        callbacks.onReset?.(def.key);
+        render();
+      });
+
       const label = document.createElement('label');
       label.textContent = def.label;
       if (isOverridden) label.classList.add('overridden');
@@ -97,21 +122,10 @@ export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) 
         }
       });
 
+      row.appendChild(badge);
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(valSpan);
-
-      if (isOverridden && callbacks.onReset) {
-        const resetBtn = document.createElement('button');
-        resetBtn.className = 'reset-btn';
-        resetBtn.textContent = '\u21A9';
-        resetBtn.title = 'Reset to global';
-        resetBtn.addEventListener('click', () => {
-          callbacks.onReset(def.key);
-          render();
-        });
-        row.appendChild(resetBtn);
-      }
 
       el.appendChild(row);
     }
@@ -229,6 +243,11 @@ export function createTransformPanel(transform, globalValues, callbacks) {
       const isOverridden = !isGlobal && globalValues && def.key in globalValues &&
         transform[def.key] !== undefined && transform[def.key] !== globalValues[def.key];
 
+      const badge = createOverrideBadge(isOverridden, () => {
+        callbacks.onReset?.(def.key);
+        render();
+      });
+
       const label = document.createElement('label');
       label.textContent = def.label;
       if (isOverridden) label.classList.add('overridden');
@@ -255,21 +274,10 @@ export function createTransformPanel(transform, globalValues, callbacks) {
         }
       });
 
+      row.appendChild(badge);
       row.appendChild(label);
       row.appendChild(input);
       row.appendChild(valSpan);
-
-      if (isOverridden && callbacks.onReset) {
-        const resetBtn = document.createElement('button');
-        resetBtn.className = 'reset-btn';
-        resetBtn.textContent = '\u21A9';
-        resetBtn.title = 'Reset to global';
-        resetBtn.addEventListener('click', () => {
-          callbacks.onReset(def.key);
-          render();
-        });
-        row.appendChild(resetBtn);
-      }
 
       el.appendChild(row);
     }

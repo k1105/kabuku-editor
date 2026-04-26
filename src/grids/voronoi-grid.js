@@ -5,7 +5,7 @@ export const VoronoiGrid = {
 
   getParamDefs() {
     return [
-      { key: 'count', label: 'Count', min: 10, max: 800, default: 200, step: 5 },
+      { key: 'count', label: 'Count', min: 10, max: 2000, default: 400, step: 5 },
       { key: 'seed', label: 'Seed', min: 0, max: 999, default: 42, step: 1 },
       { key: 'relaxation', label: 'Relaxation', min: 0, max: 10, default: 2, step: 1 },
     ];

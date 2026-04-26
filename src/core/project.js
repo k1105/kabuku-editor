@@ -2,6 +2,13 @@ import { getAllGrids } from '../grids/grid-plugin.js';
 
 const STORAGE_KEY = 'kabuku_project';
 
+export const DEFAULT_FONT_METRICS = {
+  ascender: 0.05,
+  xHeight: 0.30,
+  baseline: 0.80,
+  descender: 0.95,
+};
+
 const DEFAULT_GLOBAL = {
   stretchAngle: 0,
   stretchAmount: 0,
@@ -11,8 +18,9 @@ const DEFAULT_GLOBAL = {
   metaballRadius: 8,
   gridDefaults: {},
   defaultLayers: [
-    { gridName: 'FibonacciGrid', gridParams: { count: 500, scale: 10, dotRadius: 7, rotation: 228 }, name: 'FibonacciGrid' },
+    { gridName: 'FibonacciGrid', gridParams: { count: 1000, scale: 20, dotRadius: 14, rotation: 228 }, name: 'FibonacciGrid' },
   ],
+  fontMetrics: { ...DEFAULT_FONT_METRICS },
 };
 
 export const ANIMATED_PARAM_KEYS = [
@@ -219,6 +227,34 @@ function migrateV3toV4(data) {
   return data;
 }
 
+/** Migrate v4 → v5 (add font metrics to global). */
+function migrateV4toV5(data) {
+  if (!data.global.fontMetrics) {
+    data.global.fontMetrics = { ...DEFAULT_FONT_METRICS };
+  }
+  data.version = 5;
+  return data;
+}
+
+/** Migrate v5 → v6 (glyph reference size 512 → 1024; double saved cell coords + image offsets). */
+function migrateV5toV6(data) {
+  const SCALE = 2;
+  for (const cd of Object.values(data.characters || {})) {
+    for (const lo of cd.layerOverrides || []) {
+      if (!lo?.cells) continue;
+      for (const c of lo.cells) {
+        if (c.center) {
+          c.center = { x: c.center.x * SCALE, y: c.center.y * SCALE };
+        }
+      }
+    }
+    if (typeof cd.imageOffsetX === 'number') cd.imageOffsetX *= SCALE;
+    if (typeof cd.imageOffsetY === 'number') cd.imageOffsetY *= SCALE;
+  }
+  data.version = 6;
+  return data;
+}
+
 function migrateProject(data) {
   if (!data.version || data.version < 2) {
     data = migrateV1toV2(data);
@@ -228,6 +264,12 @@ function migrateProject(data) {
   }
   if (data.version < 4) {
     data = migrateV3toV4(data);
+  }
+  if (data.version < 5) {
+    data = migrateV4toV5(data);
+  }
+  if (data.version < 6) {
+    data = migrateV5toV6(data);
   }
   return data;
 }
@@ -292,9 +334,9 @@ export function loadProject() {
   }
   return {
     characters: {},
-    global: { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults() },
+    global: { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults(), fontMetrics: { ...DEFAULT_FONT_METRICS } },
     animation: createDefaultAnimation(),
-    version: 4,
+    version: 6,
   };
 }
 
@@ -313,6 +355,9 @@ export function getGlobal() {
   }
   if (!g.defaultLayers || g.defaultLayers.length === 0) {
     g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
+  }
+  if (!g.fontMetrics) {
+    g.fontMetrics = { ...DEFAULT_FONT_METRICS };
   }
   return g;
 }

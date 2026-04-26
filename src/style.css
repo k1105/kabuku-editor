@@ -452,18 +452,24 @@ body {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
+  min-width: 0;
 }
 
 .param-row label {
   font-size: 12px;
-  min-width: 80px;
+  flex: 0 0 80px;
+  min-width: 0;
   color: var(--text-dim);
   user-select: none;
   -webkit-user-select: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .param-row input[type="range"] {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   accent-color: var(--accent);
 }
 
@@ -478,26 +484,33 @@ body {
   color: var(--accent);
 }
 
-.param-row label.overridden::before {
-  content: '\25CF ';
-  font-size: 8px;
-  vertical-align: middle;
-}
-
 .reset-btn {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  padding: 2px 6px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 11px;
-  flex-shrink: 0;
+  display: none; /* superseded by .override-badge */
 }
 
-.reset-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+/* Override toggle: a clickable circle to the left of each param label.
+   Always reserved in the layout (visibility:hidden when not overridden) so
+   the row alignment doesn't shift between override states. Click resets. */
+.override-badge {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.override-badge.is-off {
+  background: transparent;
+  border-color: var(--border);
+  cursor: default;
+}
+
+.override-badge:not(.is-off):hover {
+  transform: scale(1.15);
 }
 
 .param-header {

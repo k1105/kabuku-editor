@@ -1,6 +1,6 @@
 import { loadProject, getGlobal, resolveTransform, saveAnimation, getAnimation, createDefaultAnimation, ANIMATED_PARAM_KEYS } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
-import { createGlyphCache, computeCacheScale } from '../compose/glyph-cache.js';
+import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime } from '../animation/animation.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
 import { renderFrames } from '../animation/render.js';
@@ -449,20 +449,29 @@ export function renderAnimationPage(app) {
     const a = cos * cos * s + sin * sin;
     const b = cos * sin * (s - 1);
     const d = sin * sin * s + cos * cos;
+    const baselineRatio = global.fontMetrics?.baseline ?? 0.5;
     ctx.save();
     applyCameraTransform(ctx, cw, ch, p);
     for (const pos of positions) {
       const gx = pad + pos.x;
       const gy = pad + pos.y;
       const cx = gx + p.fontSize / 2;
-      const cy = gy + p.fontSize / 2;
+      const cy = gy + p.fontSize * baselineRatio;
       if (pos.missing) { drawMissingAt(gx, gy, p.fontSize); continue; }
       const srcImg = sourceImageCache.get(pos.charId);
       if (!srcImg) continue;
+      const cd = project.characters[pos.charId] || {};
+      const imgScale = cd.imageScale ?? 1;
+      const imgOffPx = p.fontSize / RENDER_SIZE;
+      const imgDx = (cd.imageOffsetX ?? 0) * imgOffPx;
+      const imgDy = (cd.imageOffsetY ?? 0) * imgOffPx;
+      const drawSize = p.fontSize * imgScale;
+      const ix = gx + (p.fontSize - drawSize) / 2 + imgDx;
+      const iy = gy + (p.fontSize - drawSize) / 2 + imgDy;
       ctx.save();
       ctx.globalCompositeOperation = 'multiply';
       ctx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
-      ctx.drawImage(srcImg, gx, gy, p.fontSize, p.fontSize);
+      ctx.drawImage(srcImg, ix, iy, drawSize, drawSize);
       ctx.restore();
     }
     ctx.restore();
@@ -486,7 +495,17 @@ export function renderAnimationPage(app) {
     if (showingRendered && renderedFrames) {
       if (drawRenderedFrameAt(currentTime)) return;
     }
-    redrawFast(sampleAnimation(animation, currentTime));
+    const params = sampleAnimation(animation, currentTime);
+    if (playing) {
+      // Live playback: source-image multiply (fast).
+      redrawFast(params);
+    } else {
+      // Paused / scrubbing: show the actual font state via cached glyphs.
+      // Cache is keyed by charId only, so per-frame transforms would otherwise
+      // hit stale bitmaps — invalidate before drawing.
+      glyphCache.invalidateAll();
+      drawFull(params);
+    }
   }
 
   function updateSlidersFromTime() {

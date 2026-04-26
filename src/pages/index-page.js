@@ -2,15 +2,17 @@ import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, seriali
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
-import { autoMesh } from '../core/mesh.js';
+import { autoMesh, autoMeshAsync } from '../core/mesh.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
 import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { exportLayerToSVG, exportAllLayersToSVG, downloadSVG } from '../render/svg-exporter.js';
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
+import { computeCacheScale } from '../compose/glyph-cache.js';
+import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
 
-const GLYPH_SIZE = 512;
+const GLYPH_SIZE = 1024;
 const MODE_KEY = 'kabuku.editMode';
 
 export function renderIndexPage(app) {
@@ -216,11 +218,14 @@ export function renderIndexPage(app) {
   app.appendChild(header);
   app.appendChild(page);
 
-  // Canvas fills the preview area; glyph is rendered at GLYPH_SIZE centered
+  // Canvas fills the preview area; internal pixels match display size × DPR so
+  // CSS scaling doesn't distort the aspect ratio (was clamped to GLYPH_SIZE
+  // which broke aspect when the preview area was smaller than the glyph).
   function resizeCanvas() {
     const rect = previewSection.getBoundingClientRect();
-    const w = Math.max(GLYPH_SIZE, Math.floor(rect.width));
-    const h = Math.max(GLYPH_SIZE, Math.floor(rect.height));
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
     if (previewCanvas.width === w && previewCanvas.height === h) return;
     previewCanvas.width = w;
     previewCanvas.height = h;
@@ -350,16 +355,16 @@ export function renderIndexPage(app) {
     if (!selectedCharId) return;
     const cd = project.characters[selectedCharId];
     const overrides = Object.keys(localTransformOverrides).length > 0 ? localTransformOverrides : undefined;
-    saveCharacter(selectedCharId, {
+    const next = {
       imagePath: cd?.imagePath || '',
       layerOverrides: serializeLayerOverrides(localLayers, global),
       transformOverrides: overrides,
-    });
-    project.characters[selectedCharId] = {
-      ...cd,
-      layerOverrides: serializeLayerOverrides(localLayers, global),
-      transformOverrides: overrides,
     };
+    if (cd?.imageOffsetX !== undefined) next.imageOffsetX = cd.imageOffsetX;
+    if (cd?.imageOffsetY !== undefined) next.imageOffsetY = cd.imageOffsetY;
+    if (cd?.imageScale !== undefined) next.imageScale = cd.imageScale;
+    saveCharacter(selectedCharId, next);
+    project.characters[selectedCharId] = { ...cd, ...next };
   }
 
   // === Sidebar bodies ===
@@ -481,6 +486,47 @@ export function renderIndexPage(app) {
     }
     renderGridParamSliders();
 
+    // Font Metrics (global)
+    const metricsDefs = [
+      { key: 'ascender',  label: 'Ascender',  default: 0.05 },
+      { key: 'xHeight',   label: 'x-Height',  default: 0.30 },
+      { key: 'baseline',  label: 'Baseline',  default: 0.80 },
+      { key: 'descender', label: 'Descender', default: 0.95 },
+    ];
+    const metricsGroup = document.createElement('div');
+    metricsGroup.className = 'param-group';
+    const metricsTitle = document.createElement('h3');
+    metricsTitle.textContent = 'Font Metrics';
+    metricsGroup.appendChild(metricsTitle);
+    if (!global.fontMetrics) global.fontMetrics = {};
+    for (const def of metricsDefs) {
+      const row = document.createElement('div');
+      row.className = 'param-row';
+      const label = document.createElement('label');
+      label.textContent = def.label;
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = 0;
+      input.max = 1;
+      input.step = 0.005;
+      input.value = global.fontMetrics[def.key] ?? def.default;
+      const valSpan = document.createElement('span');
+      valSpan.className = 'value';
+      valSpan.textContent = parseFloat(input.value).toFixed(3);
+      input.addEventListener('input', () => {
+        const v = parseFloat(input.value);
+        global.fontMetrics[def.key] = v;
+        valSpan.textContent = v.toFixed(3);
+        saveGlobal(global);
+        redraw();
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      row.appendChild(valSpan);
+      metricsGroup.appendChild(row);
+    }
+    sidebarBody.appendChild(metricsGroup);
+
     // Transform (global)
     const transformDefs = [
       { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
@@ -546,14 +592,18 @@ export function renderIndexPage(app) {
       return;
     }
 
+    // Per-layer baseline = the layer's own gridParams in global.defaultLayers
+    // (NOT global.gridDefaults, which is the per-grid-type fallback). This is
+    // what overrides are diffed against, so the override badge is accurate.
+    const layerBaseline = (idx) => global.defaultLayers?.[idx]?.gridParams || {};
+
     // Layer panel (read-only)
     const layerPanel = createLayerPanel(localLayers, activeLocalLayerIdx, {
       readOnly: true,
       onSelect(idx) {
         activeLocalLayerIdx = idx;
         const layer = localLayers[idx];
-        const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
-        paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams, gd);
+        paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams, layerBaseline(idx));
         layerPanel.update(localLayers, activeLocalLayerIdx);
         redraw();
       },
@@ -564,20 +614,19 @@ export function renderIndexPage(app) {
 
     // Grid params (local override)
     const activeLayer = localLayers[activeLocalLayerIdx];
-    const activeGridDefaults = activeLayer ? (global.gridDefaults?.[activeLayer.gridPlugin.name] || {}) : {};
     const paramsPanel = createParamsPanel(
       activeLayer ? activeLayer.gridPlugin.getParamDefs() : [],
       activeLayer ? activeLayer.gridParams : {},
-      activeGridDefaults,
+      layerBaseline(activeLocalLayerIdx),
       {
         localOnly: true,
         onLocalChange(key, val) {
           const layer = localLayers[activeLocalLayerIdx];
           if (!layer) return;
           layer.gridParams[key] = val;
-          const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
-          if (val === gd[key]) {
-            delete layer.gridParamOverrides[key];
+          const baseline = layerBaseline(activeLocalLayerIdx);
+          if (val === baseline[key]) {
+            delete layer.gridParamOverrides?.[key];
           } else {
             if (!layer.gridParamOverrides) layer.gridParamOverrides = {};
             layer.gridParamOverrides[key] = val;
@@ -590,9 +639,9 @@ export function renderIndexPage(app) {
         onReset(key) {
           const layer = localLayers[activeLocalLayerIdx];
           if (!layer) return;
-          const gd = global.gridDefaults?.[layer.gridPlugin.name] || {};
-          layer.gridParams[key] = gd[key];
-          delete layer.gridParamOverrides[key];
+          const baseline = layerBaseline(activeLocalLayerIdx);
+          layer.gridParams[key] = baseline[key];
+          delete layer.gridParamOverrides?.[key];
           regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
           redraw();
           saveLocalChar();
@@ -692,6 +741,81 @@ export function renderIndexPage(app) {
     bgOpRow.appendChild(bgOpVal);
     imgSection.appendChild(bgOpRow);
 
+    // Image transform (per-character offset & scale to align glyph to metrics)
+    const imgTransformDefs = [
+      { key: 'imageOffsetX', label: 'Image X', min: -GLYPH_SIZE, max: GLYPH_SIZE, default: 0, step: 1 },
+      { key: 'imageOffsetY', label: 'Image Y', min: -GLYPH_SIZE, max: GLYPH_SIZE, default: 0, step: 1 },
+      { key: 'imageScale',   label: 'Image Scale', min: 0.1, max: 3, default: 1, step: 0.01 },
+    ];
+    for (const def of imgTransformDefs) {
+      const row = document.createElement('div');
+      row.className = 'param-row';
+
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'override-badge';
+
+      const label = document.createElement('label');
+      label.textContent = def.label;
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = def.min;
+      input.max = def.max;
+      input.step = def.step;
+      const valSpan = document.createElement('span');
+      valSpan.className = 'value';
+
+      const formatVal = (v) => v.toFixed(def.step < 0.1 ? 2 : 0);
+
+      function syncFromState() {
+        const cd = project.characters[selectedCharId] || {};
+        const v = cd[def.key] ?? def.default;
+        const overridden = v !== def.default;
+        input.value = v;
+        valSpan.textContent = formatVal(parseFloat(v));
+        label.classList.toggle('overridden', overridden);
+        badge.classList.toggle('is-off', !overridden);
+        badge.title = overridden ? 'Click to reset override' : '';
+        badge.tabIndex = overridden ? 0 : -1;
+      }
+
+      function resetThis() {
+        const c = project.characters[selectedCharId];
+        if (!c) return;
+        delete c[def.key];
+        syncFromState();
+        saveLocalChar();
+        redraw();
+        refreshSelectedThumbnail();
+      }
+
+      badge.addEventListener('click', () => {
+        if (!label.classList.contains('overridden')) return;
+        resetThis();
+      });
+
+      input.addEventListener('input', () => {
+        const v = parseFloat(input.value);
+        const c = project.characters[selectedCharId];
+        if (!c) return;
+        if (v === def.default) delete c[def.key];
+        else c[def.key] = v;
+        syncFromState();
+        redraw();
+      });
+      input.addEventListener('change', () => {
+        saveLocalChar();
+        refreshSelectedThumbnail();
+      });
+
+      row.appendChild(badge);
+      row.appendChild(label);
+      row.appendChild(input);
+      row.appendChild(valSpan);
+      imgSection.appendChild(row);
+      syncFromState();
+    }
+
     sidebarBody.appendChild(imgSection);
 
     // SVG Export
@@ -760,10 +884,20 @@ export function renderIndexPage(app) {
     offscreen.width = GLYPH_SIZE;
     offscreen.height = GLYPH_SIZE;
     const offCtx = offscreen.getContext('2d');
-    offCtx.drawImage(backgroundImage, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
-    const layer = localLayers[activeLocalLayerIdx];
-    if (!layer) return;
-    autoMesh(offCtx, layer.cells, threshold);
+    // Fill white so areas outside the (possibly offset/scaled) image are
+    // treated as background, not dark (transparent → 0,0,0 → counted as black).
+    offCtx.fillStyle = '#fff';
+    offCtx.fillRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
+    const cd = project.characters[selectedCharId];
+    drawSourceImage(offCtx, backgroundImage, 0, 0, GLYPH_SIZE, {
+      imageOffsetX: cd?.imageOffsetX ?? 0,
+      imageOffsetY: cd?.imageOffsetY ?? 0,
+      imageScale: cd?.imageScale ?? 1,
+    });
+    if (localLayers.length === 0) return;
+    for (const layer of localLayers) {
+      autoMesh(offCtx, layer.cells, threshold);
+    }
     redraw();
     saveLocalChar();
     refreshSelectedThumbnail();
@@ -845,10 +979,15 @@ export function renderIndexPage(app) {
         im.src = cd.imagePath;
       });
       if (!img) { done++; continue; }
-      offCtx.clearRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
-      offCtx.drawImage(img, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
+      offCtx.fillStyle = '#fff';
+      offCtx.fillRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
+      drawSourceImage(offCtx, img, 0, 0, GLYPH_SIZE, {
+        imageOffsetX: cd?.imageOffsetX ?? 0,
+        imageOffsetY: cd?.imageOffsetY ?? 0,
+        imageScale: cd?.imageScale ?? 1,
+      });
       const layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
-      for (const layer of layers) autoMesh(offCtx, layer.cells, 0.5);
+      for (const layer of layers) await autoMeshAsync(offCtx, layer.cells, 0.5);
       cd.layerOverrides = serializeLayerOverrides(layers, global);
       done++;
       progressBar.style.width = Math.round((done / total) * 100) + '%';
@@ -883,18 +1022,37 @@ export function renderIndexPage(app) {
       layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
       transform = resolveTransform(global, cd.transformOverrides || {});
     }
+    // Grow the offscreen canvas with the current transform so stretched / blurred
+    // content that overshoots the glyph boundary doesn't get clipped at its edge.
+    // Add extra margin on both sides for the metrics labels drawn just outside
+    // the glyph (preview mode skips guides, so no extra room needed there).
+    const cacheScale = computeCacheScale(transform);
+    const baseSize = Math.ceil(GLYPH_SIZE * cacheScale);
+    const labelMargin = (!previewMode && global.fontMetrics) ? metricsLabelMargin(GLYPH_SIZE) * 2 : 0;
+    const canvasSize = baseSize + labelMargin;
+    if (offCanvas.width !== canvasSize || offCanvas.height !== canvasSize) {
+      offCanvas.width = canvasSize;
+      offCanvas.height = canvasSize;
+    }
     offCtx.fillStyle = '#fff';
-    offCtx.fillRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
+    offCtx.fillRect(0, 0, canvasSize, canvasSize);
+    const cd = project.characters[selectedCharId];
     renderCanvas(offCtx, layers, {
-      backgroundImage: mode === 'local' ? backgroundImage : null,
+      backgroundImage,
       backgroundOpacity: bgOpacity,
       transform,
       glyphSize: GLYPH_SIZE,
       preview: previewMode,
+      fontMetrics: global.fontMetrics,
+      imageTransform: {
+        imageOffsetX: cd?.imageOffsetX ?? 0,
+        imageOffsetY: cd?.imageOffsetY ?? 0,
+        imageScale: cd?.imageScale ?? 1,
+      },
     });
     const s = getPreviewScale();
-    const dw = GLYPH_SIZE * s;
-    const dh = GLYPH_SIZE * s;
+    const dw = canvasSize * s;
+    const dh = canvasSize * s;
     const dx = (previewCanvas.width - dw) / 2;
     const dy = (previewCanvas.height - dh) / 2;
     previewCtx.imageSmoothingEnabled = true;
@@ -933,6 +1091,11 @@ function renderThumbnail(canvas, charData) {
   const layers = buildRuntimeLayers(global, charData, GLYPH_SIZE);
   const transformOverrides = charData.transformOverrides || {};
   const transform = resolveTransform(global, transformOverrides);
+  const imageTransform = {
+    imageOffsetX: charData.imageOffsetX ?? 0,
+    imageOffsetY: charData.imageOffsetY ?? 0,
+    imageScale: charData.imageScale ?? 1,
+  };
   if (charData.imagePath) {
     const img = new Image();
     img.onload = () => {
@@ -942,6 +1105,8 @@ function renderThumbnail(canvas, charData) {
         transform,
         glyphSize: GLYPH_SIZE,
         preview: true,
+        imageTransform,
+        fontMetrics: global.fontMetrics,
       });
       const ctx = canvas.getContext('2d');
       ctx.fillStyle = '#fff';
@@ -954,6 +1119,7 @@ function renderThumbnail(canvas, charData) {
       transform,
       glyphSize: GLYPH_SIZE,
       preview: true,
+      fontMetrics: global.fontMetrics,
     });
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff';
@@ -1000,7 +1166,7 @@ function importImages(project, ui) {
         const img = await loadImage(imageData);
         offCtx.clearRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
         offCtx.drawImage(img, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
-        for (const layer of importLayers) autoMesh(offCtx, layer.cells, 0.5);
+        for (const layer of importLayers) await autoMeshAsync(offCtx, layer.cells, 0.5);
         const charData = {
           imagePath: imageData,
           layerOverrides: serializeLayerOverrides(importLayers, g),

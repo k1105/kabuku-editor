@@ -5,7 +5,7 @@ export const PixelGrid = {
 
   getParamDefs() {
     return [
-      { key: 'gridSize', label: 'Grid Size', min: 4, max: 64, default: 16, step: 1 },
+      { key: 'gridSize', label: 'Grid Size', min: 4, max: 128, default: 32, step: 1 },
     ];
   },
 

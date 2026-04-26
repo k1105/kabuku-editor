@@ -5,9 +5,9 @@ export const CircleGrid = {
 
   getParamDefs() {
     return [
-      { key: 'layers', label: 'Layers', min: 2, max: 30, default: 8, step: 1 },
-      { key: 'spacing', label: 'Spacing', min: 5, max: 40, default: 15, step: 1 },
-      { key: 'dotRadius', label: 'Dot Radius', min: 2, max: 20, default: 6, step: 1 },
+      { key: 'layers', label: 'Layers', min: 2, max: 60, default: 16, step: 1 },
+      { key: 'spacing', label: 'Spacing', min: 5, max: 80, default: 30, step: 1 },
+      { key: 'dotRadius', label: 'Dot Radius', min: 2, max: 40, default: 12, step: 1 },
       { key: 'rotation', label: 'Rotation', min: 0, max: 360, default: 0, step: 1 },
     ];
   },

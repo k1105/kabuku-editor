@@ -32,6 +32,17 @@ function computeLayout(params, animation, charIds, global) {
   return { positions, pad, cw, ch, drawSize, drawOffset };
 }
 
+function paramsEqual(a, b) {
+  if (!a || !b) return false;
+  for (const k in a) {
+    if (a[k] !== b[k]) return false;
+  }
+  for (const k in b) {
+    if (!(k in a)) return false;
+  }
+  return true;
+}
+
 /**
  * Render all animation frames to offscreen canvases.
  * Returns { frames, fps, width, height }.
@@ -58,6 +69,16 @@ export async function renderFrames(animation, ctx) {
   const frames = [];
   for (let i = 0; i < totalFrames; i++) {
     const { params, layout } = perFrame[i];
+
+    // If params are identical to the previous frame, reuse its canvas reference.
+    // Output is pixel-identical, so PNG/GIF encoders can re-read the same bitmap.
+    if (i > 0 && paramsEqual(params, perFrame[i - 1].params)) {
+      frames.push(frames[i - 1]);
+      onProgress?.(i + 1, totalFrames);
+      if (i % 4 === 3) await new Promise(r => setTimeout(r, 0));
+      continue;
+    }
+
     // Glyph cache is keyed by charId only, so per-frame transforms would otherwise
     // use a stale cached bitmap. Invalidate so each frame renders glyphs fresh.
     glyphCache.invalidateAll();
