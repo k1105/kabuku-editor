@@ -50,8 +50,9 @@ body {
 
 .header-nav {
   display: flex;
-  gap: 8px;
+  gap: 4px;
   margin-left: auto;
+  align-items: center;
 }
 
 .header-nav button {
@@ -68,6 +69,91 @@ body {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* Tabs (Compose / Animation): center of header, look like tabs not buttons */
+.header-tabs {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  margin: 0 24px;
+  height: 100%;
+}
+
+.header-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.header-tab:hover { color: var(--text); }
+
+.header-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.header-tab .icon { width: 16px; height: 16px; }
+
+/* Icon-only / icon+text buttons (used in headers, toolbars, panels) */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.icon-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.icon-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.icon-btn.active:hover { color: #fff; }
+
+.icon-btn .icon-btn-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  margin-right: 4px;
+}
+
+.icon-btn:has(.icon-btn-label) { width: auto; padding: 0 10px; }
+
+/* Generic icon container (sized by parent, defaults to 16px) */
+.icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.icon svg { width: 100%; height: 100%; display: block; }
 
 .header-center-nav {
   position: absolute;
@@ -104,16 +190,19 @@ body {
 }
 
 .lang-toggle {
-  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: none;
   border: 1px solid var(--border);
-  color: var(--text);
-  padding: 4px 10px;
-  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 0 10px;
+  height: 32px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
 .header-nav .lang-toggle {
@@ -124,6 +213,8 @@ body {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+.lang-toggle .icon { width: 14px; height: 14px; }
 
 /* === Index Page === */
 .index-main {
@@ -248,16 +339,18 @@ body {
 }
 
 .preview-controls .param-row label {
+  flex: 0 0 auto;
   min-width: auto;
   font-size: 11px;
 }
 
 .preview-controls .param-row input[type="range"] {
+  flex: 0 0 100px;
   width: 100px;
 }
 
 .preview-controls .param-row .value {
-  min-width: 28px;
+  flex: 0 0 32px;
   font-size: 11px;
   text-align: right;
 }
@@ -451,13 +544,13 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   min-width: 0;
 }
 
 .param-row label {
-  font-size: 12px;
-  flex: 0 0 80px;
+  font-size: 11px;
+  flex: 0 0 76px;
   min-width: 0;
   color: var(--text-dim);
   user-select: none;
@@ -465,20 +558,76 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 
 .param-row input[type="range"] {
   flex: 1 1 0;
   min-width: 0;
-  accent-color: var(--accent);
 }
 
 .param-row .value {
   font-size: 11px;
-  min-width: 32px;
+  flex: 0 0 36px;
   text-align: right;
-  color: var(--text-dim);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
+
+/* === Custom range slider ===
+   Replace the chunky default browser thumb with a flat track + small dot.
+   Track is the same in WebKit / Firefox; thumb rules must be split. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+
+input[type="range"]:focus { outline: none; }
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--text);
+  border: none;
+  transition: background 0.12s, transform 0.12s;
+}
+
+input[type="range"]:hover::-webkit-slider-thumb { background: var(--accent); }
+input[type="range"]:active::-webkit-slider-thumb { background: var(--accent); transform: scale(1.15); }
+
+input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  border: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  border: none;
+  transition: background 0.12s, transform 0.12s;
+}
+
+input[type="range"]:hover::-moz-range-thumb { background: var(--accent); }
+input[type="range"]:active::-moz-range-thumb { background: var(--accent); transform: scale(1.15); }
 
 .param-row label.overridden {
   color: var(--accent);
@@ -597,7 +746,7 @@ body {
 
 .tool-buttons {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -609,7 +758,12 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
+
+.tool-btn .icon { width: 14px; height: 14px; }
 
 .tool-btn:hover {
   border-color: var(--accent);
@@ -629,6 +783,57 @@ select {
   border-radius: 4px;
   font-size: 13px;
   width: 100%;
+}
+
+/* Number / text inputs in param rows: match the dark theme + accent focus */
+.param-row input[type="number"],
+.param-row input[type="text"] {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+
+.param-row input[type="number"]::-webkit-outer-spin-button,
+.param-row input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.param-row input[type="number"]:focus,
+.param-row input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Danger action: full-width, red text. Used for "Delete Glyph" at the
+   bottom of the local sidebar. */
+.danger-btn {
+  display: block;
+  width: 100%;
+  margin-top: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: #ff8a8a;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: center;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.danger-btn:hover {
+  border-color: #ff5a5a;
+  color: #fff;
+  background: #ff5a5a;
 }
 
 /* === Layer Panel === */
@@ -657,20 +862,32 @@ select {
 }
 
 .layer-item .visibility {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   cursor: pointer;
-  opacity: 0.6;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  padding: 0;
 }
 
-.layer-item .visibility:hover {
-  opacity: 1;
-}
+.layer-item .visibility:hover { color: var(--text); }
+
+.layer-item .visibility .icon { width: 16px; height: 16px; }
 
 .layer-item .name {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .layer-item .opacity-slider {
-  width: 60px;
+  flex: 0 0 60px;
 }
 
 .layer-actions {

@@ -1,5 +1,6 @@
 import { getAllGrids } from '../grids/grid-plugin.js';
 import { createLayer } from '../core/layer.js';
+import { iconEl } from './icons.js';
 
 export function createLayerPanel(layers, activeLayerIdx, callbacks) {
   const el = document.createElement('div');
@@ -19,9 +20,11 @@ export function createLayerPanel(layers, activeLayerIdx, callbacks) {
       const li = document.createElement('li');
       li.className = `layer-item${i === activeLayerIdx ? ' active' : ''}`;
 
-      const vis = document.createElement('span');
+      const vis = document.createElement('button');
+      vis.type = 'button';
       vis.className = 'visibility';
-      vis.textContent = layer.visible ? '👁' : '—';
+      vis.title = layer.visible ? 'Hide layer' : 'Show layer';
+      vis.appendChild(iconEl(layer.visible ? 'eye' : 'eyeOff'));
       vis.addEventListener('click', (e) => {
         e.stopPropagation();
         layer.visible = !layer.visible;
@@ -52,9 +55,11 @@ export function createLayerPanel(layers, activeLayerIdx, callbacks) {
       li.appendChild(opSlider);
 
       if (!readOnly && layers.length > 1) {
-        const del = document.createElement('span');
+        const del = document.createElement('button');
+        del.type = 'button';
         del.className = 'visibility';
-        del.textContent = 'x';
+        del.title = 'Delete layer';
+        del.appendChild(iconEl('trash'));
         del.addEventListener('click', (e) => {
           e.stopPropagation();
           callbacks.onDelete(i);

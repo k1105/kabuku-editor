@@ -1,4 +1,4 @@
-import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, resolveGridParams } from '../core/project.js';
+import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, resolveGridParams, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter } from '../core/project.js';
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
@@ -9,6 +9,8 @@ import { createToolbar } from '../ui/toolbar.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { exportLayerToSVG, exportAllLayersToSVG, downloadSVG } from '../render/svg-exporter.js';
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
+import { iconButton, iconEl } from '../ui/icons.js';
+import { createPageHeader } from '../ui/page-header.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
 
@@ -43,34 +45,23 @@ export function renderIndexPage(app) {
   let localTransform = resolveTransform(global, {});
 
   // === Header ===
-  const header = document.createElement('div');
-  header.className = 'header';
+  const { el: header, headerNav: headerActions, progressEl } = createPageHeader({ activePage: 'index' });
+  const progressWrap = progressEl.wrap;
+  const progressBar = progressEl.bar;
+  const progressText = progressEl.text;
 
-  const title = document.createElement('h1');
-  title.textContent = 'KABUKU Editor';
-  header.appendChild(title);
-
-  const progressWrap = document.createElement('div');
-  progressWrap.className = 'import-progress';
-  progressWrap.style.display = 'none';
-  const progressTrack = document.createElement('div');
-  progressTrack.className = 'import-progress-track';
-  const progressBar = document.createElement('div');
-  progressBar.className = 'import-progress-bar';
-  progressTrack.appendChild(progressBar);
-  const progressText = document.createElement('span');
-  progressText.className = 'import-progress-text';
-  progressWrap.appendChild(progressTrack);
-  progressWrap.appendChild(progressText);
-  header.appendChild(progressWrap);
-
-  const headerActions = document.createElement('div');
-  headerActions.className = 'header-nav';
-
-  const exportBtn = document.createElement('button');
-  exportBtn.textContent = 'Export JSON';
+  const exportBtn = iconButton('download', 'Export JSON', {
+    title: 'Export full project (includes base images as data URLs)',
+  });
   exportBtn.addEventListener('click', () => {
-    const json = JSON.stringify(project, null, 2);
+    // Strip session-level globals (preview stretch state) so re-importing
+    // doesn't lock in a transient view.
+    const out = JSON.parse(JSON.stringify(project));
+    if (out.global) {
+      delete out.global.stretchAngle;
+      delete out.global.stretchAmount;
+    }
+    const json = JSON.stringify(out, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -80,8 +71,9 @@ export function renderIndexPage(app) {
     URL.revokeObjectURL(url);
   });
 
-  const importJsonBtn = document.createElement('button');
-  importJsonBtn.textContent = 'Import JSON';
+  const importJsonBtn = iconButton('upload', 'Import JSON', {
+    title: 'Import a JSON project file',
+  });
   importJsonBtn.addEventListener('click', () => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -89,27 +81,29 @@ export function renderIndexPage(app) {
     input.addEventListener('change', async () => {
       const file = input.files[0];
       if (!file) return;
-      const text = await file.text();
-      const data = JSON.parse(text);
-      saveProject(data);
-      location.reload();
+      try {
+        const data = JSON.parse(await file.text());
+        if (data.global) {
+          if (data.global.stretchAngle === undefined) data.global.stretchAngle = 0;
+          if (data.global.stretchAmount === undefined) data.global.stretchAmount = 0;
+        }
+        saveProject(data);
+        location.reload();
+      } catch (e) {
+        alert(`Import failed: ${e.message}`);
+      }
     });
     input.click();
   });
 
-  const composeBtn = document.createElement('button');
-  composeBtn.textContent = 'Compose';
-  composeBtn.addEventListener('click', () => { location.hash = '#/compose'; });
+  const importImagesBtn = iconButton('imagePlus', 'Import Images', {
+    title: 'Bulk import character images',
+  });
+  importImagesBtn.addEventListener('click', () => triggerImport());
 
-  const animationBtn = document.createElement('button');
-  animationBtn.textContent = 'Animation';
-  animationBtn.addEventListener('click', () => { location.hash = '#/animation'; });
-
-  headerActions.appendChild(exportBtn);
+  headerActions.appendChild(importImagesBtn);
   headerActions.appendChild(importJsonBtn);
-  headerActions.appendChild(composeBtn);
-  headerActions.appendChild(animationBtn);
-  header.appendChild(headerActions);
+  headerActions.appendChild(exportBtn);
 
   // === Main layout ===
   const page = document.createElement('div');
@@ -186,7 +180,11 @@ export function renderIndexPage(app) {
   charStripHeader.className = 'index-char-strip-header';
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'tool-btn';
-  refreshBtn.textContent = 'Refresh All';
+  refreshBtn.title = 'Refresh all thumbnails';
+  refreshBtn.appendChild(iconEl('refresh'));
+  const refreshLabel = document.createElement('span');
+  refreshLabel.textContent = 'Refresh All';
+  refreshBtn.appendChild(refreshLabel);
   refreshBtn.addEventListener('click', () => refreshAllThumbnails());
   charStripHeader.appendChild(refreshBtn);
   charStripWrap.appendChild(charStripHeader);
@@ -206,7 +204,7 @@ export function renderIndexPage(app) {
   addGlyphTile.className = 'char-card add-glyph-tile';
   addGlyphTile.title = 'Add glyph';
   addGlyphTile.textContent = '+';
-  addGlyphTile.addEventListener('click', () => triggerImport());
+  addGlyphTile.addEventListener('click', () => addEmptyGlyph());
   charStrip.appendChild(addGlyphTile);
 
   charStripWrap.appendChild(charStrip);
@@ -592,6 +590,46 @@ export function renderIndexPage(app) {
       return;
     }
 
+    // Glyph (name + delete)
+    const glyphSection = document.createElement('div');
+    glyphSection.className = 'param-group';
+    const glyphTitle = document.createElement('h3');
+    glyphTitle.textContent = 'Glyph';
+    glyphSection.appendChild(glyphTitle);
+
+    // Capture charId at render time so blur after a glyph switch doesn't
+    // try to rename the newly-selected glyph.
+    const editingCharId = selectedCharId;
+    const nameRow = document.createElement('div');
+    nameRow.className = 'param-row';
+    const nameLabel = document.createElement('label');
+    nameLabel.textContent = 'Name';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'glyph-name-input';
+    nameInput.value = editingCharId;
+    function commitName() {
+      if (selectedCharId !== editingCharId) return;
+      const v = nameInput.value.trim();
+      if (!v) { nameInput.value = editingCharId; return; }
+      if (v === editingCharId) return;
+      const result = renameSelectedGlyph(v);
+      if (!result.ok) {
+        if (result.reason === 'conflict') alert(`A glyph named "${v}" already exists.`);
+        else if (result.reason === 'empty') alert('Name cannot be empty.');
+        nameInput.value = editingCharId;
+      }
+    }
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+      else if (e.key === 'Escape') { nameInput.value = editingCharId; nameInput.blur(); }
+    });
+    nameInput.addEventListener('blur', commitName);
+    nameRow.appendChild(nameLabel);
+    nameRow.appendChild(nameInput);
+    glyphSection.appendChild(nameRow);
+    sidebarBody.appendChild(glyphSection);
+
     // Per-layer baseline = the layer's own gridParams in global.defaultLayers
     // (NOT global.gridDefaults, which is the per-grid-type fallback). This is
     // what overrides are diffed against, so the override badge is accurate.
@@ -844,6 +882,14 @@ export function renderIndexPage(app) {
     svgSection.appendChild(svgLayerBtn);
     svgSection.appendChild(svgAllBtn);
     sidebarBody.appendChild(svgSection);
+
+    // Danger zone: full-width delete button at the bottom
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'danger-btn';
+    deleteBtn.textContent = 'Delete Glyph';
+    deleteBtn.addEventListener('click', () => deleteSelectedGlyph());
+    sidebarBody.appendChild(deleteBtn);
   }
 
   function loadLocalImage() {
@@ -901,6 +947,68 @@ export function renderIndexPage(app) {
     redraw();
     saveLocalChar();
     refreshSelectedThumbnail();
+  }
+
+  // === Empty glyph creation ===
+  function addEmptyGlyph() {
+    const newId = generateUniqueCharId('new');
+    createEmptyCharacter(newId);
+    project.characters[newId] = { imagePath: '' };
+    const card = createCharCard(newId, project.characters[newId], (id) => selectChar(id));
+    cardElements[newId] = card;
+    charStrip.insertBefore(card, addGlyphTile);
+    emptyState.style.display = 'none';
+    previewCanvas.style.display = '';
+    selectChar(newId);
+  }
+
+  // === Char rename ===
+  function renameSelectedGlyph(newId) {
+    if (!selectedCharId) return { ok: false, reason: 'missing' };
+    const trimmed = (newId || '').trim();
+    if (trimmed === selectedCharId) return { ok: true };
+    const result = renameCharacter(selectedCharId, trimmed);
+    if (!result.ok) return result;
+    // Rebuild in-memory project ordering to match storage
+    const rebuilt = {};
+    for (const [k, v] of Object.entries(project.characters)) {
+      rebuilt[k === selectedCharId ? trimmed : k] = v;
+    }
+    project.characters = rebuilt;
+    const card = cardElements[selectedCharId];
+    delete cardElements[selectedCharId];
+    cardElements[trimmed] = card;
+    if (card) {
+      const label = card.querySelector('.label');
+      if (label) label.textContent = trimmed;
+    }
+    selectedCharId = trimmed;
+    return { ok: true };
+  }
+
+  // === Char delete ===
+  function deleteSelectedGlyph() {
+    if (!selectedCharId) return;
+    if (!confirm(`Delete glyph "${selectedCharId}"?`)) return;
+    const charId = selectedCharId;
+    deleteCharacter(charId);
+    delete project.characters[charId];
+    const card = cardElements[charId];
+    if (card) card.remove();
+    delete cardElements[charId];
+    const remaining = Object.keys(project.characters);
+    selectedCharId = remaining[0] ?? null;
+    if (selectedCharId && cardElements[selectedCharId]) {
+      cardElements[selectedCharId].classList.add('selected');
+    }
+    if (!selectedCharId) {
+      previewCanvas.style.display = 'none';
+      emptyState.style.display = '';
+    }
+    rebuildLocalState();
+    loadBackgroundImage();
+    renderSidebarBody();
+    redraw();
   }
 
   // === Char import ===

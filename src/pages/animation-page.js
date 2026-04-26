@@ -5,6 +5,8 @@ import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyfr
 import { createTimelineUI } from '../animation/timeline-ui.js';
 import { renderFrames } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
+import { createPageHeader } from '../ui/page-header.js';
+import { iconEl, iconSvg } from '../ui/icons.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -80,15 +82,7 @@ export function renderAnimationPage(app) {
   for (const cid of Object.keys(project.characters)) getSourceImage(cid);
 
   // === Header ===
-  const header = document.createElement('div');
-  header.className = 'header';
-  const backBtn = document.createElement('button');
-  backBtn.textContent = 'Back';
-  backBtn.addEventListener('click', () => { location.hash = '#/'; });
-  const title = document.createElement('h1');
-  title.textContent = 'Animation';
-  header.appendChild(backBtn);
-  header.appendChild(title);
+  const { el: header } = createPageHeader({ activePage: 'animation' });
 
   // === Page ===
   const page = document.createElement('div');
@@ -249,12 +243,23 @@ export function renderAnimationPage(app) {
   btnRow.className = 'anim-button-row';
   const playBtn = document.createElement('button');
   playBtn.className = 'tool-btn';
-  playBtn.textContent = 'Play';
   playBtn.title = 'Play / Pause (Space)';
+  const playIcon = iconEl('play');
+  const playLabel = document.createElement('span');
+  playLabel.textContent = 'Play';
+  playBtn.appendChild(playIcon);
+  playBtn.appendChild(playLabel);
   playBtn.addEventListener('click', () => togglePlay());
+  function setPlayState(isPlaying) {
+    playIcon.innerHTML = iconSvg(isPlaying ? 'pause' : 'play');
+    playLabel.textContent = isPlaying ? 'Pause' : 'Play';
+  }
   const renderBtn = document.createElement('button');
   renderBtn.className = 'tool-btn';
-  renderBtn.textContent = 'Render';
+  renderBtn.appendChild(iconEl('refresh'));
+  const renderLabel = document.createElement('span');
+  renderLabel.textContent = 'Render';
+  renderBtn.appendChild(renderLabel);
   renderBtn.addEventListener('click', () => doRender());
   btnRow.appendChild(playBtn);
   btnRow.appendChild(renderBtn);
@@ -287,11 +292,17 @@ export function renderAnimationPage(app) {
   exportRow.className = 'anim-button-row';
   const pngBtn = document.createElement('button');
   pngBtn.className = 'tool-btn';
-  pngBtn.textContent = 'PNG Seq';
+  pngBtn.appendChild(iconEl('download'));
+  const pngLabel = document.createElement('span');
+  pngLabel.textContent = 'PNG Seq';
+  pngBtn.appendChild(pngLabel);
   pngBtn.addEventListener('click', () => doExportPng());
   const gifBtn = document.createElement('button');
   gifBtn.className = 'tool-btn';
-  gifBtn.textContent = 'GIF';
+  gifBtn.appendChild(iconEl('download'));
+  const gifLabel = document.createElement('span');
+  gifLabel.textContent = 'GIF';
+  gifBtn.appendChild(gifLabel);
   gifBtn.addEventListener('click', () => doExportGif());
   exportRow.appendChild(pngBtn);
   exportRow.appendChild(gifBtn);
@@ -301,11 +312,17 @@ export function renderAnimationPage(app) {
   jsonRow.className = 'anim-button-row';
   const jsonExport = document.createElement('button');
   jsonExport.className = 'tool-btn';
-  jsonExport.textContent = 'Export JSON';
+  jsonExport.appendChild(iconEl('download'));
+  const jsonExportLabel = document.createElement('span');
+  jsonExportLabel.textContent = 'Export JSON';
+  jsonExport.appendChild(jsonExportLabel);
   jsonExport.addEventListener('click', () => doJsonExport());
   const jsonImport = document.createElement('button');
   jsonImport.className = 'tool-btn';
-  jsonImport.textContent = 'Import JSON';
+  jsonImport.appendChild(iconEl('upload'));
+  const jsonImportLabel = document.createElement('span');
+  jsonImportLabel.textContent = 'Import JSON';
+  jsonImport.appendChild(jsonImportLabel);
   jsonImport.addEventListener('click', () => doJsonImport());
   jsonRow.appendChild(jsonExport);
   jsonRow.appendChild(jsonImport);
@@ -530,7 +547,7 @@ export function renderAnimationPage(app) {
   function startPlayback() {
     if (currentTime >= animation.duration) currentTime = 0;
     playing = true;
-    playBtn.textContent = 'Pause';
+    setPlayState(true);
     playStartWallTime = performance.now();
     playStartAnimTime = currentTime;
     const tick = () => {
@@ -556,7 +573,7 @@ export function renderAnimationPage(app) {
   }
   function pausePlayback() {
     playing = false;
-    playBtn.textContent = 'Play';
+    setPlayState(false);
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     // On pause, if a render exists, ensure the preview shows the rendered frame.
     redrawPreview();
@@ -607,7 +624,7 @@ export function renderAnimationPage(app) {
   // === Render ===
   async function doRender() {
     renderBtn.disabled = true;
-    renderBtn.textContent = 'Rendering...';
+    renderLabel.textContent = 'Rendering...';
     progressWrap.style.display = '';
     progressBar.style.width = '0%';
     progressText.textContent = '0%';
@@ -630,7 +647,7 @@ export function renderAnimationPage(app) {
     } finally {
       progressWrap.style.display = 'none';
       renderBtn.disabled = false;
-      renderBtn.textContent = 'Render';
+      renderLabel.textContent = 'Render';
     }
   }
 
@@ -658,8 +675,8 @@ export function renderAnimationPage(app) {
 
   async function doExportGif() {
     gifBtn.disabled = true;
-    const prevText = gifBtn.textContent;
-    gifBtn.textContent = 'Encoding...';
+    const prevText = gifLabel.textContent;
+    gifLabel.textContent = 'Encoding...';
     try {
       const r = await ensureRendered();
       if (!r) return;
@@ -669,7 +686,7 @@ export function renderAnimationPage(app) {
       alert('GIF export failed: ' + e.message);
     } finally {
       gifBtn.disabled = false;
-      gifBtn.textContent = prevText;
+      gifLabel.textContent = prevText;
     }
   }
 

@@ -1,6 +1,7 @@
 import { loadProject, getGlobal, resolveTransform } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
+import { createPageHeader } from '../ui/page-header.js';
 
 export function renderComposePage(app) {
   const project = loadProject();
@@ -52,18 +53,7 @@ export function renderComposePage(app) {
   }
 
   // === Header ===
-  const header = document.createElement('div');
-  header.className = 'header';
-
-  const backBtn = document.createElement('button');
-  backBtn.textContent = 'Back';
-  backBtn.addEventListener('click', () => { location.hash = '#/'; });
-
-  const title = document.createElement('h1');
-  title.textContent = 'Compose';
-
-  header.appendChild(backBtn);
-  header.appendChild(title);
+  const { el: header } = createPageHeader({ activePage: 'compose' });
 
   // === Page layout ===
   const page = document.createElement('div');

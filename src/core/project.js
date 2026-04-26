@@ -407,6 +407,58 @@ export function getAllCharIds() {
   return Object.keys(project.characters);
 }
 
+export function deleteCharacter(charId) {
+  const project = loadProject();
+  if (!(charId in project.characters)) return false;
+  delete project.characters[charId];
+  saveProject(project);
+  return true;
+}
+
+/**
+ * Rename a character key. Preserves insertion order so the char strip UI
+ * doesn't reshuffle when the user edits a name.
+ * Returns { ok: true } on success or { ok: false, reason } on conflict/missing.
+ */
+export function renameCharacter(oldId, newId) {
+  if (oldId === newId) return { ok: true };
+  if (!newId) return { ok: false, reason: 'empty' };
+  const project = loadProject();
+  if (!(oldId in project.characters)) return { ok: false, reason: 'missing' };
+  if (newId in project.characters) return { ok: false, reason: 'conflict' };
+  const rebuilt = {};
+  for (const [k, v] of Object.entries(project.characters)) {
+    rebuilt[k === oldId ? newId : k] = v;
+  }
+  project.characters = rebuilt;
+  saveProject(project);
+  return { ok: true };
+}
+
+/**
+ * Generate a unique charId based on a prefix. Used for empty-glyph creation
+ * where the user hasn't picked a name yet.
+ */
+export function generateUniqueCharId(prefix = 'new') {
+  const project = loadProject();
+  if (!(prefix in project.characters)) return prefix;
+  let i = 1;
+  while (`${prefix}_${i}` in project.characters) i++;
+  return `${prefix}_${i}`;
+}
+
+/**
+ * Create an empty character entry (no image, no fill). Inherits global
+ * layers/params via the standard layerOverrides=[] resolution path.
+ */
+export function createEmptyCharacter(charId) {
+  const project = loadProject();
+  if (charId in project.characters) return false;
+  project.characters[charId] = { imagePath: '' };
+  saveProject(project);
+  return true;
+}
+
 /** Resolve transform: global defaults merged with per-character overrides */
 export function resolveTransform(global, overrides) {
   return {

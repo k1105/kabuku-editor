@@ -1,3 +1,5 @@
+import { iconEl } from './icons.js';
+
 /**
  * Toolbar: paint/erase tool switching
  */
@@ -17,14 +19,18 @@ export function createToolbar(onToolChange) {
     btns.className = 'tool-buttons';
 
     const tools = [
-      { id: 'paint', label: 'Paint' },
-      { id: 'erase', label: 'Erase' },
+      { id: 'paint', label: 'Paint', icon: 'paintbrush' },
+      { id: 'erase', label: 'Erase', icon: 'eraser' },
     ];
 
     for (const tool of tools) {
       const btn = document.createElement('button');
       btn.className = `tool-btn${currentTool === tool.id ? ' active' : ''}`;
-      btn.textContent = tool.label;
+      btn.title = tool.label;
+      btn.appendChild(iconEl(tool.icon));
+      const txt = document.createElement('span');
+      txt.textContent = tool.label;
+      btn.appendChild(txt);
       btn.addEventListener('click', () => {
         currentTool = tool.id;
         onToolChange(currentTool);

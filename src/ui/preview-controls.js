@@ -1,4 +1,5 @@
 import { saveGlobal } from '../core/project.js';
+import { iconEl } from './icons.js';
 
 const STATE_KEY = 'kabuku.previewMode';
 const SCALE_KEY = 'kabuku.previewScale';
@@ -45,7 +46,11 @@ export function createPreviewControls({ global, onPreviewChange, onStretchInput,
 
   const previewBtn = document.createElement('button');
   previewBtn.className = 'tool-btn preview-toggle-btn-inline';
-  previewBtn.textContent = 'Preview';
+  previewBtn.title = 'Toggle preview mode';
+  previewBtn.appendChild(iconEl('preview'));
+  const previewLabel = document.createElement('span');
+  previewLabel.textContent = 'Preview';
+  previewBtn.appendChild(previewLabel);
   if (_previewMode) previewBtn.classList.add('active');
   previewBtn.addEventListener('click', () => {
     setPreviewMode(!_previewMode);

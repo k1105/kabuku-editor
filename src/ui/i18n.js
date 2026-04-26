@@ -1,17 +1,21 @@
 const TRANSLATIONS = {
   // Page titles
-  "KABUKU Editor": "KABUKU エディター",
+  "KABUKU Editor": "KABUKU Editor",
+  Glyphs: "文字",
   Compose: "組版",
   Animation: "動画",
 
   // Section / group headings
-  Layers: "層",
+  Layers: "レイヤー",
   "Grid Type": "格子の種類",
   "Grid Parameters": "格子の設定",
   Transform: "変形",
   "Transform (Local Override)": "変形（個別設定）",
   "Stretch (Global)": "伸縮（全体）",
   Stretch: "伸縮",
+  Glyph: "文字",
+  Name: "名前",
+  "Delete Glyph": "文字を削除",
   "Source Image": "元画像",
   Tools: "ツール",
   Export: "書き出し",
@@ -66,8 +70,8 @@ const TRANSLATIONS = {
   "Import Images": "画像取込",
   "Import JSON": "JSON取込",
   "Export JSON": "JSON書出",
-  "SVG (Layer)": "SVG (層)",
-  "SVG (All)": "SVG (全層)",
+  "SVG (Layer)": "SVG (レイヤー)",
+  "SVG (All)": "SVG (全レイヤー)",
   "PNG Seq": "PNG連番",
   GIF: "GIF",
   Play: "再生",
@@ -78,14 +82,14 @@ const TRANSLATIONS = {
   "Meshing...": "分割中…",
   Compose: "組版",
   Animation: "動画",
-  "+ Add Layer": "+ 層を追加",
+  "+ Add Layer": "+ レイヤーを追加",
   "Delete Keyframe": "キー削除",
 
   // Mode / direction values
   Horizontal: "横書き",
   Vertical: "縦書き",
   Global: "全体",
-  Local: "個別",
+  Local: "個別設定",
 };
 
 const STORAGE_KEY = "kabuku.lang";
@@ -163,11 +167,19 @@ export function startAutoTranslate(root) {
   return observer;
 }
 
+const GLOBE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/></svg>`;
+
 export function createLangToggle() {
   const btn = document.createElement("button");
   btn.className = "lang-toggle";
-  btn.textContent = currentLang === "jp" ? "JP" : "EN";
   btn.title = currentLang === "jp" ? "Switch to English" : "日本語に切り替え";
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.innerHTML = GLOBE_SVG;
+  const label = document.createElement("span");
+  label.textContent = currentLang === "jp" ? "JP" : "EN";
+  btn.appendChild(icon);
+  btn.appendChild(label);
   btn.addEventListener("click", () => {
     setLang(currentLang === "jp" ? "en" : "jp");
     location.reload();
