@@ -7,7 +7,10 @@ import { createLayerPanel } from '../ui/layer-panel.js';
 import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
-import { exportLayerToSVG, exportAllLayersToSVG, downloadSVG } from '../render/svg-exporter.js';
+import { exportLayerToSVG, exportAllLayersToSVG } from '../render/svg-exporter.js';
+import { buildFontBytes } from '../render/font-exporter.js';
+import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../render/font/vf-builder.js';
+import { svgExportDialog, staticFontDialog, variableFontDialog, saveFile } from '../ui/export-dialog.js';
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
 import { iconButton, iconEl } from '../ui/icons.js';
 import { createPageHeader } from '../ui/page-header.js';
@@ -594,6 +597,88 @@ export function renderIndexPage(app) {
     autoMeshAllBtn.addEventListener('click', () => autoMeshAll(autoMeshAllBtn));
     autoMeshSection.appendChild(autoMeshAllBtn);
     sidebarBody.appendChild(autoMeshSection);
+
+    // Font Export
+    const fontExportSection = document.createElement('div');
+    fontExportSection.className = 'param-group';
+    const fontExportTitle = document.createElement('h3');
+    fontExportTitle.textContent = 'Font Export';
+    fontExportSection.appendChild(fontExportTitle);
+
+    const familyName = (global.fontInfo?.familyName || 'Kabuku').replace(/\s+/g, '');
+
+    // Static font (.otf) — pick Stretch + Angle
+    const staticFontBtn = document.createElement('button');
+    staticFontBtn.className = 'tool-btn';
+    staticFontBtn.textContent = 'Static Font (.otf)';
+    staticFontBtn.addEventListener('click', async () => {
+      const result = await staticFontDialog({
+        defaultFilename: `${familyName}-Regular.otf`,
+        defaultStretch: global.stretchAmount || 0,
+        defaultAngle: global.stretchAngle || 0,
+      });
+      if (!result) return;
+      try {
+        const project = loadProject();
+        const { bytes, skipped } = buildFontBytes(project, {
+          transform: {
+            stretchAmount: result.stretchAmount,
+            stretchAngle: result.stretchAngle,
+            baseGap: 0,
+            gapDirectionWeight: 0,
+          },
+        });
+        const ok = await saveFile(bytes, result.filename, 'font/otf');
+        if (ok && skipped.length > 0) {
+          alert(`次のグリフはスキップされました（charId が Unicode 1文字でない）:\n${skipped.join(', ')}`);
+        }
+      } catch (e) {
+        console.error(e);
+        alert(`Static font export failed: ${e.message}`);
+      }
+    });
+    fontExportSection.appendChild(staticFontBtn);
+
+    // Variable font (.ttf or .zip) — angle dropdown with "All" option
+    const vfBtn = document.createElement('button');
+    vfBtn.className = 'tool-btn';
+    vfBtn.textContent = 'Variable Font';
+    vfBtn.style.marginLeft = '4px';
+    vfBtn.addEventListener('click', async () => {
+      const result = await variableFontDialog({
+        angles: DEFAULT_FAMILY_ANGLES,
+        defaultFilenameSingle: `${familyName}-Angle$ANGLE.ttf`,
+        defaultFilenameAll: `${familyName}-VF-Family.zip`,
+      });
+      if (!result) return;
+      try {
+        const project = loadProject();
+        if (result.mode === 'all') {
+          const { zip, skipped, fileCount } = buildVariableFontFamilyZip(project);
+          const ok = await saveFile(zip, result.filename, 'application/zip');
+          if (ok) {
+            let msg = `${fileCount} ファイルを書き出しました。`;
+            if (skipped.length > 0) msg += `\n\nスキップ:\n${skipped.join(', ')}`;
+            alert(msg);
+          }
+        } else {
+          const { binary, skipped } = buildVariableTTF(project, {
+            angle: result.angle,
+            styleName: `Angle ${result.angle}`,
+          });
+          const ok = await saveFile(binary, result.filename, 'font/ttf');
+          if (ok && skipped.length > 0) {
+            alert(`スキップ:\n${skipped.join(', ')}`);
+          }
+        }
+      } catch (e) {
+        console.error(e);
+        alert(`Variable font export failed: ${e.message}`);
+      }
+    });
+    fontExportSection.appendChild(vfBtn);
+
+    sidebarBody.appendChild(fontExportSection);
   }
 
   function renderLocalSidebar() {
@@ -874,31 +959,44 @@ export function renderIndexPage(app) {
 
     sidebarBody.appendChild(imgSection);
 
-    // SVG Export
+    // SVG Export — single button opens a dialog with layer-scope + filename.
     const svgSection = document.createElement('div');
     svgSection.className = 'param-group';
     const svgTitle = document.createElement('h3');
     svgTitle.textContent = 'Export';
     svgSection.appendChild(svgTitle);
-    const svgLayerBtn = document.createElement('button');
-    svgLayerBtn.className = 'tool-btn';
-    svgLayerBtn.textContent = 'SVG (Layer)';
-    svgLayerBtn.addEventListener('click', () => {
-      const layer = localLayers[activeLocalLayerIdx];
-      if (!layer) return;
-      const svg = exportLayerToSVG(layer, GLYPH_SIZE, GLYPH_SIZE);
-      downloadSVG(svg, `${selectedCharId}_${layer.name}.svg`);
+
+    const svgBtn = document.createElement('button');
+    svgBtn.className = 'tool-btn';
+    svgBtn.textContent = 'SVG Export';
+    svgBtn.addEventListener('click', async () => {
+      const result = await svgExportDialog({
+        defaultFilename: `${selectedCharId}.svg`,
+        hasActiveLayer: !!localLayers[activeLocalLayerIdx],
+      });
+      if (!result) return;
+      try {
+        let svg;
+        if (result.scope === 'active') {
+          const layer = localLayers[activeLocalLayerIdx];
+          if (!layer) return;
+          svg = exportLayerToSVG(layer, GLYPH_SIZE, GLYPH_SIZE, {
+            transform: localTransform,
+            fontMetrics: global.fontMetrics,
+          });
+        } else {
+          svg = exportAllLayersToSVG(localLayers, GLYPH_SIZE, GLYPH_SIZE, {
+            transform: localTransform,
+            fontMetrics: global.fontMetrics,
+          });
+        }
+        await saveFile(svg, result.filename, 'image/svg+xml');
+      } catch (e) {
+        console.error(e);
+        alert(`SVG export failed: ${e.message}`);
+      }
     });
-    const svgAllBtn = document.createElement('button');
-    svgAllBtn.className = 'tool-btn';
-    svgAllBtn.textContent = 'SVG (All)';
-    svgAllBtn.style.marginLeft = '4px';
-    svgAllBtn.addEventListener('click', () => {
-      const svg = exportAllLayersToSVG(localLayers, GLYPH_SIZE, GLYPH_SIZE);
-      downloadSVG(svg, `${selectedCharId}_all.svg`);
-    });
-    svgSection.appendChild(svgLayerBtn);
-    svgSection.appendChild(svgAllBtn);
+    svgSection.appendChild(svgBtn);
     sidebarBody.appendChild(svgSection);
 
     // Danger zone: full-width delete button at the bottom

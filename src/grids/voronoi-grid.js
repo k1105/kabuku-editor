@@ -44,7 +44,11 @@ export const VoronoiGrid = {
         path.lineTo(cell.vertices[i].x, cell.vertices[i].y);
       }
       path.closePath();
-      cells.push(createCell({ path, center: cell.site }));
+      cells.push(createCell({
+        path,
+        center: cell.site,
+        geometry: { type: 'polygon', points: cell.vertices.map(v => ({ x: v.x, y: v.y })) },
+      }));
     }
 
     return cells;

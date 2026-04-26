@@ -26,6 +26,7 @@ export const PixelGrid = {
         cells.push(createCell({
           path,
           center: { x: x + size / 2, y: y + size / 2 },
+          geometry: { type: 'rect', x, y, width: size, height: size },
         }));
       }
     }

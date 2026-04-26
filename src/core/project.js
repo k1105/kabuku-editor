@@ -9,6 +9,13 @@ export const DEFAULT_FONT_METRICS = {
   descender: 0.95,
 };
 
+export const DEFAULT_FONT_INFO = {
+  familyName: 'Kabuku',
+  styleName: 'Regular',
+  version: '1.000',
+  copyright: '',
+};
+
 const DEFAULT_GLOBAL = {
   stretchAngle: 0,
   stretchAmount: 0,
@@ -21,6 +28,7 @@ const DEFAULT_GLOBAL = {
     { gridName: 'FibonacciGrid', gridParams: { count: 1000, scale: 20, dotRadius: 14, rotation: 228 }, name: 'FibonacciGrid' },
   ],
   fontMetrics: { ...DEFAULT_FONT_METRICS },
+  fontInfo: { ...DEFAULT_FONT_INFO },
 };
 
 export const ANIMATED_PARAM_KEYS = [
@@ -255,6 +263,15 @@ function migrateV5toV6(data) {
   return data;
 }
 
+/** Migrate v6 → v7 (add font info to global). */
+function migrateV6toV7(data) {
+  if (!data.global.fontInfo) {
+    data.global.fontInfo = { ...DEFAULT_FONT_INFO };
+  }
+  data.version = 7;
+  return data;
+}
+
 function migrateProject(data) {
   if (!data.version || data.version < 2) {
     data = migrateV1toV2(data);
@@ -270,6 +287,9 @@ function migrateProject(data) {
   }
   if (data.version < 6) {
     data = migrateV5toV6(data);
+  }
+  if (data.version < 7) {
+    data = migrateV6toV7(data);
   }
   return data;
 }
@@ -334,9 +354,14 @@ export function loadProject() {
   }
   return {
     characters: {},
-    global: { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults(), fontMetrics: { ...DEFAULT_FONT_METRICS } },
+    global: {
+      ...DEFAULT_GLOBAL,
+      gridDefaults: buildGridDefaults(),
+      fontMetrics: { ...DEFAULT_FONT_METRICS },
+      fontInfo: { ...DEFAULT_FONT_INFO },
+    },
     animation: createDefaultAnimation(),
-    version: 6,
+    version: 7,
   };
 }
 
@@ -359,7 +384,26 @@ export function getGlobal() {
   if (!g.fontMetrics) {
     g.fontMetrics = { ...DEFAULT_FONT_METRICS };
   }
+  if (!g.fontInfo) {
+    g.fontInfo = { ...DEFAULT_FONT_INFO };
+  }
   return g;
+}
+
+/**
+ * Resolve a single Unicode codepoint for a glyph from its charId.
+ * Returns null when the id isn't a single character (e.g. "new_1") so the
+ * caller can flag it for the user.
+ */
+export function resolveCodepoint(charId) {
+  if (typeof charId !== 'string' || charId.length === 0) return null;
+  const cp = charId.codePointAt(0);
+  if (cp == null) return null;
+  // Only treat as single-codepoint if the entire string is exactly that one
+  // code point (handles surrogate pairs for non-BMP chars correctly).
+  const expectedLen = cp > 0xFFFF ? 2 : 1;
+  if (charId.length !== expectedLen) return null;
+  return cp;
 }
 
 export function saveGlobal(global) {

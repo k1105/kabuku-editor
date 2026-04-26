@@ -22,7 +22,11 @@ export const CircleGrid = {
     // Center cell
     const centerPath = new Path2D();
     centerPath.arc(cx, cy, dotRadius, 0, Math.PI * 2);
-    cells.push(createCell({ path: centerPath, center: { x: cx, y: cy } }));
+    cells.push(createCell({
+      path: centerPath,
+      center: { x: cx, y: cy },
+      geometry: { type: 'circle', cx, cy, r: dotRadius },
+    }));
 
     for (let layer = 1; layer <= layers; layer++) {
       const radius = layer * spacing;
@@ -38,7 +42,11 @@ export const CircleGrid = {
 
         const path = new Path2D();
         path.arc(x, y, dotRadius, 0, Math.PI * 2);
-        cells.push(createCell({ path, center: { x, y } }));
+        cells.push(createCell({
+          path,
+          center: { x, y },
+          geometry: { type: 'circle', cx: x, cy: y, r: dotRadius },
+        }));
       }
     }
     return cells;

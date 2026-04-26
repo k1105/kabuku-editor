@@ -30,7 +30,11 @@ export const FibonacciGrid = {
 
       const path = new Path2D();
       path.arc(x, y, dotRadius, 0, Math.PI * 2);
-      cells.push(createCell({ path, center: { x, y } }));
+      cells.push(createCell({
+        path,
+        center: { x, y },
+        geometry: { type: 'circle', cx: x, cy: y, r: dotRadius },
+      }));
     }
     return cells;
   },
