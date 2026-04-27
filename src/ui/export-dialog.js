@@ -109,7 +109,8 @@ function ensureStyles() {
  * The `build(container, confirm, cancel)` callback fills the modal and is
  * expected to call `confirm(value)` when the user clicks the primary button.
  */
-function openModal(title, build) {
+function openModal(title, build, opts = {}) {
+  const okLabel = opts.okLabel || 'Export';
   ensureStyles();
 
   return new Promise(resolve => {
@@ -132,7 +133,7 @@ function openModal(title, build) {
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Cancel';
     const okBtn = document.createElement('button');
-    okBtn.textContent = 'Export';
+    okBtn.textContent = okLabel;
     okBtn.className = 'primary';
     actions.appendChild(cancelBtn);
     actions.appendChild(okBtn);
@@ -267,7 +268,7 @@ export function staticFontDialog({ defaultFilename, defaultStretch = 0, defaultA
     sLabel.textContent = 'Stretch';
     const sInput = document.createElement('input');
     sInput.type = 'range';
-    sInput.min = 0; sInput.max = 1; sInput.step = 0.01;
+    sInput.min = 0; sInput.max = 10; sInput.step = 0.05;
     sInput.value = defaultStretch;
     const sVal = document.createElement('span');
     sVal.className = 'value';
@@ -377,4 +378,120 @@ export function variableFontDialog({ angles, defaultFilenameSingle, defaultFilen
       };
     };
   });
+}
+
+/**
+ * Font-based import dialog: pick a Google Fonts family + character ranges.
+ *
+ * @param {Object} opts
+ * @param {Array<{id:string,label:string}>} opts.presets
+ * @param {string[]} [opts.familySuggestions]
+ * @param {string}   [opts.defaultFamily]
+ * @param {string[]} [opts.defaultPresetIds]
+ * @returns {Promise<{family:string, presetIds:string[], customText:string} | null>}
+ */
+export function fontImportDialog({
+  presets,
+  familySuggestions = [],
+  defaultFamily = '',
+  defaultPresetIds = [],
+}) {
+  return openModal('Import from Font', (body) => {
+    // Family input + datalist for suggestions
+    const fRow = document.createElement('div');
+    fRow.className = 'row';
+    const fLabel = document.createElement('label');
+    fLabel.textContent = 'Family';
+    const fInput = document.createElement('input');
+    fInput.type = 'text';
+    fInput.value = defaultFamily;
+    fInput.placeholder = 'e.g. Noto Sans JP';
+    if (familySuggestions.length) {
+      const listId = 'font-import-family-list';
+      let datalist = document.getElementById(listId);
+      if (!datalist) {
+        datalist = document.createElement('datalist');
+        datalist.id = listId;
+        document.body.appendChild(datalist);
+      }
+      datalist.innerHTML = '';
+      for (const name of familySuggestions) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        datalist.appendChild(opt);
+      }
+      fInput.setAttribute('list', listId);
+    }
+    fRow.appendChild(fLabel);
+    fRow.appendChild(fInput);
+    body.appendChild(fRow);
+
+    // Range checkboxes
+    const rangeRow = document.createElement('div');
+    rangeRow.className = 'row';
+    const rangeLabel = document.createElement('label');
+    rangeLabel.textContent = 'Ranges';
+    rangeLabel.style.alignSelf = 'flex-start';
+    rangeLabel.style.paddingTop = '4px';
+    const checks = document.createElement('div');
+    checks.style.display = 'flex';
+    checks.style.flexDirection = 'column';
+    checks.style.gap = '4px';
+    checks.style.flex = '1';
+    const cbMap = {};
+    for (const p of presets) {
+      const lab = document.createElement('label');
+      lab.style.display = 'flex';
+      lab.style.alignItems = 'center';
+      lab.style.gap = '6px';
+      lab.style.fontSize = '12px';
+      lab.style.color = 'var(--text)';
+      lab.style.flex = 'unset';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = defaultPresetIds.includes(p.id);
+      cbMap[p.id] = cb;
+      const span = document.createElement('span');
+      span.textContent = p.label;
+      lab.appendChild(cb);
+      lab.appendChild(span);
+      checks.appendChild(lab);
+    }
+    rangeRow.appendChild(rangeLabel);
+    rangeRow.appendChild(checks);
+    body.appendChild(rangeRow);
+
+    // Custom characters
+    const cRow = document.createElement('div');
+    cRow.className = 'row';
+    const cLabel = document.createElement('label');
+    cLabel.textContent = 'Custom';
+    const cInput = document.createElement('input');
+    cInput.type = 'text';
+    cInput.placeholder = 'extra characters (optional)';
+    cRow.appendChild(cLabel);
+    cRow.appendChild(cInput);
+    body.appendChild(cRow);
+
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent =
+      'Glyphs are rendered from the chosen Google Fonts family and meshed locally. ' +
+      'Existing characters with the same ID are skipped.';
+    body.appendChild(note);
+
+    return () => {
+      const family = fInput.value.trim();
+      if (!family) {
+        fInput.focus();
+        return null;
+      }
+      const presetIds = Object.keys(cbMap).filter(id => cbMap[id].checked);
+      const customText = cInput.value || '';
+      if (presetIds.length === 0 && customText.length === 0) {
+        return null;
+      }
+      return { family, presetIds, customText };
+    };
+  }, { okLabel: 'Generate' });
 }

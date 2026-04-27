@@ -1,9 +1,10 @@
 /**
  * Build a complete 1-axis variable TTF binary from a kabuku project.
  *
- * Axis: STRC (Stretch), 0..1, default 0.
- * Default master = no transform; variation peak (1.0) = stretch at the chosen
- * `angle` with amount 1.0.
+ * Axis: STRC (Stretch), 0..10, default 0.
+ * Default master = no transform; variation peak (axis = 10) = stretch at the
+ * chosen `angle` with amount 10. The renderer interpolates linearly, so user
+ * STRC = N produces stretch amount N (because amount * cells is linear in N).
  *
  * Per-glyph workflow:
  *   1. Build runtime layers from project (deterministic)
@@ -26,7 +27,6 @@ import {
 } from './tables.js';
 import { encodeSimpleGlyph, buildGlyfAndLoca } from './glyf.js';
 import { makeFvar, makeGvar } from './vf-tables.js';
-import { makeStat } from './stat.js';
 import { zipSync } from 'fflate';
 
 export const DEFAULT_FAMILY_ANGLES = [0, 30, 45, 60, 90, 120, 135, 150];
@@ -101,10 +101,11 @@ export function buildVariableTTF(project, opts) {
 
         // Default master: no transform
         const defC = cellGeometryToContours(cell.geometry, 0, 0, baselineY);
-        // Peak master: apply stretch at given angle, amount=1
+        // Peak master at axis = 10 (matches fvar max). Linear interpolation
+        // means user STRC = N produces stretch amount N.
         const peakPos = applyStretch(
           { x: cell.center.x, y: cell.center.y },
-          angle, 1.0, EM_SIZE, EM_SIZE, baselineY
+          angle, 10.0, EM_SIZE, EM_SIZE, baselineY
         );
         const dx = peakPos.x - cell.center.x;
         const dy = peakPos.y - cell.center.y;
@@ -196,12 +197,10 @@ export function buildVariableTTF(project, opts) {
   const psFamily = familyName.replace(/\s+/g, '');
   const psStyle = styleName.replace(/\s+/g, '');
   const stretchAxisNameID = 256;
-  const angleAxisNameID = 258;
-  const angleValueNameID = 259; // STAT label for this file's angle position
 
   // For family mode: ID 1 differs per file so legacy apps can still see each
   // file as a single-style "family" without colliding on RBIBI; modern apps
-  // use ID 16/17 + STAT to merge them into one typographic family.
+  // use ID 16/17 to merge them into one typographic family.
   const legacyFamily = familyMode ? `${familyName} ${styleName}` : familyName;
   const legacySubfamily = 'Regular';
 
@@ -219,12 +218,6 @@ export function buildVariableTTF(project, opts) {
     { nameID: 25, value: psFamily },                  // Variations PostScript Name Prefix
     { nameID: stretchAxisNameID, value: 'Stretch' },
   ];
-  if (familyMode) {
-    baseRecords.push(
-      { nameID: angleAxisNameID, value: 'Angle' },
-      { nameID: angleValueNameID, value: styleName }, // e.g. "Angle 45"
-    );
-  }
 
   const nameRecords = [];
   for (const r of baseRecords.filter(r => r.value && r.value.length > 0)) {
@@ -268,28 +261,19 @@ export function buildVariableTTF(project, opts) {
   // first file's data when any "Stretched" entry is picked. Users can use the
   // STRC axis slider directly.
   const fvarBytes = makeFvar(
-    [{ tag: 'STRC', nameID: stretchAxisNameID, minValue: 0, defaultValue: 0, maxValue: 1 }],
+    [{ tag: 'STRC', nameID: stretchAxisNameID, minValue: 0, defaultValue: 0, maxValue: 10 }],
     []
   );
   const gvarBytes = makeGvar({ axisCount: 1, glyphs: variations });
 
-  // ── STAT (family-mode only) ──
-  // Cross-file dimension: discrete Angle axis (one position per file).
-  // Within-file dimension: continuous Stretch axis (matches fvar).
-  let statBytes = null;
-  if (familyMode) {
-    statBytes = makeStat({
-      designAxes: [
-        { tag: 'ANGL', nameID: angleAxisNameID, ordering: 0 },
-        { tag: 'STRC', nameID: stretchAxisNameID, ordering: 1 },
-      ],
-      axisValues: [
-        { axisIndex: 0, value: angle, nameID: angleValueNameID, elidable: false },
-        { axisIndex: 1, value: 0,     nameID: 2 /* "Regular" */, elidable: true },
-      ],
-      elidedFallbackNameID: 2,
-    });
-  }
+  // STAT is intentionally NOT emitted, even in family mode. Earlier we
+  // declared an Angle design axis across files, hoping Adobe would label the
+  // styles. In practice that backfired: Adobe interprets a STAT-declared
+  // axis as part of the family's design space and tries to interpolate it.
+  // Since our fvar has no Angle axis, Adobe falls back to a single master
+  // (Angle 0) for all files, which made every file render as horizontal
+  // stretch at STRC=1. Without STAT, Adobe groups files via name ID 16/17
+  // alone and each file uses its own gvar correctly.
 
   // ── Pack into sfnt ──
   const tables = [
@@ -306,8 +290,6 @@ export function buildVariableTTF(project, opts) {
     { tag: 'fvar', bytes: fvarBytes },
     { tag: 'gvar', bytes: gvarBytes },
   ];
-  if (statBytes) tables.push({ tag: 'STAT', bytes: statBytes });
-
   const binary = buildSfnt(tables, '\x00\x01\x00\x00'); // TTF magic
   return { binary, skipped };
 }

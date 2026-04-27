@@ -1,4 +1,4 @@
-import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, resolveGridParams, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter } from '../core/project.js';
+import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter } from '../core/project.js';
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
@@ -10,7 +10,9 @@ import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { exportLayerToSVG, exportAllLayersToSVG } from '../render/svg-exporter.js';
 import { buildFontBytes } from '../render/font-exporter.js';
 import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../render/font/vf-builder.js';
-import { svgExportDialog, staticFontDialog, variableFontDialog, saveFile } from '../ui/export-dialog.js';
+import { svgExportDialog, staticFontDialog, variableFontDialog, fontImportDialog, saveFile } from '../ui/export-dialog.js';
+import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
+import { loadGoogleFont, renderCharToContext } from '../render/font/font-import.js';
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
 import { iconButton, iconEl } from '../ui/icons.js';
 import { createPageHeader } from '../ui/page-header.js';
@@ -111,7 +113,13 @@ export function renderIndexPage(app) {
   });
   importImagesBtn.addEventListener('click', () => triggerImport());
 
+  const importFontBtn = iconButton('typeFont', 'Import from Font', {
+    title: 'Generate glyphs from a Google Fonts family',
+  });
+  importFontBtn.addEventListener('click', () => triggerFontImport());
+
   headerActions.appendChild(importImagesBtn);
+  headerActions.appendChild(importFontBtn);
   headerActions.appendChild(importJsonBtn);
   headerActions.appendChild(exportBtn);
 
@@ -165,7 +173,8 @@ export function renderIndexPage(app) {
     global,
     onPreviewChange: (v) => { previewMode = v; redraw(); },
     onStretchInput: () => { localTransform = resolveTransform(global, localTransformOverrides); redraw(); },
-    onStretchRelease: () => refreshAllThumbnails(),
+    // Thumbnails are pinned to stretch=0/angle=0; no refresh needed on release.
+    onStretchRelease: () => {},
     onScaleChange: () => redraw(),
   });
   previewSection.appendChild(previewControls.el);
@@ -316,7 +325,7 @@ export function renderIndexPage(app) {
     }
   }
 
-  function saveGlobalLayers() {
+  function saveGlobalLayers({ propagateGridParams = false } = {}) {
     global.defaultLayers = globalLayers.map(layer => ({
       gridName: layer.gridPlugin.name,
       gridParams: { ...layer.gridParams },
@@ -324,8 +333,12 @@ export function renderIndexPage(app) {
       opacity: layer.opacity,
       visible: layer.visible,
     }));
-    // Drop per-char opacity/visible overrides that match the new global value
-    // so glyphs follow global edits unless they intentionally diverge.
+    // Policy: a global edit wins over per-char overrides. Visibility/opacity
+    // overrides are always reconciled (matching values dropped). When
+    // propagateGridParams is set — i.e. a grid param/type was just edited
+    // globally — also strip per-char gridParamOverrides so the new global
+    // values flow through to every glyph (cells are kept; they encode the
+    // meshed glyph shape).
     for (const cd of Object.values(project.characters)) {
       const overrides = cd.layerOverrides || [];
       overrides.forEach((lo, i) => {
@@ -334,6 +347,9 @@ export function renderIndexPage(app) {
         if (!gl) return;
         if (lo.opacity === gl.opacity) delete lo.opacity;
         if (lo.visible === gl.visible) delete lo.visible;
+        if (!propagateGridParams) return;
+        if (lo.gridName && lo.gridName !== gl.gridName) return;
+        if (lo.gridParamOverrides) delete lo.gridParamOverrides;
       });
     }
     project.global = global;
@@ -359,10 +375,22 @@ export function renderIndexPage(app) {
     backgroundImage = null;
     if (!selectedCharId) { redraw(); return; }
     const cd = project.characters[selectedCharId];
-    if (!cd?.imagePath) { redraw(); return; }
-    const img = new Image();
-    img.onload = () => { backgroundImage = img; redraw(); };
-    img.src = cd.imagePath;
+    if (cd?.imagePath) {
+      const img = new Image();
+      img.onload = () => { backgroundImage = img; redraw(); };
+      img.src = cd.imagePath;
+      return;
+    }
+    if (cd?.fontSource) {
+      const targetId = selectedCharId;
+      renderFontSourceToCanvas(cd.fontSource, GLYPH_SIZE, global.fontMetrics).then(cv => {
+        if (selectedCharId !== targetId) return; // selection changed mid-load
+        backgroundImage = cv;
+        redraw();
+      }).catch(() => { redraw(); });
+      return;
+    }
+    redraw();
   }
 
   function saveLocalChar() {
@@ -377,6 +405,7 @@ export function renderIndexPage(app) {
     if (cd?.imageOffsetX !== undefined) next.imageOffsetX = cd.imageOffsetX;
     if (cd?.imageOffsetY !== undefined) next.imageOffsetY = cd.imageOffsetY;
     if (cd?.imageScale !== undefined) next.imageScale = cd.imageScale;
+    if (cd?.fontSource) next.fontSource = cd.fontSource;
     saveCharacter(selectedCharId, next);
     project.characters[selectedCharId] = { ...cd, ...next };
   }
@@ -455,8 +484,9 @@ export function renderIndexPage(app) {
       layer.name = grid.name;
       renderGridParamSliders();
       globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
-      saveGlobalLayers();
+      saveGlobalLayers({ propagateGridParams: true });
       redraw();
+      refreshAllThumbnails();
     });
     gridSection.appendChild(gridSelect);
     sidebarBody.appendChild(gridSection);
@@ -492,7 +522,7 @@ export function renderIndexPage(app) {
           const v = parseFloat(input.value);
           layer.gridParams[def.key] = v;
           valSpan.textContent = v;
-          saveGlobalLayers();
+          saveGlobalLayers({ propagateGridParams: true });
           redraw();
         });
         input.addEventListener('change', () => refreshAllThumbnails());
@@ -1155,6 +1185,39 @@ export function renderIndexPage(app) {
     });
   }
 
+  async function triggerFontImport() {
+    const result = await fontImportDialog({
+      presets: FONT_IMPORT_PRESETS,
+      familySuggestions: [
+        'Noto Sans JP', 'Noto Serif JP', 'M PLUS 1p', 'Kosugi Maru',
+        'Roboto', 'Inter', 'Noto Sans', 'Open Sans', 'Lato',
+      ],
+      defaultFamily: 'Noto Sans JP',
+      defaultPresetIds: ['hiragana'],
+    });
+    if (!result) return;
+    const chars = buildCharSet(result.presetIds, result.customText);
+    if (chars.length === 0) return;
+    await importFromFont(project, result.family, chars, {
+      progressWrap, progressBar, progressText,
+      getStrip: () => charStrip,
+      insertBefore: () => addGlyphTile,
+      createCard: (charId, charData) => {
+        const card = createCharCard(charId, charData, (id) => selectChar(id));
+        cardElements[charId] = card;
+        return card;
+      },
+      onDone: () => {
+        if (!selectedCharId && Object.keys(project.characters).length > 0) {
+          const firstId = Object.keys(project.characters)[0];
+          selectChar(firstId);
+        }
+        redraw();
+        historyCommit('import-from-font');
+      },
+    });
+  }
+
   // === Selection ===
   function selectChar(charId) {
     if (selectedCharId && cardElements[selectedCharId]) {
@@ -1194,7 +1257,10 @@ export function renderIndexPage(app) {
     btn.disabled = true;
     btn.textContent = 'Meshing...';
     progressWrap.style.display = '';
-    const targets = Object.keys(project.characters).filter(cid => project.characters[cid]?.imagePath);
+    const targets = Object.keys(project.characters).filter(cid => {
+      const cd = project.characters[cid];
+      return cd?.imagePath || cd?.fontSource;
+    });
     const total = targets.length;
     let done = 0;
     progressBar.style.width = '0%';
@@ -1205,16 +1271,23 @@ export function renderIndexPage(app) {
     const offCtx = offscreen.getContext('2d');
     for (const cid of targets) {
       const cd = project.characters[cid];
-      const img = await new Promise((resolve) => {
-        const im = new Image();
-        im.onload = () => resolve(im);
-        im.onerror = () => resolve(null);
-        im.src = cd.imagePath;
-      });
-      if (!img) { done++; continue; }
+      let source = null;
+      if (cd?.imagePath) {
+        source = await new Promise((resolve) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = () => resolve(null);
+          im.src = cd.imagePath;
+        });
+      } else if (cd?.fontSource) {
+        try {
+          source = await renderFontSourceToCanvas(cd.fontSource, GLYPH_SIZE, global.fontMetrics);
+        } catch { source = null; }
+      }
+      if (!source) { done++; continue; }
       offCtx.fillStyle = '#fff';
       offCtx.fillRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
-      drawSourceImage(offCtx, img, 0, 0, GLYPH_SIZE, {
+      drawSourceImage(offCtx, source, 0, 0, GLYPH_SIZE, {
         imageOffsetX: cd?.imageOffsetX ?? 0,
         imageOffsetY: cd?.imageOffsetY ?? 0,
         imageScale: cd?.imageScale ?? 1,
@@ -1324,30 +1397,42 @@ function renderThumbnail(canvas, charData) {
   const global = getGlobal();
   const layers = buildRuntimeLayers(global, charData, GLYPH_SIZE);
   const transformOverrides = charData.transformOverrides || {};
-  const transform = resolveTransform(global, transformOverrides);
+  // Thumbnails always render at neutral stretch so they don't update on every
+  // slider tick (re-meshing every glyph is too expensive). The preview canvas
+  // still reflects the live stretch state.
+  const transform = {
+    ...resolveTransform(global, transformOverrides),
+    stretchAngle: 0,
+    stretchAmount: 0,
+  };
   const imageTransform = {
     imageOffsetX: charData.imageOffsetX ?? 0,
     imageOffsetY: charData.imageOffsetY ?? 0,
     imageScale: charData.imageScale ?? 1,
   };
+  const drawWithBackground = (bg) => {
+    renderCanvas(offCtx, layers, {
+      backgroundImage: bg,
+      backgroundOpacity: 0.3,
+      transform,
+      glyphSize: GLYPH_SIZE,
+      preview: true,
+      imageTransform,
+      fontMetrics: global.fontMetrics,
+    });
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+  };
   if (charData.imagePath) {
     const img = new Image();
-    img.onload = () => {
-      renderCanvas(offCtx, layers, {
-        backgroundImage: img,
-        backgroundOpacity: 0.3,
-        transform,
-        glyphSize: GLYPH_SIZE,
-        preview: true,
-        imageTransform,
-        fontMetrics: global.fontMetrics,
-      });
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
-    };
+    img.onload = () => drawWithBackground(img);
     img.src = charData.imagePath;
+  } else if (charData.fontSource) {
+    renderFontSourceToCanvas(charData.fontSource, GLYPH_SIZE, global.fontMetrics)
+      .then(drawWithBackground)
+      .catch(() => drawWithBackground(null));
   } else {
     renderCanvas(offCtx, layers, {
       transform,
@@ -1391,8 +1476,10 @@ function importImages(project, ui) {
         for (const gl of g.defaultLayers) {
           const gridPlugin = getGrid(gl.gridName);
           if (!gridPlugin) continue;
-          const resolvedParams = resolveGridParams(g, gl.gridName, {});
-          const layer = createLayer(gridPlugin, resolvedParams);
+          // Build from the configured global layer's own params, not the
+          // per-grid-type fallback in gridDefaults — otherwise every key
+          // gets serialized as a spurious per-char override.
+          const layer = createLayer(gridPlugin, { ...(gl.gridParams || {}) });
           layer.name = gl.name || gl.gridName;
           regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
           importLayers.push(layer);
@@ -1424,6 +1511,88 @@ function importImages(project, ui) {
     if (ui.onDone) ui.onDone();
   });
   input.click();
+}
+
+/**
+ * Generate glyphs for `chars` using a Google Fonts family, render each into
+ * an offscreen canvas, and run the same autoMesh pipeline as the image-file
+ * import. To keep localStorage usage sane (Joyo can be 2k+ glyphs) we omit
+ * `imagePath` — the meshed result is stored directly in `layerOverrides`.
+ */
+async function importFromFont(project, family, chars, ui) {
+  const empty = document.querySelector('.empty-state');
+  if (empty) empty.style.display = 'none';
+  ui.progressWrap.style.display = '';
+  ui.progressBar.style.width = '0%';
+  ui.progressText.textContent = `Loading font...`;
+
+  try {
+    await loadGoogleFont(family, chars.join(''));
+  } catch (e) {
+    ui.progressWrap.style.display = 'none';
+    alert(e.message || 'Font load failed');
+    return;
+  }
+
+  const total = chars.length;
+  ui.progressText.textContent = `0 / ${total}`;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = GLYPH_SIZE;
+  offscreen.height = GLYPH_SIZE;
+  const offCtx = offscreen.getContext('2d');
+  const strip = ui.getStrip();
+  let done = 0;
+  for (const ch of chars) {
+    const charId = ch;
+    if (!project.characters[charId]) {
+      const g = getGlobal();
+      const importLayers = [];
+      for (const gl of g.defaultLayers) {
+        const gridPlugin = getGrid(gl.gridName);
+        if (!gridPlugin) continue;
+        const layer = createLayer(gridPlugin, { ...(gl.gridParams || {}) });
+        layer.name = gl.name || gl.gridName;
+        regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
+        importLayers.push(layer);
+      }
+      renderCharToContext(offCtx, ch, family, GLYPH_SIZE, g.fontMetrics);
+      for (const layer of importLayers) await autoMeshAsync(offCtx, layer.cells, 0.5);
+      const charData = {
+        layerOverrides: serializeLayerOverrides(importLayers, g),
+        fontSource: { family, char: ch },
+      };
+      project.characters[charId] = charData;
+      const card = ui.createCard(charId, charData);
+      const before = ui.insertBefore?.();
+      if (before && before.parentNode === strip) {
+        strip.insertBefore(card, before);
+      } else {
+        strip.appendChild(card);
+      }
+    }
+    done++;
+    ui.progressBar.style.width = Math.round((done / total) * 100) + '%';
+    ui.progressText.textContent = `${done} / ${total}`;
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  saveProject(project);
+  ui.progressWrap.style.display = 'none';
+  if (ui.onDone) ui.onDone();
+}
+
+/**
+ * Render a `fontSource` ({family, char}) to a fresh canvas at glyphSize,
+ * loading the Google Fonts family on demand. Cached internally so repeat
+ * calls for the same family don't re-fetch the CSS.
+ */
+async function renderFontSourceToCanvas(fontSource, glyphSize, fontMetrics) {
+  const { family, char } = fontSource;
+  await loadGoogleFont(family, char);
+  const cv = document.createElement('canvas');
+  cv.width = glyphSize;
+  cv.height = glyphSize;
+  renderCharToContext(cv.getContext('2d'), char, family, glyphSize, fontMetrics);
+  return cv;
 }
 
 function fileToDataURL(file) {

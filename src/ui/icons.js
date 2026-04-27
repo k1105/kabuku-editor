@@ -14,6 +14,7 @@ const PATHS = {
   download:   '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/>',
   upload:     '<path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 3h14"/>',
   imagePlus:  '<rect x="3" y="3" width="18" height="14" rx="2"/><path d="M3 14l5-5 5 5"/><circle cx="15" cy="8.5" r="1.25"/><path d="M16 19h6"/><path d="M19 16v6"/>',
+  typeFont:   '<path d="M5 7V5h14v2"/><path d="M9 5v14"/><path d="M15 5v14"/><path d="M7 19h4"/><path d="M13 19h4"/>',
 
   // tools
   paintbrush: '<path d="M14 4l6 6-9 9-6-6z"/><path d="M11 7l6 6"/><path d="M8 18l-3 3"/>',
