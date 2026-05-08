@@ -12,7 +12,7 @@ import { buildFontBytes } from '../render/font-exporter.js';
 import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../render/font/vf-builder.js';
 import { svgExportDialog, staticFontDialog, variableFontDialog, fontImportDialog, saveFile } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
-import { loadGoogleFont, renderCharToContext } from '../render/font/font-import.js';
+import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
 import { iconButton, iconEl } from '../ui/icons.js';
 import { createPageHeader } from '../ui/page-header.js';
@@ -1578,21 +1578,6 @@ async function importFromFont(project, family, chars, ui) {
   saveProject(project);
   ui.progressWrap.style.display = 'none';
   if (ui.onDone) ui.onDone();
-}
-
-/**
- * Render a `fontSource` ({family, char}) to a fresh canvas at glyphSize,
- * loading the Google Fonts family on demand. Cached internally so repeat
- * calls for the same family don't re-fetch the CSS.
- */
-async function renderFontSourceToCanvas(fontSource, glyphSize, fontMetrics) {
-  const { family, char } = fontSource;
-  await loadGoogleFont(family, char);
-  const cv = document.createElement('canvas');
-  cv.width = glyphSize;
-  cv.height = glyphSize;
-  renderCharToContext(cv.getContext('2d'), char, family, glyphSize, fontMetrics);
-  return cv;
 }
 
 function fileToDataURL(file) {

@@ -272,6 +272,37 @@ function migrateV6toV7(data) {
   return data;
 }
 
+/**
+ * Migrate v7 → v8 (compact cell storage).
+ * Cells where filled=false and !manualOverride are reconstructed by
+ * regenerateCells on load — saving them just bloats localStorage. Drop those,
+ * round center coords to integers, and omit falsy flags.
+ */
+function migrateV7toV8(data) {
+  for (const cd of Object.values(data.characters || {})) {
+    for (const lo of cd.layerOverrides || []) {
+      if (!lo?.cells) continue;
+      lo.cells = lo.cells
+        .filter(c => c.filled || c.manualOverride)
+        .map(c => compactCell(c));
+    }
+  }
+  data.version = 8;
+  return data;
+}
+
+function compactCell(c) {
+  const out = {
+    center: {
+      x: Math.round(c.center?.x ?? 0),
+      y: Math.round(c.center?.y ?? 0),
+    },
+  };
+  if (c.filled) out.filled = true;
+  if (c.manualOverride) out.manualOverride = true;
+  return out;
+}
+
 function migrateProject(data) {
   if (!data.version || data.version < 2) {
     data = migrateV1toV2(data);
@@ -290,6 +321,9 @@ function migrateProject(data) {
   }
   if (data.version < 7) {
     data = migrateV6toV7(data);
+  }
+  if (data.version < 8) {
+    data = migrateV7toV8(data);
   }
   return data;
 }
@@ -344,9 +378,16 @@ export function loadProject() {
     const json = localStorage.getItem(STORAGE_KEY);
     if (json) {
       let data = JSON.parse(json);
+      const oldVersion = data.version;
       if (!data.global) data.global = { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults() };
       data = migrateProject(data);
       data = consolidateOverrides(data);
+      // Persist if a migration ran — frees up localStorage immediately for
+      // users hitting quota with the old verbose cell format.
+      if (data.version !== oldVersion) {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+        catch (e) { console.warn('Failed to persist migrated project:', e); }
+      }
       return data;
     }
   } catch (e) {
@@ -361,15 +402,31 @@ export function loadProject() {
       fontInfo: { ...DEFAULT_FONT_INFO },
     },
     animation: createDefaultAnimation(),
-    version: 7,
+    version: 8,
   };
 }
 
+let _quotaAlerted = false;
+
+/**
+ * Persist project to localStorage. Returns true on success, false on failure.
+ * On quota exhaustion, surfaces a one-shot alert so users know writes are
+ * being silently dropped (without re-alerting on every subsequent save).
+ */
 export function saveProject(data) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    _quotaAlerted = false;
+    return true;
   } catch (e) {
     console.warn('Failed to save project:', e);
+    if (e?.name === 'QuotaExceededError' && !_quotaAlerted) {
+      _quotaAlerted = true;
+      try {
+        alert('保存容量を超えました。文字数を減らすか、ブラウザの localStorage を整理してください。\n以降の編集はディスクに保存されません。');
+      } catch {}
+    }
+    return false;
   }
 }
 
@@ -567,14 +624,15 @@ export function serializeLayerOverrides(layers, global) {
     if (!globalLayer) return null;
     // Compare against the layer's own gridParams, not the per-type gridDefaults
     const overrides = computeOverrides(layer.gridParams, globalLayer.gridParams || {});
+    // Skip cells in default state (unfilled, no manual override) — they're
+    // reconstructed by regenerateCells on load. Massive size savings: a typical
+    // glyph has 80–95% unfilled cells.
     const out = {
       gridName: globalLayer.gridName,
       gridParamOverrides: overrides,
-      cells: layer.cells.map(c => ({
-        filled: c.filled,
-        manualOverride: c.manualOverride,
-        center: c.center,
-      })),
+      cells: layer.cells
+        .filter(c => c.filled || c.manualOverride)
+        .map(c => compactCell(c)),
     };
     // Only persist opacity/visible when they diverge from the global default,
     // so that future global edits propagate to chars that haven't overridden.

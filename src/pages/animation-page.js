@@ -8,6 +8,7 @@ import { exportPngSequence, exportGif } from '../animation/export.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { iconEl, iconSvg } from '../ui/icons.js';
 import { commit as historyCommit } from '../core/history.js';
+import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -73,15 +74,26 @@ export function renderAnimationPage(app) {
     showingRendered = false;
   }
 
-  // Preload source images
+  // Preload source images. Image-imported chars use their data-URL imagePath;
+  // font-imported chars (fontSource only, no imagePath) get rasterized via
+  // Google Fonts so the underlay tracks them too.
   function getSourceImage(charId) {
     if (sourceImageCache.has(charId)) return sourceImageCache.get(charId);
     const cd = project.characters[charId];
-    if (!cd?.imagePath) return null;
-    const img = new Image();
-    img.src = cd.imagePath;
-    img.onload = () => { sourceImageCache.set(charId, img); redrawPreview(); };
-    sourceImageCache.set(charId, null);
+    if (cd?.imagePath) {
+      const img = new Image();
+      img.src = cd.imagePath;
+      img.onload = () => { sourceImageCache.set(charId, img); redrawPreview(); };
+      sourceImageCache.set(charId, null);
+      return null;
+    }
+    if (cd?.fontSource) {
+      sourceImageCache.set(charId, null);
+      renderFontSourceToCanvas(cd.fontSource, RENDER_SIZE, global.fontMetrics)
+        .then(cv => { sourceImageCache.set(charId, cv); redrawPreview(); })
+        .catch(() => {});
+      return null;
+    }
     return null;
   }
   for (const cid of Object.keys(project.characters)) getSourceImage(cid);

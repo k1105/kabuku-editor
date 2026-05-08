@@ -88,3 +88,18 @@ export function renderCharToContext(ctx, char, family, glyphSize, fontMetrics) {
   ctx.fillText(char, glyphSize / 2, baseline * glyphSize);
   ctx.restore();
 }
+
+/**
+ * Render a `fontSource` ({family, char}) to a fresh canvas at glyphSize,
+ * loading the Google Fonts family on demand. Used as the source-image stand-in
+ * for font-imported glyphs (no `imagePath`) in editor/typeset/animation views.
+ */
+export async function renderFontSourceToCanvas(fontSource, glyphSize, fontMetrics) {
+  const { family, char } = fontSource;
+  await loadGoogleFont(family, char);
+  const cv = document.createElement('canvas');
+  cv.width = glyphSize;
+  cv.height = glyphSize;
+  renderCharToContext(cv.getContext('2d'), char, family, glyphSize, fontMetrics);
+  return cv;
+}

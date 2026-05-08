@@ -2,6 +2,7 @@ import { loadProject, getGlobal, resolveTransform } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { createPageHeader } from '../ui/page-header.js';
+import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 
 export function renderComposePage(app) {
   const project = loadProject();
@@ -10,15 +11,26 @@ export function renderComposePage(app) {
   const glyphCache = createGlyphCache();
   const sourceImageCache = new Map(); // charId -> Image (base images for stretch preview)
 
-  /** Get or load the source image for a character */
+  /** Get or load the source image for a character. Image-imported chars use
+   *  their data-URL imagePath; font-imported chars (no imagePath) are
+   *  rasterized via Google Fonts so the stretch-preview underlay shows up. */
   function getSourceImage(charId) {
     if (sourceImageCache.has(charId)) return sourceImageCache.get(charId);
     const cd = project.characters[charId];
-    if (!cd?.imagePath) return null;
-    const img = new Image();
-    img.src = cd.imagePath;
-    img.onload = () => { sourceImageCache.set(charId, img); };
-    sourceImageCache.set(charId, null); // placeholder to avoid re-loading
+    if (cd?.imagePath) {
+      const img = new Image();
+      img.src = cd.imagePath;
+      img.onload = () => { sourceImageCache.set(charId, img); redraw(); };
+      sourceImageCache.set(charId, null);
+      return null;
+    }
+    if (cd?.fontSource) {
+      sourceImageCache.set(charId, null);
+      renderFontSourceToCanvas(cd.fontSource, RENDER_SIZE, global.fontMetrics)
+        .then(cv => { sourceImageCache.set(charId, cv); redraw(); })
+        .catch(() => {});
+      return null;
+    }
     return null;
   }
 
