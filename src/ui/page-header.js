@@ -1,28 +1,42 @@
 import { iconEl, iconButton } from './icons.js';
-import { undo, redo, subscribe } from '../core/history.js';
+import * as fontHistory from '../core/history.js';
+import * as animHistory from '../core/animation-history.js';
+import { createUserBadge } from './auth-gate.js';
 
 /**
- * Build the shared top header used across all pages.
+ * Shared top header used by font-project editing pages and the animation
+ * page.
  *
- *   activePage: 'index' | 'compose' | 'animation'
- *   title: optional override for the H1 (defaults to "KABUKU Editor")
+ *   activePage:    'glyphs' | 'compose' | 'animation'
+ *   fontProjectId: when set, render the Glyphs/Compose tabs that route into
+ *                  the font project. Pass null for the animation page (no
+ *                  tabs; just back-to-list and user badge).
+ *   title:         page title text (default 'KABUKU Editor').
+ *   historyMode:   'font' | 'animation' | null. Picks which undo/redo stack
+ *                  to drive from the header buttons. Defaults to 'font' when
+ *                  a fontProjectId is provided, otherwise null (no buttons).
  *
- * Returns { el, headerNav, progressEl } where:
- *   - el         the <header> element ready to append to <#app>
- *   - headerNav  the right-side actions container (caller appends buttons)
- *   - progressEl an optional centered progress bar (initially hidden)
- *
- * The lang toggle is injected separately by main.js into `.header-nav`.
+ * Returns { el, headerNav, progressEl }.
  */
-export function createPageHeader({ activePage, title = 'KABUKU Editor' } = {}) {
+export function createPageHeader({
+  activePage,
+  fontProjectId = null,
+  title = 'KABUKU Editor',
+  historyMode,
+} = {}) {
   const header = document.createElement('div');
   header.className = 'header';
+
+  // Back-to-list button
+  const backBtn = iconButton('arrowLeft', 'Projects', { title: 'Back to projects' });
+  backBtn.addEventListener('click', () => { location.hash = '#/'; });
+  header.appendChild(backBtn);
 
   const titleEl = document.createElement('h1');
   titleEl.textContent = title;
   header.appendChild(titleEl);
 
-  // Optional progress bar (used by index for Auto Mesh All / image import)
+  // Optional progress bar (used by Auto Mesh All, image import, etc.)
   const progressWrap = document.createElement('div');
   progressWrap.className = 'import-progress';
   progressWrap.style.display = 'none';
@@ -37,50 +51,55 @@ export function createPageHeader({ activePage, title = 'KABUKU Editor' } = {}) {
   progressWrap.appendChild(progressText);
   header.appendChild(progressWrap);
 
-  // Centered tabs
-  const tabs = document.createElement('nav');
-  tabs.className = 'header-tabs';
-
-  const TABS = [
-    { id: 'index',     label: 'Glyphs',    icon: 'layers',  hash: '#/' },
-    { id: 'compose',   label: 'Compose',   icon: 'preview', hash: '#/compose' },
-    { id: 'animation', label: 'Animation', icon: 'play',    hash: '#/animation' },
-  ];
-  for (const t of TABS) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'header-tab' + (t.id === activePage ? ' active' : '');
-    btn.appendChild(iconEl(t.icon));
-    const lbl = document.createElement('span');
-    lbl.textContent = t.label;
-    btn.appendChild(lbl);
-    btn.addEventListener('click', () => { location.hash = t.hash; });
-    tabs.appendChild(btn);
+  // Tabs (only inside a font project context)
+  if (fontProjectId) {
+    const tabs = document.createElement('nav');
+    tabs.className = 'header-tabs';
+    const TABS = [
+      { id: 'glyphs',  label: 'Glyphs',  icon: 'layers',  hash: `#/font/${fontProjectId}` },
+      { id: 'compose', label: 'Compose', icon: 'preview', hash: `#/font/${fontProjectId}/compose` },
+    ];
+    for (const t of TABS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'header-tab' + (t.id === activePage ? ' active' : '');
+      btn.appendChild(iconEl(t.icon));
+      const lbl = document.createElement('span');
+      lbl.textContent = t.label;
+      btn.appendChild(lbl);
+      btn.addEventListener('click', () => { location.hash = t.hash; });
+      tabs.appendChild(btn);
+    }
+    header.appendChild(tabs);
   }
-  header.appendChild(tabs);
 
-  // Right-side actions slot (lang toggle injected here by main.js)
   const headerNav = document.createElement('div');
   headerNav.className = 'header-nav';
 
-  // Undo / Redo first in nav so they sit in a stable position across pages.
-  const undoBtn = iconButton('undo', 'Undo', { title: 'Undo (⌘Z)' });
-  undoBtn.addEventListener('click', () => undo());
-  const redoBtn = iconButton('redo', 'Redo', { title: 'Redo (⌘⇧Z)' });
-  redoBtn.addEventListener('click', () => redo());
-  headerNav.appendChild(undoBtn);
-  headerNav.appendChild(redoBtn);
-  // Lazy self-cleanup: when this header gets detached (page re-render or
-  // route change), the next history notify unsubscribes the stale handler.
-  // `unsub` is forward-declared because `subscribe` invokes the callback
-  // synchronously on registration to deliver the initial state.
-  let unsub;
-  unsub = subscribe(({ canUndo, canRedo }) => {
-    if (!header.isConnected) { unsub?.(); return; }
-    undoBtn.disabled = !canUndo;
-    redoBtn.disabled = !canRedo;
-  });
+  // Resolve which history module the buttons drive.
+  const resolvedMode = historyMode ?? (fontProjectId ? 'font' : null);
+  const historyMod = resolvedMode === 'animation'
+    ? animHistory
+    : resolvedMode === 'font'
+      ? fontHistory
+      : null;
 
+  if (historyMod) {
+    const undoBtn = iconButton('undo', 'Undo', { title: 'Undo (⌘Z)' });
+    undoBtn.addEventListener('click', () => historyMod.undo());
+    const redoBtn = iconButton('redo', 'Redo', { title: 'Redo (⌘⇧Z)' });
+    redoBtn.addEventListener('click', () => historyMod.redo());
+    headerNav.appendChild(undoBtn);
+    headerNav.appendChild(redoBtn);
+    let unsub;
+    unsub = historyMod.subscribe(({ canUndo, canRedo }) => {
+      if (!header.isConnected) { unsub?.(); return; }
+      undoBtn.disabled = !canUndo;
+      redoBtn.disabled = !canRedo;
+    });
+  }
+
+  headerNav.appendChild(createUserBadge());
   header.appendChild(headerNav);
 
   return {

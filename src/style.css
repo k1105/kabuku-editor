@@ -1002,6 +1002,41 @@ select {
   border-bottom: 1px solid rgba(255,255,255,0.03);
   user-select: none;
   -webkit-user-select: none;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.anim-timeline-label:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.03);
+}
+
+.anim-timeline-label.expanded {
+  color: var(--text);
+}
+
+.anim-timeline-chevron {
+  display: inline-block;
+  width: 10px;
+  font-size: 9px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.anim-timeline-label-text {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.anim-curve-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
 }
 
 .anim-timeline-tracks {
@@ -1018,6 +1053,18 @@ select {
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* Green strip showing which frame ranges are cached. Sits just below the
+   ruler, overlaying the top of the rows. pointer-events:none so keyframe
+   interaction below it still works. */
+.anim-timeline-cache-strip {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  height: 4px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .anim-timeline-tick {
@@ -1059,6 +1106,13 @@ select {
   transform: rotate(45deg);
   border: 1px solid #fff;
   cursor: ew-resize;
+}
+
+/* In expanded rows the dot is draggable in both time + value axes. The cursor
+   hint must reflect that — ew-resize would mislead users into trying only
+   horizontal moves. */
+.anim-timeline-row.expanded .anim-keyframe {
+  cursor: move;
 }
 
 .anim-keyframe:hover {
@@ -1107,9 +1161,16 @@ select {
 .anim-ctx-header {
   font-size: 11px;
   color: var(--text-dim);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
+}
+
+.anim-ctx-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  font-style: italic;
 }
 
 .anim-ctx-row {
@@ -1149,4 +1210,265 @@ select {
 
 .empty-state p {
   margin-bottom: 16px;
+}
+
+/* ============================================================
+   Auth screens (login / setup-required)
+   ============================================================ */
+.auth-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+.auth-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 40px 48px;
+  max-width: 520px;
+  text-align: center;
+}
+.auth-card h1 {
+  font-size: 24px;
+  margin-bottom: 20px;
+  letter-spacing: 0.05em;
+}
+.auth-card p {
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+.auth-signin-btn {
+  font-size: 14px;
+  padding: 10px 24px;
+}
+.auth-error {
+  margin-top: 16px;
+  color: #ff8a8a;
+  font-size: 13px;
+}
+.setup-steps {
+  text-align: left;
+  margin-top: 16px;
+  padding-left: 20px;
+  color: var(--text-dim);
+  line-height: 1.7;
+  font-size: 13px;
+}
+.setup-steps code {
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* Loading splash between auth and project load */
+.loading-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.loading-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 32px;
+  color: var(--text-dim);
+}
+
+/* ============================================================
+   User badge in headers
+   ============================================================ */
+.user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+.user-badge-label {
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-badge-signout {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.user-badge-signout:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ============================================================
+   Project list page
+   ============================================================ */
+.header-list .header-nav {
+  margin-left: auto;
+}
+.project-list-page {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  padding: 32px;
+  overflow: auto;
+}
+.project-col {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.project-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.project-col-head h2 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.project-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.project-card {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.project-card-main {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.project-card-main:hover {
+  background: rgba(74, 158, 255, 0.08);
+}
+.project-card-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+.project-card-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.project-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+}
+.project-empty,
+.project-error {
+  list-style: none;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 24px 12px;
+}
+.project-error { color: #ff8a8a; }
+
+/* ============================================================
+   Modal (typeset picker)
+   ============================================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  max-width: 460px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-dialog h2 {
+  font-size: 16px;
+}
+.modal-help {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.modal-pick-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+.modal-pick-item {
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.modal-pick-item:hover {
+  border-color: var(--accent);
+}
+.modal-pick-item small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.modal-cancel {
+  align-self: flex-end;
+}
+
+/* ============================================================
+   Animation page snapshot-refresh button
+   ============================================================ */
+.snapshot-refresh-btn {
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }

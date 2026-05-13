@@ -1,4 +1,5 @@
-import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter } from '../core/project.js';
+import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter, currentFontProjectId, currentFontProjectName, flushNow as flushProjectNow } from '../core/project.js';
+import { uploadCharacterImage } from '../core/storage.js';
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
 import { renderCanvas } from '../render/canvas-renderer.js';
@@ -57,7 +58,12 @@ export function renderIndexPage(app) {
   let localTransform = resolveTransform(global, {});
 
   // === Header ===
-  const { el: header, headerNav: headerActions, progressEl } = createPageHeader({ activePage: 'index' });
+  const projectName = currentFontProjectName() || 'KABUKU Editor';
+  const { el: header, headerNav: headerActions, progressEl } = createPageHeader({
+    activePage: 'glyphs',
+    fontProjectId: currentFontProjectId(),
+    title: projectName,
+  });
   const progressWrap = progressEl.wrap;
   const progressBar = progressEl.bar;
   const progressText = progressEl.text;
@@ -100,6 +106,8 @@ export function renderIndexPage(app) {
           if (data.global.stretchAmount === undefined) data.global.stretchAmount = 0;
         }
         saveProject(data);
+        // Wait for Firestore write so the reload picks up the imported state.
+        await flushProjectNow();
         location.reload();
       } catch (e) {
         alert(`Import failed: ${e.message}`);
@@ -377,6 +385,9 @@ export function renderIndexPage(app) {
     const cd = project.characters[selectedCharId];
     if (cd?.imagePath) {
       const img = new Image();
+      // Storage URLs are cross-origin; without this the canvas would taint and
+      // autoMesh / export readback would throw SecurityError.
+      img.crossOrigin = 'anonymous';
       img.onload = () => { backgroundImage = img; redraw(); };
       img.src = cd.imagePath;
       return;
@@ -1045,25 +1056,34 @@ export function renderIndexPage(app) {
     input.addEventListener('change', async () => {
       const file = input.files[0];
       if (!file) return;
+      const targetId = selectedCharId;
+      // Show a local preview immediately while the upload runs.
       const dataUrl = await fileToDataURL(file);
-      const img = new Image();
-      img.onload = () => {
-        backgroundImage = img;
-        const cd = project.characters[selectedCharId];
-        saveCharacter(selectedCharId, {
-          imagePath: dataUrl,
-          layerOverrides: serializeLayerOverrides(localLayers, global),
-          transformOverrides: Object.keys(localTransformOverrides).length > 0 ? localTransformOverrides : undefined,
-        });
-        project.characters[selectedCharId] = {
-          ...cd,
-          imagePath: dataUrl,
-        };
+      const previewImg = await loadImage(dataUrl);
+      if (selectedCharId === targetId) {
+        backgroundImage = previewImg;
         redraw();
+      }
+      let url;
+      try {
+        url = await uploadCharacterImage({ charId: targetId, file });
+      } catch (e) {
+        console.error(e);
+        alert(`画像のアップロードに失敗しました: ${e.message}`);
+        return;
+      }
+      const cd = project.characters[targetId];
+      saveCharacter(targetId, {
+        ...(cd || {}),
+        imagePath: url,
+        layerOverrides: serializeLayerOverrides(localLayers, global),
+        transformOverrides: Object.keys(localTransformOverrides).length > 0 ? localTransformOverrides : undefined,
+      });
+      project.characters[targetId] = { ...(cd || {}), imagePath: url };
+      if (selectedCharId === targetId) {
         refreshSelectedThumbnail();
-        historyCommit('load-image');
-      };
-      img.src = dataUrl;
+      }
+      historyCommit('load-image');
     });
     input.click();
   }
@@ -1275,6 +1295,7 @@ export function renderIndexPage(app) {
       if (cd?.imagePath) {
         source = await new Promise((resolve) => {
           const im = new Image();
+          im.crossOrigin = 'anonymous';
           im.onload = () => resolve(im);
           im.onerror = () => resolve(null);
           im.src = cd.imagePath;
@@ -1427,6 +1448,7 @@ function renderThumbnail(canvas, charData) {
   };
   if (charData.imagePath) {
     const img = new Image();
+    img.crossOrigin = 'anonymous';
     img.onload = () => drawWithBackground(img);
     img.src = charData.imagePath;
   } else if (charData.fontSource) {
@@ -1470,7 +1492,6 @@ function importImages(project, ui) {
     for (const file of files) {
       const charId = file.name.replace(/\.[^.]+$/, '');
       if (!project.characters[charId]) {
-        const imageData = await fileToDataURL(file);
         const g = getGlobal();
         const importLayers = [];
         for (const gl of g.defaultLayers) {
@@ -1484,12 +1505,28 @@ function importImages(project, ui) {
           regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
           importLayers.push(layer);
         }
-        const img = await loadImage(imageData);
+        // Local mesh from the file bytes, plus parallel Storage upload — the
+        // upload result (HTTPS URL) is what we persist as imagePath.
+        const localPreview = await fileToDataURL(file);
+        const img = await loadImage(localPreview);
         offCtx.clearRect(0, 0, GLYPH_SIZE, GLYPH_SIZE);
         offCtx.drawImage(img, 0, 0, GLYPH_SIZE, GLYPH_SIZE);
         for (const layer of importLayers) await autoMeshAsync(offCtx, layer.cells, 0.5);
+        let imageUrl;
+        try {
+          imageUrl = await uploadCharacterImage({ charId, file });
+        } catch (e) {
+          console.warn(`Upload failed for ${charId}:`, e);
+          // Skip the failing glyph entirely to avoid persisting a giant data
+          // URL that won't sync to Firestore.
+          done++;
+          ui.progressBar.style.width = Math.round((done / total) * 100) + '%';
+          ui.progressText.textContent = `${done} / ${total}`;
+          await new Promise(r => requestAnimationFrame(r));
+          continue;
+        }
         const charData = {
-          imagePath: imageData,
+          imagePath: imageUrl,
           layerOverrides: serializeLayerOverrides(importLayers, g),
         };
         project.characters[charId] = charData;
@@ -1591,6 +1628,9 @@ function fileToDataURL(file) {
 function loadImage(src) {
   return new Promise((resolve) => {
     const img = new Image();
+    // Set crossOrigin before src so HTTPS Storage URLs can be drawn into a
+    // canvas without tainting it (data: URLs ignore the attribute).
+    img.crossOrigin = 'anonymous';
     img.onload = () => resolve(img);
     img.src = src;
   });

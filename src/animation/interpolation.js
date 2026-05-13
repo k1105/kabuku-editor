@@ -15,7 +15,12 @@ export function applyEasing(t, name) {
 /**
  * Sample a parameter track at given time.
  * Track = [{time, value, easing}, ...] sorted by time (ascending).
- * Easing on a keyframe determines how the curve approaches the NEXT keyframe.
+ *
+ * Easing on a keyframe defines how the curve APPROACHES that keyframe — i.e.
+ * the segment leading up to it from the previous keyframe. This matches the
+ * intuitive UX ("right-click the keyframe you want to reach, set how to get
+ * there"); the first keyframe's easing is unused since nothing precedes it.
+ *
  * Before first keyframe: first value. After last: last value. Empty: fallback.
  */
 export function sampleTrack(track, time, fallback) {
@@ -30,7 +35,7 @@ export function sampleTrack(track, time, fallback) {
       const span = b.time - a.time;
       if (span <= 0) return b.value;
       const t = (time - a.time) / span;
-      const eased = applyEasing(t, a.easing || 'linear');
+      const eased = applyEasing(t, b.easing || 'linear');
       return a.value + (b.value - a.value) * eased;
     }
   }

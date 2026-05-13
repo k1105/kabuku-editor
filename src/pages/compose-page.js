@@ -1,4 +1,4 @@
-import { loadProject, getGlobal, resolveTransform } from '../core/project.js';
+import { loadProject, getGlobal, resolveTransform, currentFontProjectId, currentFontProjectName } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { createPageHeader } from '../ui/page-header.js';
@@ -20,8 +20,9 @@ export function renderComposePage(app) {
     const cd = project.characters[charId];
     if (cd?.imagePath) {
       const img = new Image();
-      img.src = cd.imagePath;
+      img.crossOrigin = 'anonymous';
       img.onload = () => { sourceImageCache.set(charId, img); redraw(); };
+      img.src = cd.imagePath;
       sourceImageCache.set(charId, null);
       return null;
     }
@@ -67,7 +68,11 @@ export function renderComposePage(app) {
   }
 
   // === Header ===
-  const { el: header } = createPageHeader({ activePage: 'compose' });
+  const { el: header } = createPageHeader({
+    activePage: 'compose',
+    fontProjectId: currentFontProjectId(),
+    title: currentFontProjectName() || 'KABUKU Editor',
+  });
 
   // === Page layout ===
   const page = document.createElement('div');

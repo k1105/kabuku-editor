@@ -1,6 +1,24 @@
+/**
+ * FontProject store backed by Firestore.
+ *
+ *   /fontProjects/{id}              meta + global settings
+ *   /fontProjects/{id}/characters/{charId}  one doc per glyph
+ *
+ * Pages still call the synchronous API (loadProject, getGlobal, etc.) — the
+ * active project is kept in memory and flushed to Firestore via a debounced
+ * write batch (1.5s after the last edit). Switch projects with
+ * bootFontProject(id), which awaits any pending writes before reloading.
+ */
+import {
+  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
+  writeBatch, serverTimestamp, addDoc, query, orderBy,
+} from 'firebase/firestore';
+import { getDb } from './firebase.js';
+import { currentUser, userInfo } from './auth.js';
 import { getAllGrids } from '../grids/grid-plugin.js';
 
-const STORAGE_KEY = 'kabuku_project';
+const VERSION = 8;
+const WRITE_DEBOUNCE_MS = 1500;
 
 export const DEFAULT_FONT_METRICS = {
   ascender: 0.05,
@@ -81,8 +99,6 @@ export function createDefaultAnimation() {
   };
 }
 
-export const DEFAULT_ANIMATION = createDefaultAnimation();
-
 export const DEFAULT_LAYER = {
   gridName: 'FibonacciGrid',
   gridParams: { count: 500, scale: 10, dotRadius: 7, rotation: 228 },
@@ -108,343 +124,384 @@ export function buildGridDefaults() {
   return defaults;
 }
 
-/** Find the most common value for a key across an array of objects */
-function mostCommonValue(objects, key) {
-  const counts = new Map();
-  for (const obj of objects) {
-    if (obj && key in obj) {
-      const v = obj[key];
-      counts.set(v, (counts.get(v) || 0) + 1);
-    }
-  }
-  if (counts.size === 0) return undefined;
-  let best, bestCount = 0;
-  for (const [v, c] of counts) {
-    if (c > bestCount) { best = v; bestCount = c; }
-  }
-  return best;
-}
-
-/** Migrate v1 → v2 (global-first params with overrides) */
-function migrateV1toV2(data) {
-  const chars = Object.values(data.characters || {});
-  const g = data.global || {};
-
-  const transformKeys = ['baseGap', 'gapDirectionWeight', 'metaballStrength', 'metaballRadius'];
-  const allTransforms = chars.map(c => c.transform).filter(Boolean);
-  for (const key of transformKeys) {
-    const common = mostCommonValue(allTransforms, key);
-    g[key] = common !== undefined ? common : DEFAULT_GLOBAL[key];
-  }
-
-  const gridParamsByType = {};
-  for (const charData of chars) {
-    for (const layer of charData.layers || []) {
-      if (!layer.gridParams) continue;
-      if (!gridParamsByType[layer.gridName]) gridParamsByType[layer.gridName] = [];
-      gridParamsByType[layer.gridName].push(layer.gridParams);
-    }
-  }
-  const pluginDefaults = buildGridDefaults();
-  g.gridDefaults = {};
-  for (const [gridName, paramsList] of Object.entries(gridParamsByType)) {
-    const gd = { ...(pluginDefaults[gridName] || {}) };
-    const allKeys = new Set(paramsList.flatMap(p => Object.keys(p)));
-    for (const key of allKeys) {
-      const common = mostCommonValue(paramsList, key);
-      if (common !== undefined) gd[key] = common;
-    }
-    g.gridDefaults[gridName] = gd;
-  }
-  for (const [gridName, defaults] of Object.entries(pluginDefaults)) {
-    if (!g.gridDefaults[gridName]) g.gridDefaults[gridName] = defaults;
-  }
-
-  data.global = g;
-
-  for (const charData of chars) {
-    if (charData.transform && !charData.transformOverrides) {
-      const overrides = {};
-      for (const [k, v] of Object.entries(charData.transform)) {
-        if (g[k] !== undefined && g[k] !== v) {
-          overrides[k] = v;
-        }
-      }
-      charData.transformOverrides = Object.keys(overrides).length > 0 ? overrides : undefined;
-      delete charData.transform;
-    }
-    if (charData.layers) {
-      for (const layer of charData.layers) {
-        if (layer.gridParams && !layer.gridParamOverrides) {
-          const gd = g.gridDefaults[layer.gridName] || {};
-          const overrides = {};
-          for (const [k, v] of Object.entries(layer.gridParams)) {
-            if (gd[k] !== v) overrides[k] = v;
-          }
-          layer.gridParamOverrides = Object.keys(overrides).length > 0 ? overrides : undefined;
-          delete layer.gridParams;
-        }
-      }
-    }
-  }
-
-  data.version = 2;
-  return data;
-}
-
-/** Migrate v2 → v3 (layer structure moves to global, characters keep only overrides) */
-function migrateV2toV3(data) {
-  const chars = Object.values(data.characters || {});
-  const g = data.global;
-
-  // Derive defaultLayers from first character if empty
-  if (!g.defaultLayers || g.defaultLayers.length === 0) {
-    const firstChar = chars[0];
-    if (firstChar?.layers && firstChar.layers.length > 0) {
-      g.defaultLayers = firstChar.layers.map(l => ({
-        gridName: l.gridName,
-        gridParams: { ...(g.gridDefaults?.[l.gridName] || {}), ...(l.gridParamOverrides || {}) },
-        name: l.name || l.gridName,
-      }));
-    } else {
-      g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
-    }
-  }
-
-  // Convert charData.layers → charData.layerOverrides
-  for (const charData of chars) {
-    if (charData.layers && !charData.layerOverrides) {
-      charData.layerOverrides = charData.layers.map(l => ({
-        gridParamOverrides: l.gridParamOverrides,
-        cells: l.cells,
-        opacity: l.opacity,
-        visible: l.visible,
-      }));
-      delete charData.layers;
-    }
-  }
-
-  data.version = 3;
-  return data;
-}
-
-/** Migrate v3 → v4 (add animation data). */
-function migrateV3toV4(data) {
-  if (!data.animation) data.animation = createDefaultAnimation();
-  data.version = 4;
-  return data;
-}
-
-/** Migrate v4 → v5 (add font metrics to global). */
-function migrateV4toV5(data) {
-  if (!data.global.fontMetrics) {
-    data.global.fontMetrics = { ...DEFAULT_FONT_METRICS };
-  }
-  data.version = 5;
-  return data;
-}
-
-/** Migrate v5 → v6 (glyph reference size 512 → 1024; double saved cell coords + image offsets). */
-function migrateV5toV6(data) {
-  const SCALE = 2;
-  for (const cd of Object.values(data.characters || {})) {
-    for (const lo of cd.layerOverrides || []) {
-      if (!lo?.cells) continue;
-      for (const c of lo.cells) {
-        if (c.center) {
-          c.center = { x: c.center.x * SCALE, y: c.center.y * SCALE };
-        }
-      }
-    }
-    if (typeof cd.imageOffsetX === 'number') cd.imageOffsetX *= SCALE;
-    if (typeof cd.imageOffsetY === 'number') cd.imageOffsetY *= SCALE;
-  }
-  data.version = 6;
-  return data;
-}
-
-/** Migrate v6 → v7 (add font info to global). */
-function migrateV6toV7(data) {
-  if (!data.global.fontInfo) {
-    data.global.fontInfo = { ...DEFAULT_FONT_INFO };
-  }
-  data.version = 7;
-  return data;
-}
-
-/**
- * Migrate v7 → v8 (compact cell storage).
- * Cells where filled=false and !manualOverride are reconstructed by
- * regenerateCells on load — saving them just bloats localStorage. Drop those,
- * round center coords to integers, and omit falsy flags.
- */
-function migrateV7toV8(data) {
-  for (const cd of Object.values(data.characters || {})) {
-    for (const lo of cd.layerOverrides || []) {
-      if (!lo?.cells) continue;
-      lo.cells = lo.cells
-        .filter(c => c.filled || c.manualOverride)
-        .map(c => compactCell(c));
-    }
-  }
-  data.version = 8;
-  return data;
-}
-
-function compactCell(c) {
-  const out = {
-    center: {
-      x: Math.round(c.center?.x ?? 0),
-      y: Math.round(c.center?.y ?? 0),
-    },
+function defaultGlobal() {
+  return {
+    ...DEFAULT_GLOBAL,
+    gridDefaults: buildGridDefaults(),
+    fontMetrics: { ...DEFAULT_FONT_METRICS },
+    fontInfo: { ...DEFAULT_FONT_INFO },
   };
-  if (c.filled) out.filled = true;
-  if (c.manualOverride) out.manualOverride = true;
-  return out;
 }
 
-function migrateProject(data) {
-  if (!data.version || data.version < 2) {
-    data = migrateV1toV2(data);
-  }
-  if (data.version < 3) {
-    data = migrateV2toV3(data);
-  }
-  if (data.version < 4) {
-    data = migrateV3toV4(data);
-  }
-  if (data.version < 5) {
-    data = migrateV4toV5(data);
-  }
-  if (data.version < 6) {
-    data = migrateV5toV6(data);
-  }
-  if (data.version < 7) {
-    data = migrateV6toV7(data);
-  }
-  if (data.version < 8) {
-    data = migrateV7toV8(data);
-  }
-  return data;
+function ensureGlobalDefaults(g) {
+  if (!g.gridDefaults || Object.keys(g.gridDefaults).length === 0) g.gridDefaults = buildGridDefaults();
+  if (!g.defaultLayers || g.defaultLayers.length === 0) g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
+  if (!g.fontMetrics) g.fontMetrics = { ...DEFAULT_FONT_METRICS };
+  if (!g.fontInfo) g.fontInfo = { ...DEFAULT_FONT_INFO };
+  return g;
 }
 
 /**
- * Clean up: remove stale overrides that match global defaults.
+ * Strip `undefined` values out of plain objects/arrays. Firestore rejects
+ * documents containing `undefined` (e.g. `transformOverrides: undefined` when
+ * a glyph has no overrides). Recurses into plain Object / Array only —
+ * server-side sentinels like serverTimestamp() are never user payload, so
+ * we never run them through this function.
  */
-function consolidateOverrides(data) {
-  const chars = Object.values(data.characters || {});
-  if (chars.length === 0) return data;
-  const g = data.global;
+export function stripUndefined(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    return value
+      .map(stripUndefined)
+      .filter(v => v !== undefined);
+  }
+  if (typeof value === 'object' && value.constructor === Object) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      const cleaned = stripUndefined(v);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  return value;
+}
 
-  // Consolidate transform overrides
-  const transformKeys = ['baseGap', 'gapDirectionWeight', 'metaballStrength', 'metaballRadius'];
-  for (const key of transformKeys) {
-    const allOverrides = chars.filter(c => c.transformOverrides && key in c.transformOverrides);
-    if (allOverrides.length === 0) continue;
-    const vals = allOverrides.map(c => c.transformOverrides[key]);
-    const charsWithout = chars.filter(c => !c.transformOverrides || !(key in c.transformOverrides));
-    if (vals.length > 0 && vals.every(v => v === vals[0]) && charsWithout.length === 0) {
-      g[key] = vals[0];
-      for (const c of chars) {
-        if (c.transformOverrides) {
-          delete c.transformOverrides[key];
-          if (Object.keys(c.transformOverrides).length === 0) c.transformOverrides = undefined;
+// =========================================================================
+// In-memory state for the active FontProject
+// =========================================================================
+let _fp = null;            // { id, name, global, characters, version }
+let _fpId = null;
+const _dirtyChars = new Set();
+const _deletedChars = new Set();
+let _metaDirty = false;
+let _writeTimer = null;
+const _changeSubs = new Set();
+
+function notifyChange() {
+  for (const fn of _changeSubs) fn();
+}
+
+/** Subscribe to in-memory state changes (e.g. for unsaved-indicator UI). */
+export function subscribeProject(fn) {
+  _changeSubs.add(fn);
+  return () => _changeSubs.delete(fn);
+}
+
+/** Reset the in-memory state (used when signing out / switching). */
+export async function unloadFontProject() {
+  await flushNow();
+  _fp = null;
+  _fpId = null;
+  _dirtyChars.clear();
+  _deletedChars.clear();
+  _metaDirty = false;
+}
+
+export function currentFontProjectId() { return _fpId; }
+export function currentFontProjectName() { return _fp?.name || null; }
+
+export async function bootFontProject(projectId) {
+  if (_fpId && _fpId !== projectId) await flushNow();
+  const db = getDb();
+  const metaSnap = await getDoc(doc(db, 'fontProjects', projectId));
+  if (!metaSnap.exists()) throw new Error(`Font project not found: ${projectId}`);
+  const meta = metaSnap.data();
+  const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
+  const characters = {};
+  for (const d of charsSnap.docs) characters[d.id] = d.data();
+  _fp = {
+    id: projectId,
+    name: meta.name || 'Untitled',
+    global: ensureGlobalDefaults({ ...defaultGlobal(), ...(meta.global || {}) }),
+    characters,
+    version: meta.version || VERSION,
+  };
+  _fpId = projectId;
+  _dirtyChars.clear();
+  _deletedChars.clear();
+  _metaDirty = false;
+  notifyChange();
+  return _fp;
+}
+
+function scheduleWrite() {
+  if (_writeTimer) clearTimeout(_writeTimer);
+  _writeTimer = setTimeout(() => { flushNow(); }, WRITE_DEBOUNCE_MS);
+  notifyChange();
+}
+
+/**
+ * Flush any pending writes immediately. Called before nav-away / unload.
+ * Splits across multiple write batches when needed (Firestore caps at 500 ops).
+ */
+export async function flushNow() {
+  if (_writeTimer) { clearTimeout(_writeTimer); _writeTimer = null; }
+  if (!_fp || !_fpId) return;
+  if (!_metaDirty && _dirtyChars.size === 0 && _deletedChars.size === 0) return;
+  const db = getDb();
+  const lastEditor = userInfo() || null;
+
+  // Build a flat op list, then chunk into <= 450 ops per batch.
+  const ops = [];
+  if (_metaDirty) {
+    ops.push({
+      kind: 'set',
+      ref: doc(db, 'fontProjects', _fpId),
+      data: {
+        name: _fp.name || 'Untitled',
+        global: stripUndefined(_fp.global),
+        version: _fp.version || VERSION,
+        updatedAt: serverTimestamp(),
+        lastEditor,
+      },
+      options: { merge: true },
+    });
+  }
+  for (const cid of _dirtyChars) {
+    const cd = _fp.characters[cid];
+    if (!cd) continue;
+    ops.push({
+      kind: 'set',
+      ref: doc(db, 'fontProjects', _fpId, 'characters', cid),
+      data: stripUndefined(cd),
+    });
+  }
+  for (const cid of _deletedChars) {
+    ops.push({
+      kind: 'delete',
+      ref: doc(db, 'fontProjects', _fpId, 'characters', cid),
+    });
+  }
+  _metaDirty = false;
+  _dirtyChars.clear();
+  _deletedChars.clear();
+
+  try {
+    while (ops.length > 0) {
+      const chunk = ops.splice(0, 450);
+      const batch = writeBatch(db);
+      for (const op of chunk) {
+        if (op.kind === 'set') {
+          if (op.options) batch.set(op.ref, op.data, op.options);
+          else batch.set(op.ref, op.data);
+        } else if (op.kind === 'delete') {
+          batch.delete(op.ref);
         }
       }
+      await batch.commit();
     }
+  } catch (e) {
+    console.error('Failed to flush font project:', e);
   }
+}
 
-  // Clean up grid param overrides that match global
-  for (const charData of chars) {
-    const overrides = charData.layerOverrides || [];
-    for (let i = 0; i < overrides.length; i++) {
-      const lo = overrides[i];
-      if (!lo?.gridParamOverrides) continue;
-      const globalLayer = g.defaultLayers?.[i];
-      if (!globalLayer) continue;
-      const gd = g.gridDefaults?.[globalLayer.gridName] || {};
-      for (const [k, v] of Object.entries(lo.gridParamOverrides)) {
-        if (gd[k] === v) delete lo.gridParamOverrides[k];
-      }
-      if (Object.keys(lo.gridParamOverrides).length === 0) lo.gridParamOverrides = undefined;
-    }
-  }
+// Flush on tab close so debounced writes don't get dropped.
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => { flushNow(); });
+}
 
-  return data;
+// =========================================================================
+// Synchronous API used by pages
+// =========================================================================
+function blankProject() {
+  return {
+    characters: {},
+    global: defaultGlobal(),
+    version: VERSION,
+  };
 }
 
 export function loadProject() {
-  try {
-    const json = localStorage.getItem(STORAGE_KEY);
-    if (json) {
-      let data = JSON.parse(json);
-      const oldVersion = data.version;
-      if (!data.global) data.global = { ...DEFAULT_GLOBAL, gridDefaults: buildGridDefaults() };
-      data = migrateProject(data);
-      data = consolidateOverrides(data);
-      // Persist if a migration ran — frees up localStorage immediately for
-      // users hitting quota with the old verbose cell format.
-      if (data.version !== oldVersion) {
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
-        catch (e) { console.warn('Failed to persist migrated project:', e); }
-      }
-      return data;
-    }
-  } catch (e) {
-    console.warn('Failed to load project:', e);
-  }
-  return {
-    characters: {},
-    global: {
-      ...DEFAULT_GLOBAL,
-      gridDefaults: buildGridDefaults(),
-      fontMetrics: { ...DEFAULT_FONT_METRICS },
-      fontInfo: { ...DEFAULT_FONT_INFO },
-    },
-    animation: createDefaultAnimation(),
-    version: 8,
-  };
+  return _fp || blankProject();
 }
 
-let _quotaAlerted = false;
-
 /**
- * Persist project to localStorage. Returns true on success, false on failure.
- * On quota exhaustion, surfaces a one-shot alert so users know writes are
- * being silently dropped (without re-alerting on every subsequent save).
+ * Full-project overwrite (used by history undo/redo and bulk imports).
+ *
+ * Callers commonly mutate the in-memory project in place and then call
+ * saveProject(_fp) — i.e. the data arg shares references with _fp. A
+ * reference-based diff would miss those mutations entirely, so saveProject
+ * marks every character dirty unconditionally. This trades a few extra
+ * Firestore writes for correctness; per-key callers (saveCharacter,
+ * saveGlobal) remain fine-grained.
  */
 export function saveProject(data) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    _quotaAlerted = false;
-    return true;
-  } catch (e) {
-    console.warn('Failed to save project:', e);
-    if (e?.name === 'QuotaExceededError' && !_quotaAlerted) {
-      _quotaAlerted = true;
-      try {
-        alert('保存容量を超えました。文字数を減らすか、ブラウザの localStorage を整理してください。\n以降の編集はディスクに保存されません。');
-      } catch {}
+  if (!_fpId) return false;
+  const next = {
+    id: _fpId,
+    name: data.name || _fp?.name || 'Untitled',
+    global: data.global,
+    characters: data.characters || {},
+    version: data.version || VERSION,
+  };
+  const oldIds = new Set(Object.keys(_fp?.characters || {}));
+  const newIds = new Set(Object.keys(next.characters));
+  for (const oldId of oldIds) {
+    if (!newIds.has(oldId)) {
+      _deletedChars.add(oldId);
+      _dirtyChars.delete(oldId);
     }
-    return false;
   }
+  for (const cid of newIds) {
+    _dirtyChars.add(cid);
+    _deletedChars.delete(cid);
+  }
+  _metaDirty = true;
+  _fp = next;
+  scheduleWrite();
+  return true;
 }
 
 export function getGlobal() {
-  const g = loadProject().global;
-  if (!g.gridDefaults || Object.keys(g.gridDefaults).length === 0) {
-    g.gridDefaults = buildGridDefaults();
+  return ensureGlobalDefaults(_fp?.global || defaultGlobal());
+}
+
+export function saveGlobal(global) {
+  if (!_fp) return false;
+  _fp.global = global;
+  _metaDirty = true;
+  scheduleWrite();
+  return true;
+}
+
+export function getCharacter(charId) {
+  return _fp?.characters?.[charId] || null;
+}
+
+export function saveCharacter(charId, charData) {
+  if (!_fp) return false;
+  _fp.characters[charId] = charData;
+  _dirtyChars.add(charId);
+  _deletedChars.delete(charId);
+  scheduleWrite();
+  return true;
+}
+
+export function getAllCharIds() {
+  return Object.keys(_fp?.characters || {});
+}
+
+export function deleteCharacter(charId) {
+  if (!_fp || !(charId in _fp.characters)) return false;
+  delete _fp.characters[charId];
+  _deletedChars.add(charId);
+  _dirtyChars.delete(charId);
+  scheduleWrite();
+  return true;
+}
+
+/** Rename a character, preserving insertion order. */
+export function renameCharacter(oldId, newId) {
+  if (oldId === newId) return { ok: true };
+  if (!newId) return { ok: false, reason: 'empty' };
+  if (!_fp) return { ok: false, reason: 'missing' };
+  if (!(oldId in _fp.characters)) return { ok: false, reason: 'missing' };
+  if (newId in _fp.characters) return { ok: false, reason: 'conflict' };
+  const rebuilt = {};
+  for (const [k, v] of Object.entries(_fp.characters)) {
+    rebuilt[k === oldId ? newId : k] = v;
   }
-  if (!g.defaultLayers || g.defaultLayers.length === 0) {
-    g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
+  _fp.characters = rebuilt;
+  _deletedChars.add(oldId);
+  _dirtyChars.add(newId);
+  scheduleWrite();
+  return { ok: true };
+}
+
+export function generateUniqueCharId(prefix = 'new') {
+  if (!_fp) return prefix;
+  if (!(prefix in _fp.characters)) return prefix;
+  let i = 1;
+  while (`${prefix}_${i}` in _fp.characters) i++;
+  return `${prefix}_${i}`;
+}
+
+export function createEmptyCharacter(charId) {
+  if (!_fp) return false;
+  if (charId in _fp.characters) return false;
+  _fp.characters[charId] = { imagePath: '' };
+  _dirtyChars.add(charId);
+  scheduleWrite();
+  return true;
+}
+
+// =========================================================================
+// Project-list level operations (across collection)
+// =========================================================================
+export async function listFontProjects() {
+  const db = getDb();
+  const q = query(collection(db, 'fontProjects'), orderBy('updatedAt', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+export async function createFontProject(name) {
+  const db = getDb();
+  const user = userInfo();
+  const data = {
+    name: name || 'Untitled',
+    global: defaultGlobal(),
+    version: VERSION,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: user,
+    lastEditor: user,
+  };
+  const ref = await addDoc(collection(db, 'fontProjects'), data);
+  return ref.id;
+}
+
+export async function renameFontProject(projectId, newName) {
+  const db = getDb();
+  await updateDoc(doc(db, 'fontProjects', projectId), {
+    name: newName,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function deleteFontProject(projectId) {
+  const db = getDb();
+  const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
+  // Firestore batches cap at 500 ops; chunk just in case.
+  const ops = [...charsSnap.docs.map(d => d.ref), doc(db, 'fontProjects', projectId)];
+  while (ops.length > 0) {
+    const chunk = ops.splice(0, 450);
+    const batch = writeBatch(db);
+    for (const ref of chunk) batch.delete(ref);
+    await batch.commit();
   }
-  if (!g.fontMetrics) {
-    g.fontMetrics = { ...DEFAULT_FONT_METRICS };
-  }
-  if (!g.fontInfo) {
-    g.fontInfo = { ...DEFAULT_FONT_INFO };
-  }
-  return g;
+}
+
+/** Fetch a font project's full state without making it active (for snapshots). */
+export async function fetchFontProjectSnapshot(projectId) {
+  const db = getDb();
+  const metaSnap = await getDoc(doc(db, 'fontProjects', projectId));
+  if (!metaSnap.exists()) throw new Error(`Font project not found: ${projectId}`);
+  const meta = metaSnap.data();
+  const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
+  const characters = {};
+  for (const d of charsSnap.docs) characters[d.id] = d.data();
+  return {
+    id: projectId,
+    name: meta.name || 'Untitled',
+    global: ensureGlobalDefaults({ ...defaultGlobal(), ...(meta.global || {}) }),
+    characters,
+    version: meta.version || VERSION,
+  };
+}
+
+// =========================================================================
+// JSON export / import (whole project round-trip)
+// =========================================================================
+export function exportProject() {
+  return JSON.stringify(_fp || blankProject(), null, 2);
+}
+
+export function importProject(json) {
+  const data = JSON.parse(json);
+  // Treat as full overwrite of in-memory state; meta + chars all dirty.
+  saveProject(data);
 }
 
 /**
@@ -456,110 +513,14 @@ export function resolveCodepoint(charId) {
   if (typeof charId !== 'string' || charId.length === 0) return null;
   const cp = charId.codePointAt(0);
   if (cp == null) return null;
-  // Only treat as single-codepoint if the entire string is exactly that one
-  // code point (handles surrogate pairs for non-BMP chars correctly).
   const expectedLen = cp > 0xFFFF ? 2 : 1;
   if (charId.length !== expectedLen) return null;
   return cp;
 }
 
-export function saveGlobal(global) {
-  const project = loadProject();
-  project.global = global;
-  saveProject(project);
-}
-
-export function getAnimation() {
-  const p = loadProject();
-  if (!p.animation) p.animation = createDefaultAnimation();
-  p.animation.baseValues = { ...DEFAULT_ANIMATION_BASE_VALUES, ...(p.animation.baseValues || {}) };
-  // cameraDistance must be > 0; fix any zero/invalid values left over from earlier loads
-  const cdTrack = p.animation.tracks?.cameraDistance;
-  if (cdTrack) {
-    for (const kf of cdTrack) {
-      if (!(kf.value > 0)) kf.value = 1;
-    }
-  }
-  if (!(p.animation.baseValues.cameraDistance > 0)) {
-    p.animation.baseValues.cameraDistance = 1;
-  }
-  return p.animation;
-}
-
-export function saveAnimation(animation) {
-  const project = loadProject();
-  project.animation = animation;
-  saveProject(project);
-}
-
-export function getCharacter(charId) {
-  const project = loadProject();
-  return project.characters[charId] || null;
-}
-
-export function saveCharacter(charId, charData) {
-  const project = loadProject();
-  project.characters[charId] = charData;
-  saveProject(project);
-}
-
-export function getAllCharIds() {
-  const project = loadProject();
-  return Object.keys(project.characters);
-}
-
-export function deleteCharacter(charId) {
-  const project = loadProject();
-  if (!(charId in project.characters)) return false;
-  delete project.characters[charId];
-  saveProject(project);
-  return true;
-}
-
-/**
- * Rename a character key. Preserves insertion order so the char strip UI
- * doesn't reshuffle when the user edits a name.
- * Returns { ok: true } on success or { ok: false, reason } on conflict/missing.
- */
-export function renameCharacter(oldId, newId) {
-  if (oldId === newId) return { ok: true };
-  if (!newId) return { ok: false, reason: 'empty' };
-  const project = loadProject();
-  if (!(oldId in project.characters)) return { ok: false, reason: 'missing' };
-  if (newId in project.characters) return { ok: false, reason: 'conflict' };
-  const rebuilt = {};
-  for (const [k, v] of Object.entries(project.characters)) {
-    rebuilt[k === oldId ? newId : k] = v;
-  }
-  project.characters = rebuilt;
-  saveProject(project);
-  return { ok: true };
-}
-
-/**
- * Generate a unique charId based on a prefix. Used for empty-glyph creation
- * where the user hasn't picked a name yet.
- */
-export function generateUniqueCharId(prefix = 'new') {
-  const project = loadProject();
-  if (!(prefix in project.characters)) return prefix;
-  let i = 1;
-  while (`${prefix}_${i}` in project.characters) i++;
-  return `${prefix}_${i}`;
-}
-
-/**
- * Create an empty character entry (no image, no fill). Inherits global
- * layers/params via the standard layerOverrides=[] resolution path.
- */
-export function createEmptyCharacter(charId) {
-  const project = loadProject();
-  if (charId in project.characters) return false;
-  project.characters[charId] = { imagePath: '' };
-  saveProject(project);
-  return true;
-}
-
+// =========================================================================
+// Pure helpers (unchanged from previous version)
+// =========================================================================
 /** Resolve transform: global defaults merged with per-character overrides */
 export function resolveTransform(global, overrides) {
   return {
@@ -590,43 +551,45 @@ export function computeOverrides(resolved, globalDefaults) {
 
 /**
  * Resolve character layers: build rendering data from global structure + character overrides.
- * Returns array of { gridName, name, resolvedParams, gridParamOverrides, cells, opacity, visible }
  */
 export function resolveCharacterLayers(global, charData) {
   const overrides = charData?.layerOverrides || [];
   return (global.defaultLayers || []).map((globalLayer, i) => {
     const charOverride = overrides[i] || {};
     const gridParamOverrides = charOverride.gridParamOverrides || {};
-    // Use the layer's own gridParams as base, not the per-type gridDefaults
     const resolvedParams = { ...globalLayer.gridParams, ...gridParamOverrides };
     return {
       gridName: globalLayer.gridName,
       name: globalLayer.name || globalLayer.gridName,
       resolvedParams,
       gridParamOverrides,
-      // Only use saved cells if grid type matches (otherwise stale data from different grid)
       cells: (!charOverride.gridName || charOverride.gridName === globalLayer.gridName)
         ? (charOverride.cells || null)
         : null,
-      // Inherit visibility/opacity from the global layer when the char doesn't
-      // override them. Without this fallback, global toggles never reach the
-      // render pipeline because every char has an explicit serialized value.
       opacity: charOverride.opacity ?? globalLayer.opacity ?? 1,
       visible: charOverride.visible ?? globalLayer.visible ?? true,
     };
   });
 }
 
-/** Serialize runtime layers to per-character overrides (layerOverrides format) */
+function compactCell(c) {
+  const out = {
+    center: {
+      x: Math.round(c.center?.x ?? 0),
+      y: Math.round(c.center?.y ?? 0),
+    },
+  };
+  if (c.filled) out.filled = true;
+  if (c.manualOverride) out.manualOverride = true;
+  return out;
+}
+
+/** Serialize runtime layers to per-character overrides */
 export function serializeLayerOverrides(layers, global) {
   return layers.map((layer, i) => {
     const globalLayer = global.defaultLayers?.[i];
     if (!globalLayer) return null;
-    // Compare against the layer's own gridParams, not the per-type gridDefaults
     const overrides = computeOverrides(layer.gridParams, globalLayer.gridParams || {});
-    // Skip cells in default state (unfilled, no manual override) — they're
-    // reconstructed by regenerateCells on load. Massive size savings: a typical
-    // glyph has 80–95% unfilled cells.
     const out = {
       gridName: globalLayer.gridName,
       gridParamOverrides: overrides,
@@ -634,8 +597,6 @@ export function serializeLayerOverrides(layers, global) {
         .filter(c => c.filled || c.manualOverride)
         .map(c => compactCell(c)),
     };
-    // Only persist opacity/visible when they diverge from the global default,
-    // so that future global edits propagate to chars that haven't overridden.
     const gOpacity = globalLayer.opacity ?? 1;
     const gVisible = globalLayer.visible ?? true;
     if (layer.opacity !== gOpacity) out.opacity = layer.opacity;
@@ -644,17 +605,7 @@ export function serializeLayerOverrides(layers, global) {
   }).filter(Boolean);
 }
 
-// Keep for backward compat during transition (used nowhere after migration)
+// Keep for backward compat during transition
 export function serializeLayerData(layers, global) {
   return serializeLayerOverrides(layers, global);
-}
-
-export function exportProject() {
-  return JSON.stringify(loadProject(), null, 2);
-}
-
-export function importProject(json) {
-  let data = JSON.parse(json);
-  data = migrateProject(data);
-  saveProject(data);
 }

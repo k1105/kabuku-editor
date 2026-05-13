@@ -1,13 +1,19 @@
-import { loadProject, getGlobal, resolveTransform, saveAnimation, getAnimation, createDefaultAnimation, ANIMATED_PARAM_KEYS } from '../core/project.js';
+import { resolveTransform, createDefaultAnimation, ANIMATED_PARAM_KEYS } from '../core/project.js';
+import {
+  getSnapshotProject, getSnapshotGlobal, getAnimation, saveAnimation,
+  currentAnimationProjectName, currentAnimationProjectId, refreshSnapshotFromOrigin,
+  getOriginFontProjectId, getOriginFontProjectName, getSnapshotAt,
+  flushNow as flushAnimationNow,
+} from '../core/animation-project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime } from '../animation/animation.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
-import { renderFrames } from '../animation/render.js';
+import { renderFrames, computeFrameCacheShape } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { iconEl, iconSvg } from '../ui/icons.js';
-import { commit as historyCommit } from '../core/history.js';
+import { commit as historyCommit } from '../core/animation-history.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 
 const ANIMATED_SLIDER_DEFS = [
@@ -29,15 +35,17 @@ const CAMERA_SLIDER_DEFS = [
 ];
 
 export function renderAnimationPage(app) {
-  const project = loadProject();
-  const global = getGlobal();
+  const project = getSnapshotProject();
+  const global = getSnapshotGlobal() || project.global;
   project.global = global;
   const charIds = new Set(Object.keys(project.characters));
   const glyphCache = createGlyphCache();
   const sourceImageCache = new Map();
 
   let animation = getAnimation();
-  if (!animation.text) animation.text = Object.keys(project.characters).join('');
+  // Cap the auto-filled text to 5 chars; with large typesets, dumping every
+  // glyph here freezes the page during layout/render.
+  if (!animation.text) animation.text = Object.keys(project.characters).slice(0, 5).join('');
 
   // Ensure every animated track has at least one keyframe at t=0.
   let tracksFilled = false;
@@ -57,9 +65,11 @@ export function renderAnimationPage(app) {
   let playStartWallTime = 0;
   let playStartAnimTime = 0;
   let rafId = null;
-  let renderedFrames = null; // { frames: HTMLCanvasElement[], fps, width, height } or null
-  let renderDirty = true;
-  let showingRendered = false;
+  // Frame cache: { fps, totalFrames, width, height, frames: Array<Canvas|null> }.
+  // Populated incrementally by renderFrames(); cleared by markDirty() on any
+  // animation edit. redrawPreview() checks per-frame; missing entries fall
+  // back to live drawing.
+  let frameCache = null;
 
   function persist() {
     saveAnimation(animation);
@@ -70,8 +80,11 @@ export function renderAnimationPage(app) {
   function commitHistory(label) { historyCommit(label); }
 
   function markDirty() {
-    renderDirty = true;
-    showingRendered = false;
+    // Any animation edit invalidates every cached frame — params/text/layout
+    // changes can affect rendering at arbitrary times, so cheaper to drop the
+    // whole cache than to track which frames are affected.
+    frameCache = null;
+    timeline?.updateFrameCacheIndicator?.(null);
   }
 
   // Preload source images. Image-imported chars use their data-URL imagePath;
@@ -82,8 +95,9 @@ export function renderAnimationPage(app) {
     const cd = project.characters[charId];
     if (cd?.imagePath) {
       const img = new Image();
-      img.src = cd.imagePath;
+      img.crossOrigin = 'anonymous';
       img.onload = () => { sourceImageCache.set(charId, img); redrawPreview(); };
+      img.src = cd.imagePath;
       sourceImageCache.set(charId, null);
       return null;
     }
@@ -99,7 +113,47 @@ export function renderAnimationPage(app) {
   for (const cid of Object.keys(project.characters)) getSourceImage(cid);
 
   // === Header ===
-  const { el: header } = createPageHeader({ activePage: 'animation' });
+  const animName = currentAnimationProjectName() || 'Animation';
+  const { el: header, headerNav } = createPageHeader({
+    activePage: 'animation',
+    fontProjectId: null,
+    title: animName,
+    historyMode: 'animation',
+  });
+
+  // Snapshot status pill + Refresh button (re-pull latest from origin font project)
+  const originName = getOriginFontProjectName();
+  const snapAt = getSnapshotAt();
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'tool-btn snapshot-refresh-btn';
+  refreshBtn.title = originName
+    ? `Snapshot of "${originName}" — click to re-pull the latest`
+    : 'Snapshot info';
+  refreshBtn.innerHTML = '';
+  const refreshIcon = iconEl('refresh');
+  const refreshLabel = document.createElement('span');
+  refreshLabel.textContent = 'Refresh Snapshot';
+  refreshBtn.appendChild(refreshIcon);
+  refreshBtn.appendChild(refreshLabel);
+  refreshBtn.addEventListener('click', async () => {
+    if (!getOriginFontProjectId()) {
+      alert('元の Typeset が見つかりません（削除済みの可能性）。');
+      return;
+    }
+    if (!confirm('元の Typeset の最新状態でスナップショットを上書きします。よろしいですか?')) return;
+    refreshBtn.disabled = true;
+    refreshLabel.textContent = 'Refreshing...';
+    try {
+      await refreshSnapshotFromOrigin(currentAnimationProjectId());
+      location.reload();
+    } catch (e) {
+      console.error(e);
+      alert(`Refresh に失敗しました: ${e.message}`);
+      refreshBtn.disabled = false;
+      refreshLabel.textContent = 'Refresh Snapshot';
+    }
+  });
+  headerNav.insertBefore(refreshBtn, headerNav.firstChild);
 
   // === Page ===
   const page = document.createElement('div');
@@ -449,33 +503,92 @@ export function renderAnimationPage(app) {
     targetCtx.translate(-cx, -cy);
   }
 
-  /** Full pipeline draw (slow) */
+  /**
+   * Seed `frameCache` with shape (width/height/fps/totalFrames) when it's
+   * missing — runs the first-pass dimension scan from renderFrames. Lets
+   * scrub-time drawFull() write into the cache at the same uniform
+   * dimensions as Render-button output.
+   */
+  function ensureFrameCacheShape() {
+    if (frameCache?.frames?.length) return;
+    const shape = computeFrameCacheShape(animation, { charIds, global });
+    frameCache = {
+      fps: shape.fps,
+      totalFrames: shape.totalFrames,
+      width: shape.width,
+      height: shape.height,
+      frames: new Array(shape.totalFrames).fill(null),
+    };
+    timeline?.updateFrameCacheIndicator?.(frameCache);
+  }
+
+  /** Full pipeline draw (slow). Renders to an offscreen at the frame cache's
+   *  uniform dimensions, stores the result in cache at the current frame
+   *  index, then blits to the on-screen canvas. */
   function drawFull(params) {
-    canvas.style.transform = '';
+    ensureFrameCacheShape();
+    const cacheW = frameCache.width;
+    const cacheH = frameCache.height;
+    const off = document.createElement('canvas');
+    off.width = cacheW;
+    off.height = cacheH;
+    const octx = off.getContext('2d');
+    octx.fillStyle = '#fff';
+    octx.fillRect(0, 0, cacheW, cacheH);
+
     const layout = computeLayout(params);
-    prepareCanvas(layout.cw, layout.ch);
-    const { positions, pad, drawSize, drawOffset, cw, ch } = layout;
+    const dx = Math.floor((cacheW - layout.cw) / 2);
+    const dy = Math.floor((cacheH - layout.ch) / 2);
+
+    octx.save();
+    applyCameraTransform(octx, cacheW, cacheH, params);
     const transform = getTransformFromParams(params);
-    ctx.save();
-    applyCameraTransform(ctx, cw, ch, params);
-    for (const pos of positions) {
-      const gx = pad + pos.x;
-      const gy = pad + pos.y;
-      if (pos.missing) { drawMissingAt(gx, gy, params.fontSize); continue; }
+    for (const pos of layout.positions) {
+      const gx = dx + layout.pad + pos.x;
+      const gy = dy + layout.pad + pos.y;
+      if (pos.missing) {
+        octx.fillStyle = '#f0f0f0';
+        octx.fillRect(gx, gy, params.fontSize, params.fontSize);
+        octx.strokeStyle = '#bbb';
+        octx.lineWidth = 1;
+        octx.strokeRect(gx, gy, params.fontSize, params.fontSize);
+        continue;
+      }
       const charData = project.characters[pos.charId];
       const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
       const cached = glyphCache.get(pos.charId, charData, global, charTransform);
-      if (cached) ctx.drawImage(cached, gx - drawOffset, gy - drawOffset, drawSize, drawSize);
+      if (cached) octx.drawImage(cached, gx - layout.drawOffset, gy - layout.drawOffset, layout.drawSize, layout.drawSize);
     }
-    ctx.restore();
+    octx.restore();
+
+    // Cache at the current time slot (only when empty — Render-button frames
+    // win over scrub-time captures, and we never overwrite a previously cached
+    // entry with this potentially older glyph-cache state).
+    const idx = Math.min(frameCache.frames.length - 1,
+      Math.max(0, Math.round(currentTime * frameCache.fps)));
+    if (!frameCache.frames[idx]) {
+      frameCache.frames[idx] = off;
+      timeline.updateFrameCacheIndicator(frameCache);
+    }
+
+    canvas.style.transform = '';
+    canvas.width = cacheW;
+    canvas.height = cacheH;
+    ctx.drawImage(off, 0, 0);
   }
 
-  /** Fast preview using source images */
+  /** Fast preview using source images. Draws into the same uniform cache
+   *  canvas dimensions as drawFull / cached frames so the page canvas size
+   *  doesn't change between playback / scrub / Render paths. */
   function redrawFast(params) {
     const p = params || sampleAnimation(animation, currentTime);
+    ensureFrameCacheShape();
+    const cacheW = frameCache.width;
+    const cacheH = frameCache.height;
     const layout = computeLayout(p);
-    prepareCanvas(layout.cw, layout.ch);
-    const { positions, pad, cw, ch } = layout;
+    prepareCanvas(cacheW, cacheH);
+    const dx = Math.floor((cacheW - layout.cw) / 2);
+    const dy = Math.floor((cacheH - layout.ch) / 2);
     const rad = (p.stretchAngle * Math.PI) / 180;
     const s = 1 + p.stretchAmount;
     const cos = Math.cos(rad);
@@ -485,10 +598,10 @@ export function renderAnimationPage(app) {
     const d = sin * sin * s + cos * cos;
     const baselineRatio = global.fontMetrics?.baseline ?? 0.5;
     ctx.save();
-    applyCameraTransform(ctx, cw, ch, p);
-    for (const pos of positions) {
-      const gx = pad + pos.x;
-      const gy = pad + pos.y;
+    applyCameraTransform(ctx, cacheW, cacheH, p);
+    for (const pos of layout.positions) {
+      const gx = dx + layout.pad + pos.x;
+      const gy = dy + layout.pad + pos.y;
       const cx = gx + p.fontSize / 2;
       const cy = gy + p.fontSize * baselineRatio;
       if (pos.missing) { drawMissingAt(gx, gy, p.fontSize); continue; }
@@ -511,23 +624,29 @@ export function renderAnimationPage(app) {
     ctx.restore();
   }
 
-  function drawRenderedFrameAt(time) {
-    if (!renderedFrames) return false;
-    const idx = Math.min(renderedFrames.frames.length - 1,
-      Math.max(0, Math.round(time * renderedFrames.fps)));
-    const frame = renderedFrames.frames[idx];
-    if (!frame) return false;
+  function getCachedFrameAt(time) {
+    if (!frameCache?.frames?.length) return null;
+    const idx = Math.min(frameCache.frames.length - 1,
+      Math.max(0, Math.round(time * frameCache.fps)));
+    return frameCache.frames[idx] || null;
+  }
+
+  function drawCachedFrame(frame) {
     canvas.width = frame.width;
     canvas.height = frame.height;
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, frame.width, frame.height);
     ctx.drawImage(frame, 0, 0);
-    return true;
   }
 
   function redrawPreview() {
-    if (showingRendered && renderedFrames) {
-      if (drawRenderedFrameAt(currentTime)) return;
+    // Always prefer cache when a frame is present at the current time.
+    // Edits drop the whole cache (markDirty), so a hit here is guaranteed
+    // to match the current animation state.
+    const cached = getCachedFrameAt(currentTime);
+    if (cached) {
+      drawCachedFrame(cached);
+      return;
     }
     const params = sampleAnimation(animation, currentTime);
     if (playing) {
@@ -592,7 +711,8 @@ export function renderAnimationPage(app) {
     playing = false;
     setPlayState(false);
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    // On pause, if a render exists, ensure the preview shows the rendered frame.
+    // On pause, fall through to redrawPreview — it picks up the cache when
+    // available, or live-renders the frame otherwise.
     redrawPreview();
   }
 
@@ -639,24 +759,35 @@ export function renderAnimationPage(app) {
   });
 
   // === Render ===
+  function isFrameCacheComplete() {
+    if (!frameCache?.frames?.length) return false;
+    const expected = Math.max(1, Math.round(animation.duration * animation.fps));
+    if (frameCache.fps !== animation.fps) return false;
+    if (frameCache.frames.length !== expected) return false;
+    return frameCache.frames.every(f => !!f);
+  }
+
   async function doRender() {
     renderBtn.disabled = true;
     renderLabel.textContent = 'Rendering...';
     progressWrap.style.display = '';
     progressBar.style.width = '0%';
     progressText.textContent = '0%';
+    // Seed cache so renderFrames can write into it directly. Mismatched
+    // fps/duration is handled inside renderFrames (it resets the shape).
+    if (!frameCache) frameCache = { fps: animation.fps, totalFrames: 0, width: 0, height: 0, frames: [] };
+    timeline.updateFrameCacheIndicator(frameCache);
     try {
-      const result = await renderFrames(animation, {
+      await renderFrames(animation, {
         project, global, charIds, glyphCache,
+        cache: frameCache,
+        onCacheUpdate: () => { timeline.updateFrameCacheIndicator(frameCache); },
         onProgress: (done, total) => {
           const pct = Math.round((done / total) * 100);
           progressBar.style.width = pct + '%';
           progressText.textContent = `${done} / ${total}`;
         },
       });
-      renderedFrames = result;
-      renderDirty = false;
-      showingRendered = true;
       redrawPreview();
     } catch (e) {
       console.error('Render failed:', e);
@@ -670,10 +801,16 @@ export function renderAnimationPage(app) {
 
   // === Export ===
   async function ensureRendered() {
-    if (!renderedFrames || renderDirty) {
+    if (!isFrameCacheComplete()) {
       await doRender();
     }
-    return renderedFrames;
+    if (!isFrameCacheComplete()) return null;
+    return {
+      frames: frameCache.frames,
+      fps: frameCache.fps,
+      width: frameCache.width,
+      height: frameCache.height,
+    };
   }
 
   async function doExportPng() {
@@ -732,7 +869,9 @@ export function renderAnimationPage(app) {
         const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) } };
         animation = merged;
         saveAnimation(animation);
-        // Refresh UI
+        // Make sure the imported state is persisted before we reload, otherwise
+        // the debounced write would be cancelled by the navigation.
+        await flushAnimationNow();
         location.reload();
       } catch (e) {
         alert('Import failed: ' + e.message);

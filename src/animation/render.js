@@ -32,6 +32,27 @@ function computeLayout(params, animation, charIds, global) {
   return { positions, pad, cw, ch, drawSize, drawOffset };
 }
 
+/**
+ * Compute the uniform cache canvas dimensions for an animation — runs the
+ * same first pass as renderFrames(), but stops before rendering. Used to
+ * seed the frame cache so live scrubbing can write entries at the same
+ * dimensions as the Render-button output.
+ */
+export function computeFrameCacheShape(animation, ctx) {
+  const { charIds, global } = ctx;
+  const fps = animation.fps;
+  const totalFrames = Math.max(1, Math.round(animation.duration * fps));
+  let maxW = 0, maxH = 0;
+  for (let i = 0; i < totalFrames; i++) {
+    const t = i / fps;
+    const params = sampleAnimation(animation, t);
+    const layout = computeLayout(params, animation, charIds, global);
+    if (layout.cw > maxW) maxW = layout.cw;
+    if (layout.ch > maxH) maxH = layout.ch;
+  }
+  return { fps, totalFrames, width: Math.ceil(maxW), height: Math.ceil(maxH) };
+}
+
 function paramsEqual(a, b) {
   if (!a || !b) return false;
   for (const k in a) {
@@ -44,11 +65,19 @@ function paramsEqual(a, b) {
 }
 
 /**
- * Render all animation frames to offscreen canvases.
- * Returns { frames, fps, width, height }.
+ * Render animation frames to offscreen canvases.
+ *
+ * Supports an external per-frame cache: when `ctx.cache` is provided, already
+ * populated entries are skipped (no re-render), newly produced frames are
+ * stored back into `cache.frames[i]`, and `ctx.onCacheUpdate()` fires after
+ * each entry lands so the caller can refresh UI (e.g. the timeline indicator).
+ *
+ * Returns { frames, fps, width, height }. `frames` is the full ordered list
+ * — the cache and the return value share canvas references for in-place
+ * frames, so re-running render after editing only re-paints missing entries.
  */
 export async function renderFrames(animation, ctx) {
-  const { project, global, charIds, glyphCache, onProgress } = ctx;
+  const { project, global, charIds, glyphCache, onProgress, cache, onCacheUpdate } = ctx;
   const fps = animation.fps;
   const totalFrames = Math.max(1, Math.round(animation.duration * fps));
 
@@ -66,14 +95,43 @@ export async function renderFrames(animation, ctx) {
   maxW = Math.ceil(maxW);
   maxH = Math.ceil(maxH);
 
-  const frames = [];
+  // Prepare external cache (if any). Reset its shape when fps/totalFrames or
+  // canvas dimensions don't match — those changes invalidate every entry.
+  if (cache) {
+    const shapeChanged = cache.fps !== fps
+      || cache.totalFrames !== totalFrames
+      || cache.width !== maxW
+      || cache.height !== maxH;
+    if (shapeChanged || !Array.isArray(cache.frames) || cache.frames.length !== totalFrames) {
+      cache.fps = fps;
+      cache.totalFrames = totalFrames;
+      cache.width = maxW;
+      cache.height = maxH;
+      cache.frames = new Array(totalFrames).fill(null);
+    }
+    onCacheUpdate?.();
+  }
+
+  const frames = new Array(totalFrames);
   for (let i = 0; i < totalFrames; i++) {
+    // Reuse cached entry when present — no re-render needed.
+    if (cache?.frames?.[i]) {
+      frames[i] = cache.frames[i];
+      onProgress?.(i + 1, totalFrames);
+      if (i % 16 === 15) await new Promise(r => setTimeout(r, 0));
+      continue;
+    }
+
     const { params, layout } = perFrame[i];
 
     // If params are identical to the previous frame, reuse its canvas reference.
     // Output is pixel-identical, so PNG/GIF encoders can re-read the same bitmap.
-    if (i > 0 && paramsEqual(params, perFrame[i - 1].params)) {
-      frames.push(frames[i - 1]);
+    if (i > 0 && paramsEqual(params, perFrame[i - 1].params) && frames[i - 1]) {
+      frames[i] = frames[i - 1];
+      if (cache) {
+        cache.frames[i] = frames[i - 1];
+        onCacheUpdate?.();
+      }
       onProgress?.(i + 1, totalFrames);
       if (i % 4 === 3) await new Promise(r => setTimeout(r, 0));
       continue;
@@ -124,14 +182,18 @@ export async function renderFrames(animation, ctx) {
     }
     octx.restore();
 
-    frames.push(off);
+    frames[i] = off;
+    if (cache) {
+      cache.frames[i] = off;
+      onCacheUpdate?.();
+    }
     onProgress?.(i + 1, totalFrames);
 
     // Yield to browser every few frames
     if (i % 4 === 3) await new Promise(r => setTimeout(r, 0));
   }
-  // After rendering, cache is populated with the last frame's glyphs only;
-  // clear it so subsequent compose-style usage starts fresh.
+  // After rendering, the glyph cache is populated with the last frame's glyphs
+  // only; clear it so subsequent compose-style usage starts fresh.
   glyphCache.invalidateAll();
 
   return { frames, fps, width: maxW, height: maxH };
