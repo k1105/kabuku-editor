@@ -2,6 +2,7 @@ import { loadProject, getGlobal, resolveTransform } from '../core/project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { createPageHeader } from '../ui/page-header.js';
+import { createStretchControl } from '../ui/preview-controls.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 
 export function renderComposePage(app) {
@@ -39,24 +40,25 @@ export function renderComposePage(app) {
     getSourceImage(cid);
   }
 
-  // State — default text from available characters
+  // State — default text from available characters (cap to 5 to keep initial
+  // render snappy; user can extend via the textarea).
   const charIdList = Object.keys(project.characters);
-  let inputText = charIdList.join('');
+  let inputText = charIdList.slice(0, 5).join('');
   let fontSize = 64;
   let textBoxWidth = 800;
   let kerning = 0;
   let lineHeight = 1.5;
   let writingMode = 'horizontal';
-  let stretchAngle = global.stretchAngle ?? 0;
-  let stretchAmount = global.stretchAmount ?? 0;
+  // stretchAngle / stretchAmount live on `global` and are shared with the
+  // index page via createStretchControl — no local copy here.
   let baseGap = global.baseGap ?? 0;
   let gapDirectionWeight = global.gapDirectionWeight ?? 0;
   let metaballRadius = global.metaballRadius ?? 8;
 
   function getTransform() {
     return {
-      stretchAngle,
-      stretchAmount,
+      stretchAngle: global.stretchAngle ?? 0,
+      stretchAmount: global.stretchAmount ?? 0,
       baseGap,
       gapDirectionWeight,
       metaballStrength: global.metaballStrength ?? 1,
@@ -186,21 +188,19 @@ export function renderComposePage(app) {
 
   sidebar.appendChild(typoGroup);
 
-  // Stretch controls
+  // Stretch controls — shared with the index page via `global`.
   const stretchGroup = document.createElement('div');
   stretchGroup.className = 'param-group';
   const stretchTitle = document.createElement('h3');
   stretchTitle.textContent = 'Stretch';
   stretchGroup.appendChild(stretchTitle);
 
-  addSlider(stretchGroup, 'Angle', stretchAngle, 0, 180, 1,
-    (v) => { stretchAngle = v; redrawFast(); },
-    (v) => { stretchAngle = v; onTransformRelease(); }
-  );
-  addSlider(stretchGroup, 'Amount', stretchAmount, 0, 2, 0.05,
-    (v) => { stretchAmount = v; redrawFast(); },
-    (v) => { stretchAmount = v; onTransformRelease(); }
-  );
+  const stretchControl = createStretchControl({
+    global,
+    onInput: () => redrawFast(),
+    onRelease: () => onTransformRelease(),
+  });
+  for (const row of stretchControl.rows) stretchGroup.appendChild(row);
 
   sidebar.appendChild(stretchGroup);
 
@@ -295,7 +295,7 @@ export function renderComposePage(app) {
 
       const charData = project.characters[pos.charId];
       const charTransform = resolveTransform(
-        { ...global, stretchAngle, stretchAmount, baseGap, gapDirectionWeight, metaballRadius },
+        { ...global, baseGap, gapDirectionWeight, metaballRadius },
         charData?.transformOverrides || {}
       );
       const cached = glyphCache.get(pos.charId, charData, global, charTransform);
@@ -312,8 +312,8 @@ export function renderComposePage(app) {
     const { positions, pad } = layout;
 
     // Stretch matrix: rotate(angle) * scaleX(1+amount) * rotate(-angle)
-    const rad = (stretchAngle * Math.PI) / 180;
-    const s = 1 + stretchAmount;
+    const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
+    const s = 1 + (global.stretchAmount ?? 0);
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
     const a = cos * cos * s + sin * sin;

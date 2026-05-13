@@ -35,6 +35,56 @@ const STRETCH_DEFS = [
 ];
 
 /**
+ * Stretch sliders (Angle / Amount) bound to the shared `global` object.
+ * Returns `rows` (one .param-row per param) so callers can append them into
+ * any container — floating preview-controls or a sidebar group.
+ */
+export function createStretchControl({ global, onInput, onRelease }) {
+  const rows = [];
+  const inputs = {};
+  for (const def of STRETCH_DEFS) {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+    const label = document.createElement('label');
+    label.textContent = def.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = def.min;
+    input.max = def.max;
+    input.step = def.step;
+    input.value = global[def.key] ?? def.default;
+    const valSpan = document.createElement('span');
+    valSpan.className = 'value';
+    valSpan.textContent = input.value;
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      global[def.key] = v;
+      saveGlobal(global);
+      valSpan.textContent = v;
+      onInput?.(def.key, v);
+    });
+    input.addEventListener('change', () => {
+      onRelease?.(def.key, parseFloat(input.value));
+    });
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(valSpan);
+    rows.push(row);
+    inputs[def.key] = { input, valSpan };
+  }
+
+  function syncFromGlobal() {
+    for (const def of STRETCH_DEFS) {
+      const v = global[def.key] ?? def.default;
+      inputs[def.key].input.value = v;
+      inputs[def.key].valSpan.textContent = v;
+    }
+  }
+
+  return { rows, syncFromGlobal };
+}
+
+/**
  * Floating Preview / Angle / Stretch controls. Mounted at top-right of a
  * canvas area. `previewMode` persists across pages via sessionStorage;
  * stretch params are stored on the shared `global` object and saved to
@@ -86,45 +136,12 @@ export function createPreviewControls({ global, onPreviewChange, onStretchInput,
     el.appendChild(row);
   }
 
-  const inputs = {};
-  for (const def of STRETCH_DEFS) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const label = document.createElement('label');
-    label.textContent = def.label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = def.min;
-    input.max = def.max;
-    input.step = def.step;
-    input.value = global[def.key] ?? def.default;
-    const valSpan = document.createElement('span');
-    valSpan.className = 'value';
-    valSpan.textContent = input.value;
-    input.addEventListener('input', () => {
-      const v = parseFloat(input.value);
-      global[def.key] = v;
-      saveGlobal(global);
-      valSpan.textContent = v;
-      onStretchInput?.(def.key, v);
-    });
-    input.addEventListener('change', () => {
-      onStretchRelease?.(def.key, parseFloat(input.value));
-    });
-    row.appendChild(label);
-    row.appendChild(input);
-    row.appendChild(valSpan);
-    el.appendChild(row);
-    inputs[def.key] = { input, valSpan };
-  }
+  const stretch = createStretchControl({
+    global,
+    onInput: onStretchInput,
+    onRelease: onStretchRelease,
+  });
+  for (const row of stretch.rows) el.appendChild(row);
 
-  function syncFromGlobal() {
-    for (const def of STRETCH_DEFS) {
-      const v = global[def.key] ?? def.default;
-      inputs[def.key].input.value = v;
-      inputs[def.key].valSpan.textContent = v;
-    }
-  }
-
-  return { el, getPreviewMode: () => _previewMode, syncFromGlobal };
+  return { el, getPreviewMode: () => _previewMode, syncFromGlobal: stretch.syncFromGlobal };
 }
