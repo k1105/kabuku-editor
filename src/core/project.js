@@ -317,14 +317,81 @@ export function loadProject() {
 }
 
 /**
- * Full-project overwrite (used by history undo/redo and bulk imports).
+ * Apply an undo/redo snapshot. Diffs each character against the current
+ * in-memory project and only marks actually-changed ones dirty, so undoing
+ * a single-glyph edit doesn't rewrite the entire project to Firestore.
+ *
+ * Returns a description of what changed so callers (e.g. page refresh
+ * handlers) can do partial UI updates instead of redrawing every glyph:
+ *   { changedCharIds, removedCharIds, globalChanged }
+ *
+ * Safe to compare via JSON equality because snapshots from history.js are
+ * fresh deep clones (never aliased with _fp).
+ */
+export function restoreFromSnapshot(data) {
+  if (!_fpId) return { changedCharIds: new Set(), removedCharIds: new Set(), globalChanged: false };
+  if (!_fp) {
+    saveProject(data);
+    return {
+      changedCharIds: new Set(Object.keys(data.characters || {})),
+      removedCharIds: new Set(),
+      globalChanged: true,
+    };
+  }
+  const nextName = data.name || _fp.name || 'Untitled';
+  const nextVersion = data.version || VERSION;
+  const nextGlobal = data.global;
+  const nextChars = data.characters || {};
+
+  const globalChanged = (
+    nextName !== _fp.name ||
+    nextVersion !== _fp.version ||
+    JSON.stringify(_fp.global) !== JSON.stringify(nextGlobal)
+  );
+  if (globalChanged) _metaDirty = true;
+
+  const oldIds = new Set(Object.keys(_fp.characters || {}));
+  const newIds = new Set(Object.keys(nextChars));
+  const removedCharIds = new Set();
+  const changedCharIds = new Set();
+  for (const oldId of oldIds) {
+    if (!newIds.has(oldId)) {
+      _deletedChars.add(oldId);
+      _dirtyChars.delete(oldId);
+      removedCharIds.add(oldId);
+    }
+  }
+  for (const cid of newIds) {
+    const before = _fp.characters?.[cid];
+    const after = nextChars[cid];
+    if (!before || JSON.stringify(before) !== JSON.stringify(after)) {
+      _dirtyChars.add(cid);
+      _deletedChars.delete(cid);
+      changedCharIds.add(cid);
+    }
+  }
+
+  _fp = {
+    id: _fpId,
+    name: nextName,
+    global: nextGlobal,
+    characters: nextChars,
+    version: nextVersion,
+  };
+  if (_metaDirty || _dirtyChars.size > 0 || _deletedChars.size > 0) {
+    scheduleWrite();
+  }
+  return { changedCharIds, removedCharIds, globalChanged };
+}
+
+/**
+ * Full-project overwrite (used by bulk imports — undo/redo uses
+ * restoreFromSnapshot for fine-grained dirty tracking).
  *
  * Callers commonly mutate the in-memory project in place and then call
  * saveProject(_fp) — i.e. the data arg shares references with _fp. A
  * reference-based diff would miss those mutations entirely, so saveProject
- * marks every character dirty unconditionally. This trades a few extra
- * Firestore writes for correctness; per-key callers (saveCharacter,
- * saveGlobal) remain fine-grained.
+ * marks every character dirty unconditionally.
  */
 export function saveProject(data) {
   if (!_fpId) return false;

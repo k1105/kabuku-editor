@@ -61,22 +61,25 @@ function cssEscapeFamily(family) {
   return family.replace(/"/g, '\\"');
 }
 
+// Fixed metrics used to rasterize font-imported source images. Locked to the
+// defaults so editing the project's metrics (which are reference guides the
+// user aligns to an existing image) never re-sizes or re-positions the
+// underlay character. Without this, raising Ascender would shrink emHeight
+// and the imported character would visibly get smaller.
+const SOURCE_RENDER_METRICS = { ascender: 0.05, baseline: 0.80, descender: 0.95 };
+
 /**
  * Render a single character onto the supplied 2D context. The context's
  * canvas should be a square of `glyphSize × glyphSize` and is fully cleared
  * before drawing.
  *
- * Vertical placement uses the project's font metrics (baseline ratio) so the
- * generated glyphs land in the same vertical band the rest of the editor
- * draws guides for. Font size targets the (descender − ascender) span so the
- * em-box roughly fills the metric gutter.
+ * Always uses SOURCE_RENDER_METRICS so the rasterized glyph is a stable
+ * reference; the project's user-edited metrics only drive the on-canvas
+ * guide lines.
  */
-export function renderCharToContext(ctx, char, family, glyphSize, fontMetrics) {
-  const m = fontMetrics || { ascender: 0.05, baseline: 0.80, descender: 0.95 };
-  const ascender = typeof m.ascender === 'number' ? m.ascender : 0.05;
-  const baseline = typeof m.baseline === 'number' ? m.baseline : 0.80;
-  const descender = typeof m.descender === 'number' ? m.descender : 0.95;
-  const emHeight = Math.max(0.1, descender - ascender) * glyphSize;
+export function renderCharToContext(ctx, char, family, glyphSize) {
+  const m = SOURCE_RENDER_METRICS;
+  const emHeight = (m.descender - m.ascender) * glyphSize;
 
   ctx.save();
   ctx.fillStyle = '#fff';
@@ -85,7 +88,7 @@ export function renderCharToContext(ctx, char, family, glyphSize, fontMetrics) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   ctx.font = `${Math.round(emHeight)}px "${cssEscapeFamily(family)}"`;
-  ctx.fillText(char, glyphSize / 2, baseline * glyphSize);
+  ctx.fillText(char, glyphSize / 2, m.baseline * glyphSize);
   ctx.restore();
 }
 
@@ -93,13 +96,17 @@ export function renderCharToContext(ctx, char, family, glyphSize, fontMetrics) {
  * Render a `fontSource` ({family, char}) to a fresh canvas at glyphSize,
  * loading the Google Fonts family on demand. Used as the source-image stand-in
  * for font-imported glyphs (no `imagePath`) in editor/typeset/animation views.
+ *
+ * `fontMetrics` is accepted for backward compatibility but ignored — the
+ * underlay rasterization is intentionally pinned to fixed metrics so editing
+ * the project's metrics doesn't resize the imported character.
  */
-export async function renderFontSourceToCanvas(fontSource, glyphSize, fontMetrics) {
+export async function renderFontSourceToCanvas(fontSource, glyphSize, _fontMetrics) {
   const { family, char } = fontSource;
   await loadGoogleFont(family, char);
   const cv = document.createElement('canvas');
   cv.width = glyphSize;
   cv.height = glyphSize;
-  renderCharToContext(cv.getContext('2d'), char, family, glyphSize, fontMetrics);
+  renderCharToContext(cv.getContext('2d'), char, family, glyphSize);
   return cv;
 }

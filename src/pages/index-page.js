@@ -1,4 +1,5 @@
 import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter, currentFontProjectId, currentFontProjectName, flushNow as flushProjectNow } from '../core/project.js';
+import { loadImageCached } from '../core/image-cache.js';
 import { uploadCharacterImage } from '../core/storage.js';
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
@@ -384,12 +385,13 @@ export function renderIndexPage(app) {
     if (!selectedCharId) { redraw(); return; }
     const cd = project.characters[selectedCharId];
     if (cd?.imagePath) {
-      const img = new Image();
-      // Storage URLs are cross-origin; without this the canvas would taint and
-      // autoMesh / export readback would throw SecurityError.
-      img.crossOrigin = 'anonymous';
-      img.onload = () => { backgroundImage = img; redraw(); };
-      img.src = cd.imagePath;
+      const targetId = selectedCharId;
+      // Cached so undo/redo doesn't re-decode the same base64 blob.
+      loadImageCached(cd.imagePath).then(img => {
+        if (selectedCharId !== targetId || !img) return;
+        backgroundImage = img;
+        redraw();
+      });
       return;
     }
     if (cd?.fontSource) {
@@ -1293,13 +1295,7 @@ export function renderIndexPage(app) {
       const cd = project.characters[cid];
       let source = null;
       if (cd?.imagePath) {
-        source = await new Promise((resolve) => {
-          const im = new Image();
-          im.crossOrigin = 'anonymous';
-          im.onload = () => resolve(im);
-          im.onerror = () => resolve(null);
-          im.src = cd.imagePath;
-        });
+        source = await loadImageCached(cd.imagePath);
       } else if (cd?.fontSource) {
         try {
           source = await renderFontSourceToCanvas(cd.fontSource, GLYPH_SIZE, global.fontMetrics);
@@ -1386,6 +1382,91 @@ export function renderIndexPage(app) {
     previewCtx.imageSmoothingEnabled = true;
     previewCtx.drawImage(offCanvas, dx, dy, dw, dh);
   }
+
+  /**
+   * Re-bind in-memory project state and refresh in-place DOM. Called by
+   * main.js after undo/redo so the existing page DOM (header, sidebar shell,
+   * preview canvas) is kept and only the dependent state is reset.
+   *
+   * `changes` (from restoreFromSnapshot) lets us skip the most expensive
+   * work — re-rasterizing every thumbnail — when the diff is small:
+   *   - globalChanged: any global setting or layer changed → all thumbs
+   *     depend on it (buildRuntimeLayers reads global), so refresh all.
+   *   - otherwise: only re-render thumbs for the chars that changed.
+   */
+  function refresh(changes) {
+    const next = loadProject();
+    // project is a const reference held by panels & callbacks — assign
+    // properties onto it rather than rebinding.
+    Object.assign(project, next);
+    global = getGlobal();
+    project.global = global;
+
+    // Validate selection: undo may have deleted the active glyph.
+    const charIds = Object.keys(project.characters);
+    if (selectedCharId && !project.characters[selectedCharId]) {
+      selectedCharId = charIds[0] ?? null;
+      if (selectedCharId) sessionStorage.setItem(SEL_CHAR_KEY, selectedCharId);
+      else sessionStorage.removeItem(SEL_CHAR_KEY);
+    }
+
+    // Diff char strip — drop removed, add new, reorder existing in place.
+    const newIdSet = new Set(charIds);
+    for (const cid of Object.keys(cardElements)) {
+      if (!newIdSet.has(cid)) {
+        cardElements[cid].remove();
+        delete cardElements[cid];
+      }
+    }
+    const addedIds = new Set();
+    for (const cid of charIds) {
+      if (!cardElements[cid]) {
+        cardElements[cid] = createCharCard(cid, project.characters[cid], (id) => selectChar(id));
+        addedIds.add(cid);
+      }
+      charStrip.appendChild(cardElements[cid]); // appending moves to end → ordered
+    }
+    charStrip.appendChild(addGlyphTile);
+
+    for (const cid of Object.keys(cardElements)) {
+      cardElements[cid].classList.toggle('selected', cid === selectedCharId);
+    }
+
+    if (!selectedCharId) {
+      emptyState.style.display = '';
+      previewCanvas.style.display = 'none';
+    } else {
+      emptyState.style.display = 'none';
+      previewCanvas.style.display = '';
+    }
+
+    // Thumbnails are the heavy part — each does a 1024² buildRuntimeLayers
+    // + metaball renderCanvas + downscale. Skip the ones we know haven't
+    // changed.
+    const refreshAll = !changes || changes.globalChanged || !changes.changedCharIds;
+    if (refreshAll) {
+      refreshAllThumbnails();
+    } else {
+      const toRefresh = new Set([...changes.changedCharIds, ...addedIds]);
+      for (const cid of toRefresh) {
+        const card = cardElements[cid];
+        if (!card) continue;
+        const canvas = card.querySelector('canvas');
+        if (canvas) renderThumbnail(canvas, project.characters[cid]);
+      }
+    }
+    rebuildGlobalLayers();
+    rebuildLocalState();
+    // Sidebar only depends on globals + selected char's local state. Skip
+    // its full rebuild when neither changed.
+    const sidebarStale = refreshAll
+      || (selectedCharId && changes.changedCharIds.has(selectedCharId));
+    if (sidebarStale) renderSidebarBody();
+    loadBackgroundImage();
+    redraw();
+  }
+
+  return { refresh };
 }
 
 function createCharCard(charId, charData, onSelect) {
@@ -1447,10 +1528,10 @@ function renderThumbnail(canvas, charData) {
     ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
   };
   if (charData.imagePath) {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => drawWithBackground(img);
-    img.src = charData.imagePath;
+    loadImageCached(charData.imagePath).then(img => {
+      if (img) drawWithBackground(img);
+      else drawWithBackground(null);
+    });
   } else if (charData.fontSource) {
     renderFontSourceToCanvas(charData.fontSource, GLYPH_SIZE, global.fontMetrics)
       .then(drawWithBackground)

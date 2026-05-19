@@ -88,6 +88,25 @@ async function maybeWarnLock(coll, id) {
   }
 }
 
+// The currently active route. Cached so undo/redo can re-render the page
+// without re-running the bootstrap flow (which would re-authenticate,
+// re-fetch the project from Firestore, and reset the undo/redo stack).
+let _activeRoute = null;
+// Optional in-place refresh callback returned by the active page. When set,
+// undo/redo calls it instead of tearing down and rebuilding the page DOM.
+let _activePageRefresh = null;
+
+function renderActivePage(app, route) {
+  if (route.page !== 'font' && route.page !== 'compose' && route.page !== 'animation') return;
+  app.innerHTML = '';
+  let result;
+  if (route.page === 'font') result = renderIndexPage(app);
+  else if (route.page === 'compose') result = renderComposePage(app);
+  else if (route.page === 'animation') result = renderAnimationPage(app);
+  injectLangToggle(app);
+  _activePageRefresh = result?.refresh || null;
+}
+
 async function render() {
   const app = document.getElementById('app');
   app.innerHTML = '';
@@ -100,6 +119,7 @@ async function render() {
   showLoading(app, 'Authenticating...');
   const user = await waitForAuth();
   if (!user) {
+    _activeRoute = null;
     renderLoginScreen(app, () => render());
     return;
   }
@@ -111,6 +131,8 @@ async function render() {
     await unloadAnimationProject();
     await setActiveLock(null, null);
     resetAnimationHistory();
+    _activeRoute = route;
+    _activePageRefresh = null;
     await renderProjectListPage(app);
     injectLangToggle(app);
     return;
@@ -132,10 +154,8 @@ async function render() {
     }
     initHistory(loadProject());
     resetAnimationHistory();
-    app.innerHTML = '';
-    if (route.page === 'compose') renderComposePage(app);
-    else renderIndexPage(app);
-    injectLangToggle(app);
+    _activeRoute = route;
+    renderActivePage(app, route);
     return;
   }
 
@@ -157,9 +177,8 @@ async function render() {
     // snapshots can't sneak into keyboard shortcuts.
     initHistory(loadProject());
     initAnimationHistory(getAnimation());
-    app.innerHTML = '';
-    renderAnimationPage(app);
-    injectLangToggle(app);
+    _activeRoute = route;
+    renderActivePage(app, route);
     return;
   }
 
@@ -171,15 +190,38 @@ window.addEventListener('hashchange', render);
 render();
 startAutoTranslate(document.getElementById('app'));
 
-// Re-render on undo/redo restore. Both histories trigger the same re-render
-// path — the active one (per route) is the only one that fires meaningfully,
-// since we reset the other on navigation.
+// Re-render on undo/redo restore. Prefer the active page's in-place
+// refresh() hook so the page DOM is reused; fall back to a full
+// renderActivePage() when the page hasn't exposed one yet. Coalesce
+// rapid undo+redo pairs by accumulating their change sets — partial
+// thumbnail refresh still covers every glyph that flipped between calls.
 let pendingRender = false;
-function scheduleRender({ isRestore }) {
+let pendingChanges = null;
+function mergeChanges(dst, src) {
+  if (!src) return dst || { changedCharIds: null, removedCharIds: null, globalChanged: true };
+  if (!dst) return src;
+  dst.globalChanged = dst.globalChanged || src.globalChanged;
+  for (const c of src.changedCharIds || []) dst.changedCharIds?.add(c);
+  for (const c of src.removedCharIds || []) dst.removedCharIds?.add(c);
+  return dst;
+}
+function scheduleRender({ isRestore, changes }) {
   if (!isRestore) return;
+  pendingChanges = mergeChanges(pendingChanges, changes);
   if (pendingRender) return;
   pendingRender = true;
-  queueMicrotask(() => { pendingRender = false; render(); });
+  queueMicrotask(() => {
+    pendingRender = false;
+    const ch = pendingChanges;
+    pendingChanges = null;
+    if (_activePageRefresh) {
+      _activePageRefresh(ch);
+      return;
+    }
+    if (!_activeRoute) return;
+    const app = document.getElementById('app');
+    renderActivePage(app, _activeRoute);
+  });
 }
 subscribeFontHistory(scheduleRender);
 subscribeAnimHistory(scheduleRender);
@@ -198,11 +240,21 @@ document.addEventListener('change', (e) => {
   queueMicrotask(() => activeCommit(`change:${t.name || t.type || t.tagName}`));
 }, false);
 
+// Only swallow Cmd+Z for surfaces where the browser's native text undo is
+// useful. Sliders / selects / checkboxes etc. have no native undo, so we
+// still fire the app-level shortcut when focus is on those.
+const TEXT_INPUT_TYPES = new Set([
+  'text', 'search', 'url', 'email', 'tel', 'password', 'number',
+]);
 function isInputTarget(t) {
   if (!t) return false;
-  const tag = t.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   if (t.isContentEditable) return true;
+  const tag = t.tagName;
+  if (tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT') {
+    const type = (t.type || 'text').toLowerCase();
+    return TEXT_INPUT_TYPES.has(type);
+  }
   return false;
 }
 

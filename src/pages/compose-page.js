@@ -4,6 +4,7 @@ import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/gly
 import { createPageHeader } from '../ui/page-header.js';
 import { createStretchControl } from '../ui/preview-controls.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { loadImageCached } from '../core/image-cache.js';
 
 export function renderComposePage(app) {
   const project = loadProject();
@@ -19,11 +20,12 @@ export function renderComposePage(app) {
     if (sourceImageCache.has(charId)) return sourceImageCache.get(charId);
     const cd = project.characters[charId];
     if (cd?.imagePath) {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => { sourceImageCache.set(charId, img); redraw(); };
-      img.src = cd.imagePath;
       sourceImageCache.set(charId, null);
+      loadImageCached(cd.imagePath).then(img => {
+        if (!img) return;
+        sourceImageCache.set(charId, img);
+        redraw();
+      });
       return null;
     }
     if (cd?.fontSource) {
@@ -325,12 +327,13 @@ export function renderComposePage(app) {
     const b = cos * sin * (s - 1);
     const d = sin * sin * s + cos * cos;
 
-    const baselineRatio = global.fontMetrics?.baseline ?? 0.5;
+    // Image stretch pivots on glyph center, not on baseline — font metrics
+    // are reference guides only and editing them must not shift the underlay.
     for (const pos of positions) {
       const gx = pad + pos.x;
       const gy = pad + pos.y;
       const cx = gx + fontSize / 2;
-      const cy = gy + fontSize * baselineRatio;
+      const cy = gy + fontSize / 2;
 
       if (pos.missing) {
         drawMissing(gx, gy);

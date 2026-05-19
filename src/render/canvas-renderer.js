@@ -69,8 +69,13 @@ export function renderCanvas(ctx, layers, opts = {}) {
     ctx.globalAlpha = opts.backgroundOpacity ?? 0.3;
     ctx.globalCompositeOperation = 'multiply';
 
+    // Image stretch pivots on glyph center so editing font metrics (baseline
+    // etc.) doesn't visually shift the source image. Cells still pivot on
+    // baseline above — that's intentional, the font's stretch is anchored
+    // there, but the underlay image is just a reference and shouldn't move
+    // when guides move.
     const gcx = ox + glyphSize / 2;
-    const gcy = oy + baselineLocalY;
+    const gcy = oy + glyphSize / 2;
 
     if (t.stretchAmount) {
       const rad = (t.stretchAngle || 0) * Math.PI / 180;

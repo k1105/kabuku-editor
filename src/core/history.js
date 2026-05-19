@@ -1,4 +1,4 @@
-import { loadProject, saveProject } from './project.js';
+import { loadProject, restoreFromSnapshot } from './project.js';
 
 /**
  * Undo/redo history.
@@ -56,8 +56,8 @@ function snapsEqual(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function notify(isRestore = false) {
-  const state = { canUndo: canUndo(), canRedo: canRedo(), isRestore };
+function notify(isRestore = false, changes = null) {
+  const state = { canUndo: canUndo(), canRedo: canRedo(), isRestore, changes };
   for (const fn of subscribers) fn(state);
 }
 
@@ -95,8 +95,8 @@ export function undo() {
   const current = undoStack.pop();
   redoStack.push(current);
   const target = undoStack[undoStack.length - 1];
-  saveProject(restoreSnapshot(target.snapshot));
-  notify(true);
+  const changes = restoreFromSnapshot(restoreSnapshot(target.snapshot));
+  notify(true, changes);
   return true;
 }
 
@@ -104,8 +104,8 @@ export function redo() {
   if (!canRedo()) return false;
   const target = redoStack.pop();
   undoStack.push(target);
-  saveProject(restoreSnapshot(target.snapshot));
-  notify(true);
+  const changes = restoreFromSnapshot(restoreSnapshot(target.snapshot));
+  notify(true, changes);
   return true;
 }
 

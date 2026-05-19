@@ -15,6 +15,7 @@ import { createPageHeader } from '../ui/page-header.js';
 import { iconEl, iconSvg } from '../ui/icons.js';
 import { commit as historyCommit } from '../core/animation-history.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { loadImageCached } from '../core/image-cache.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -94,11 +95,12 @@ export function renderAnimationPage(app) {
     if (sourceImageCache.has(charId)) return sourceImageCache.get(charId);
     const cd = project.characters[charId];
     if (cd?.imagePath) {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => { sourceImageCache.set(charId, img); redrawPreview(); };
-      img.src = cd.imagePath;
       sourceImageCache.set(charId, null);
+      loadImageCached(cd.imagePath).then(img => {
+        if (!img) return;
+        sourceImageCache.set(charId, img);
+        redrawPreview();
+      });
       return null;
     }
     if (cd?.fontSource) {
@@ -596,14 +598,15 @@ export function renderAnimationPage(app) {
     const a = cos * cos * s + sin * sin;
     const b = cos * sin * (s - 1);
     const d = sin * sin * s + cos * cos;
-    const baselineRatio = global.fontMetrics?.baseline ?? 0.5;
+    // Image stretch pivots on glyph center, not on baseline — font metrics
+    // are reference guides only and editing them must not shift the underlay.
     ctx.save();
     applyCameraTransform(ctx, cacheW, cacheH, p);
     for (const pos of layout.positions) {
       const gx = dx + layout.pad + pos.x;
       const gy = dy + layout.pad + pos.y;
       const cx = gx + p.fontSize / 2;
-      const cy = gy + p.fontSize * baselineRatio;
+      const cy = gy + p.fontSize / 2;
       if (pos.missing) { drawMissingAt(gx, gy, p.fontSize); continue; }
       const srcImg = sourceImageCache.get(pos.charId);
       if (!srcImg) continue;
@@ -887,4 +890,27 @@ export function renderAnimationPage(app) {
     timeline.render();
     redrawPreview();
   });
+
+  /**
+   * Re-bind UI to the in-memory animation after an undo/redo. The animation
+   * object itself is mutated in place (see restoreAnimationSnapshot in
+   * animation-project.js), so timeline-ui's captured reference is still
+   * current — we just refresh the visible controls and invalidate caches.
+   */
+  function refresh() {
+    if (!animation) return;
+    textarea.value = animation.text ?? '';
+    hBtn.classList.toggle('active', animation.writingMode === 'horizontal');
+    vBtn.classList.toggle('active', animation.writingMode === 'vertical');
+    if (animation.duration != null && currentTime > animation.duration) {
+      currentTime = animation.duration;
+    }
+    updateSlidersFromTime();
+    updateTimeDisplay();
+    markDirty();
+    timeline.render();
+    redrawPreview();
+  }
+
+  return { refresh };
 }

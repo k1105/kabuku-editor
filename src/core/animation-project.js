@@ -64,6 +64,27 @@ export function saveAnimation(animation) {
   return true;
 }
 
+/**
+ * Apply an undo/redo snapshot by mutating the live animation object in
+ * place. Preserves the object identity so closures held by timeline-ui /
+ * sliders that captured the original `animation` reference continue to see
+ * the current data without being rewired.
+ */
+export function restoreAnimationSnapshot(snapshot) {
+  if (!_ap) return false;
+  if (!_ap.animation) _ap.animation = {};
+  const dst = _ap.animation;
+  for (const key of Object.keys(dst)) {
+    if (!(key in snapshot)) delete dst[key];
+  }
+  for (const [key, value] of Object.entries(snapshot)) {
+    dst[key] = value;
+  }
+  _animDirty = true;
+  scheduleWrite();
+  return true;
+}
+
 export async function unloadAnimationProject() {
   await flushNow();
   _ap = null;

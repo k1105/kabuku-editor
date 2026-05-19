@@ -6,7 +6,7 @@
  * untouched — these are independent stacks. main.js dispatches Cmd+Z to
  * whichever is active based on the current route.
  */
-import { getAnimation, saveAnimation } from './animation-project.js';
+import { getAnimation, restoreAnimationSnapshot } from './animation-project.js';
 
 const MAX_HISTORY = 50;
 
@@ -58,7 +58,7 @@ export function undo() {
   const current = undoStack.pop();
   redoStack.push(current);
   const target = undoStack[undoStack.length - 1];
-  saveAnimation(clone(target.snapshot));
+  restoreAnimationSnapshot(clone(target.snapshot));
   notify(true);
   return true;
 }
@@ -67,7 +67,7 @@ export function redo() {
   if (!canRedo()) return false;
   const target = redoStack.pop();
   undoStack.push(target);
-  saveAnimation(clone(target.snapshot));
+  restoreAnimationSnapshot(clone(target.snapshot));
   notify(true);
   return true;
 }

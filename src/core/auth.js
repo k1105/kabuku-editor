@@ -7,26 +7,30 @@ import {
 import { getFirebaseAuth } from './firebase.js';
 
 let _currentUser = null;
+let _readyPromise = null;
 const subscribers = new Set();
 
 /**
  * Returns the current user when Auth has reported its initial state.
- * Resolves to `null` if no user is signed in.
+ * Resolves to `null` if no user is signed in. Idempotent: subsequent calls
+ * reuse the same promise and never attach an extra Firebase listener.
  */
 export function waitForAuth() {
+  if (_readyPromise) return _readyPromise;
   const auth = getFirebaseAuth();
-  return new Promise((resolve) => {
-    const unsub = onAuthStateChanged(auth, (user) => {
+  _readyPromise = new Promise((resolve) => {
+    let resolved = false;
+    onAuthStateChanged(auth, (user) => {
       _currentUser = user;
-      unsub();
-      // Subsequent changes notify subscribers (e.g. sign-out from a menu).
-      onAuthStateChanged(auth, (u) => {
-        _currentUser = u;
-        for (const fn of subscribers) fn(u);
-      });
-      resolve(user);
+      if (!resolved) {
+        resolved = true;
+        resolve(user);
+        return;
+      }
+      for (const fn of subscribers) fn(user);
     });
   });
+  return _readyPromise;
 }
 
 export function currentUser() {
