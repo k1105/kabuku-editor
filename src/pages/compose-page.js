@@ -3,6 +3,7 @@ import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { createStretchControl } from '../ui/preview-controls.js';
+import { createSliderInput } from '../ui/slider-input.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
 
@@ -115,34 +116,23 @@ export function renderComposePage(app) {
   typoTitle.textContent = 'Typography';
   typoGroup.appendChild(typoTitle);
 
-  function addSlider(parent, label, value, min, max, step, onInput, onChange) {
+  function addSlider(parent, label, value, min, max, step, onInput, onChange, opts = {}) {
     const row = document.createElement('div');
     row.className = 'param-row';
     const lbl = document.createElement('label');
     lbl.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = min;
-    input.max = max;
-    input.step = step;
-    input.value = value;
-    const val = document.createElement('span');
-    val.className = 'value';
-    val.textContent = value;
-    input.addEventListener('input', () => {
-      val.textContent = input.value;
-      onInput(parseFloat(input.value));
+    const { slider, valueInput } = createSliderInput({
+      min, max, step, value,
+      hardMin: opts.hardMin,
+      hardMax: opts.hardMax,
+      onInput,
+      onChange,
     });
-    if (onChange) {
-      input.addEventListener('change', () => {
-        onChange(parseFloat(input.value));
-      });
-    }
     row.appendChild(lbl);
-    row.appendChild(input);
-    row.appendChild(val);
+    row.appendChild(slider);
+    row.appendChild(valueInput);
     parent.appendChild(row);
-    return input;
+    return slider;
   }
 
   addSlider(typoGroup, 'Font Size', fontSize, 16, 256, 1, (v) => {
@@ -224,7 +214,8 @@ export function renderComposePage(app) {
   );
   addSlider(transformGroup, 'Gap Dir', gapDirectionWeight, 0, 1, 0.05,
     (v) => { gapDirectionWeight = v; },
-    (v) => { gapDirectionWeight = v; onTransformRelease(); }
+    (v) => { gapDirectionWeight = v; onTransformRelease(); },
+    { hardMin: 0, hardMax: 1 }
   );
   addSlider(transformGroup, 'Blur', metaballRadius, 0, 30, 1,
     (v) => { metaballRadius = v; },

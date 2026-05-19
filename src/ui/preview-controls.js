@@ -1,5 +1,6 @@
 import { saveGlobal } from '../core/project.js';
 import { iconEl } from './icons.js';
+import { createSliderInput } from './slider-input.js';
 
 const STATE_KEY = 'kabuku.previewMode';
 const SCALE_KEY = 'kabuku.previewScale';
@@ -30,7 +31,7 @@ export function setPreviewScale(v) {
 }
 
 const STRETCH_DEFS = [
-  { key: 'stretchAngle', label: 'Angle', min: 0, max: 180, default: 0, step: 1 },
+  { key: 'stretchAngle', label: 'Angle', min: 0, max: 180, default: 0, step: 1, hardMin: 0, hardMax: 180 },
   { key: 'stretchAmount', label: 'Stretch', min: 0, max: 2, default: 0, step: 0.05 },
 ];
 
@@ -47,37 +48,35 @@ export function createStretchControl({ global, onInput, onRelease }) {
     row.className = 'param-row';
     const label = document.createElement('label');
     label.textContent = def.label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = def.min;
-    input.max = def.max;
-    input.step = def.step;
-    input.value = global[def.key] ?? def.default;
-    const valSpan = document.createElement('span');
-    valSpan.className = 'value';
-    valSpan.textContent = input.value;
-    input.addEventListener('input', () => {
-      const v = parseFloat(input.value);
-      global[def.key] = v;
-      saveGlobal(global);
-      valSpan.textContent = v;
-      onInput?.(def.key, v);
+
+    const api = createSliderInput({
+      min: def.min,
+      max: def.max,
+      step: def.step,
+      value: global[def.key] ?? def.default,
+      hardMin: def.hardMin,
+      hardMax: def.hardMax,
+      onInput: (v) => {
+        global[def.key] = v;
+        saveGlobal(global);
+        onInput?.(def.key, v);
+      },
+      onChange: (v) => {
+        onRelease?.(def.key, v);
+      },
     });
-    input.addEventListener('change', () => {
-      onRelease?.(def.key, parseFloat(input.value));
-    });
+
     row.appendChild(label);
-    row.appendChild(input);
-    row.appendChild(valSpan);
+    row.appendChild(api.slider);
+    row.appendChild(api.valueInput);
     rows.push(row);
-    inputs[def.key] = { input, valSpan };
+    inputs[def.key] = api;
   }
 
   function syncFromGlobal() {
     for (const def of STRETCH_DEFS) {
       const v = global[def.key] ?? def.default;
-      inputs[def.key].input.value = v;
-      inputs[def.key].valSpan.textContent = v;
+      inputs[def.key].setValue(v);
     }
   }
 
@@ -115,24 +114,19 @@ export function createPreviewControls({ global, onPreviewChange, onStretchInput,
     row.className = 'param-row';
     const label = document.createElement('label');
     label.textContent = 'Scale';
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = 0.25;
-    input.max = 3;
-    input.step = 0.05;
-    input.value = _previewScale;
-    const valSpan = document.createElement('span');
-    valSpan.className = 'value';
-    valSpan.textContent = _previewScale.toFixed(2);
-    input.addEventListener('input', () => {
-      const v = parseFloat(input.value);
-      setPreviewScale(v);
-      valSpan.textContent = v.toFixed(2);
-      onScaleChange?.(v);
+    const { slider, valueInput } = createSliderInput({
+      min: 0.25,
+      max: 3,
+      step: 0.05,
+      value: _previewScale,
+      onInput: (v) => {
+        setPreviewScale(v);
+        onScaleChange?.(v);
+      },
     });
     row.appendChild(label);
-    row.appendChild(input);
-    row.appendChild(valSpan);
+    row.appendChild(slider);
+    row.appendChild(valueInput);
     el.appendChild(row);
   }
 

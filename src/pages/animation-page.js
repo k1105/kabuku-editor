@@ -16,16 +16,17 @@ import { iconEl, iconSvg } from '../ui/icons.js';
 import { commit as historyCommit } from '../core/animation-history.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
+import { createSliderInput } from '../ui/slider-input.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
   { key: 'textBoxWidth', label: 'Box Width', min: 200, max: 2000, step: 10 },
   { key: 'kerning', label: 'Kerning', min: -40, max: 100, step: 1 },
   { key: 'lineHeight', label: 'Line Height', min: 0.4, max: 6.0, step: 0.1 },
-  { key: 'stretchAngle', label: 'Stretch Angle', min: 0, max: 180, step: 1 },
+  { key: 'stretchAngle', label: 'Stretch Angle', min: 0, max: 180, step: 1, hardMin: 0, hardMax: 180 },
   { key: 'stretchAmount', label: 'Stretch Amount', min: 0, max: 2, step: 0.05 },
   { key: 'baseGap', label: 'Gap', min: 0, max: 20, step: 0.5 },
-  { key: 'gapDirectionWeight', label: 'Gap Dir', min: 0, max: 1, step: 0.05 },
+  { key: 'gapDirectionWeight', label: 'Gap Dir', min: 0, max: 1, step: 0.05, hardMin: 0, hardMax: 1 },
   { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, step: 1 },
 ];
 
@@ -219,7 +220,7 @@ export function renderAnimationPage(app) {
   paramsTitle.textContent = 'Animated Parameters';
   paramsGroup.appendChild(paramsTitle);
 
-  const sliderInputs = {}; // key -> {input, valSpan}
+  const sliderInputs = {}; // key -> { api, def }
 
   function addAnimatedSliders(parent, defs) {
     for (const def of defs) {
@@ -227,37 +228,30 @@ export function renderAnimationPage(app) {
       row.className = 'param-row';
       const label = document.createElement('label');
       label.textContent = def.label;
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
       const initial = sampleAnimation(animation, currentTime)[def.key];
-      input.value = initial;
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = Number(initial).toFixed(def.step < 1 ? 2 : 0);
 
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        valSpan.textContent = def.step < 1 ? v.toFixed(2) : String(v);
-        redrawFast(overrideWith(def.key, v));
-      });
-      input.addEventListener('change', () => {
-        const v = parseFloat(input.value);
-        upsertKeyframe(animation.tracks[def.key], currentTime, v);
-        persist();
-        markDirty();
-        timeline.render();
-        redrawPreview();
+      const api = createSliderInput({
+        min: def.min, max: def.max, step: def.step,
+        value: initial,
+        hardMin: def.hardMin, hardMax: def.hardMax,
+        onInput: (v) => {
+          redrawFast(overrideWith(def.key, v));
+        },
+        onChange: (v) => {
+          upsertKeyframe(animation.tracks[def.key], currentTime, v);
+          persist();
+          markDirty();
+          timeline.render();
+          redrawPreview();
+        },
       });
 
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(api.slider);
+      row.appendChild(api.valueInput);
       parent.appendChild(row);
 
-      sliderInputs[def.key] = { input, valSpan, def };
+      sliderInputs[def.key] = { api, def };
     }
   }
 
@@ -669,8 +663,7 @@ export function renderAnimationPage(app) {
     for (const key of ANIMATED_PARAM_KEYS) {
       const ref = sliderInputs[key];
       if (!ref) continue;
-      ref.input.value = p[key];
-      ref.valSpan.textContent = ref.def.step < 1 ? Number(p[key]).toFixed(2) : String(Math.round(p[key]));
+      ref.api.setValue(p[key]);
     }
   }
 

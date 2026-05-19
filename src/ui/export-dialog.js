@@ -9,6 +9,7 @@
  * cancelled. Cancellation throws nothing — it just resolves with `null`.
  */
 import { t } from './i18n.js';
+import { createSliderInput } from './slider-input.js';
 
 // ─── Modal infrastructure ──────────────────────────────────────────────────
 
@@ -266,17 +267,14 @@ export function staticFontDialog({ defaultFilename, defaultStretch = 0, defaultA
     sRow.className = 'row';
     const sLabel = document.createElement('label');
     sLabel.textContent = 'Stretch';
-    const sInput = document.createElement('input');
-    sInput.type = 'range';
-    sInput.min = 0; sInput.max = 10; sInput.step = 0.05;
-    sInput.value = defaultStretch;
-    const sVal = document.createElement('span');
-    sVal.className = 'value';
-    sVal.textContent = (+defaultStretch).toFixed(2);
-    sInput.addEventListener('input', () => sVal.textContent = (+sInput.value).toFixed(2));
+    const sApi = createSliderInput({
+      min: 0, max: 10, step: 0.05,
+      value: defaultStretch,
+      formatter: (v) => v.toFixed(2),
+    });
     sRow.appendChild(sLabel);
-    sRow.appendChild(sInput);
-    sRow.appendChild(sVal);
+    sRow.appendChild(sApi.slider);
+    sRow.appendChild(sApi.valueInput);
     body.appendChild(sRow);
 
     // Angle slider
@@ -284,17 +282,14 @@ export function staticFontDialog({ defaultFilename, defaultStretch = 0, defaultA
     aRow.className = 'row';
     const aLabel = document.createElement('label');
     aLabel.textContent = 'Angle (deg)';
-    const aInput = document.createElement('input');
-    aInput.type = 'range';
-    aInput.min = 0; aInput.max = 180; aInput.step = 1;
-    aInput.value = defaultAngle;
-    const aVal = document.createElement('span');
-    aVal.className = 'value';
-    aVal.textContent = `${defaultAngle}°`;
-    aInput.addEventListener('input', () => aVal.textContent = `${aInput.value}°`);
+    const aApi = createSliderInput({
+      min: 0, max: 180, step: 1,
+      value: defaultAngle,
+      hardMin: 0, hardMax: 180,
+    });
     aRow.appendChild(aLabel);
-    aRow.appendChild(aInput);
-    aRow.appendChild(aVal);
+    aRow.appendChild(aApi.slider);
+    aRow.appendChild(aApi.valueInput);
     body.appendChild(aRow);
 
     const nRow = document.createElement('div');
@@ -309,8 +304,8 @@ export function staticFontDialog({ defaultFilename, defaultStretch = 0, defaultA
     body.appendChild(nRow);
 
     return () => ({
-      stretchAmount: parseFloat(sInput.value),
-      stretchAngle: parseFloat(aInput.value),
+      stretchAmount: sApi.getValue(),
+      stretchAngle: aApi.getValue(),
       filename: nInput.value || defaultFilename,
     });
   });

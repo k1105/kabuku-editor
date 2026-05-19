@@ -21,6 +21,7 @@ import { createPageHeader } from '../ui/page-header.js';
 import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
+import { createSliderInput } from '../ui/slider-input.js';
 
 const GLYPH_SIZE = 1024;
 const MODE_KEY = 'kabuku.editMode';
@@ -522,26 +523,19 @@ export function renderIndexPage(app) {
         row.className = 'param-row';
         const label = document.createElement('label');
         label.textContent = def.label;
-        const input = document.createElement('input');
-        input.type = 'range';
-        input.min = def.min;
-        input.max = def.max;
-        input.step = def.step;
-        input.value = layer.gridParams[def.key] ?? def.default;
-        const valSpan = document.createElement('span');
-        valSpan.className = 'value';
-        valSpan.textContent = input.value;
-        input.addEventListener('input', () => {
-          const v = parseFloat(input.value);
-          layer.gridParams[def.key] = v;
-          valSpan.textContent = v;
-          saveGlobalLayers({ propagateGridParams: true });
-          redraw();
+        const { slider, valueInput } = createSliderInput({
+          min: def.min, max: def.max, step: def.step,
+          value: layer.gridParams[def.key] ?? def.default,
+          onInput: (v) => {
+            layer.gridParams[def.key] = v;
+            saveGlobalLayers({ propagateGridParams: true });
+            redraw();
+          },
+          onChange: () => refreshAllThumbnails(),
         });
-        input.addEventListener('change', () => refreshAllThumbnails());
         row.appendChild(label);
-        row.appendChild(input);
-        row.appendChild(valSpan);
+        row.appendChild(slider);
+        row.appendChild(valueInput);
         gridParamGroup.appendChild(row);
       }
     }
@@ -565,25 +559,20 @@ export function renderIndexPage(app) {
       row.className = 'param-row';
       const label = document.createElement('label');
       label.textContent = def.label;
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = 0;
-      input.max = 1;
-      input.step = 0.005;
-      input.value = global.fontMetrics[def.key] ?? def.default;
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = parseFloat(input.value).toFixed(3);
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        global.fontMetrics[def.key] = v;
-        valSpan.textContent = v.toFixed(3);
-        saveGlobal(global);
-        redraw();
+      const { slider, valueInput } = createSliderInput({
+        min: 0, max: 1, step: 0.005,
+        value: global.fontMetrics[def.key] ?? def.default,
+        hardMin: 0, hardMax: 1,
+        formatter: (v) => v.toFixed(3),
+        onInput: (v) => {
+          global.fontMetrics[def.key] = v;
+          saveGlobal(global);
+          redraw();
+        },
       });
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(slider);
+      row.appendChild(valueInput);
       metricsGroup.appendChild(row);
     }
     sidebarBody.appendChild(metricsGroup);
@@ -591,7 +580,7 @@ export function renderIndexPage(app) {
     // Transform (global)
     const transformDefs = [
       { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
-      { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05 },
+      { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05, hardMin: 0, hardMax: 1 },
       { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
     ];
     const transformGroup = document.createElement('div');
@@ -604,26 +593,20 @@ export function renderIndexPage(app) {
       row.className = 'param-row';
       const label = document.createElement('label');
       label.textContent = def.label;
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
-      input.value = global[def.key] ?? def.default;
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = input.value;
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        global[def.key] = v;
-        valSpan.textContent = v;
-        saveGlobal(global);
-        redraw();
+      const { slider, valueInput } = createSliderInput({
+        min: def.min, max: def.max, step: def.step,
+        value: global[def.key] ?? def.default,
+        hardMin: def.hardMin, hardMax: def.hardMax,
+        onInput: (v) => {
+          global[def.key] = v;
+          saveGlobal(global);
+          redraw();
+        },
+        onChange: () => refreshAllThumbnails(),
       });
-      input.addEventListener('change', () => refreshAllThumbnails());
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(slider);
+      row.appendChild(valueInput);
       transformGroup.appendChild(row);
     }
     sidebarBody.appendChild(transformGroup);
@@ -879,7 +862,7 @@ export function renderIndexPage(app) {
     meshBtn.className = 'tool-btn';
     meshBtn.textContent = 'Auto Mesh';
     meshBtn.style.marginLeft = '4px';
-    meshBtn.addEventListener('click', () => doAutoMesh(parseFloat(threshInput.value)));
+    meshBtn.addEventListener('click', () => doAutoMesh(threshApi.getValue()));
     imgSection.appendChild(meshBtn);
 
     const threshRow = document.createElement('div');
@@ -887,42 +870,32 @@ export function renderIndexPage(app) {
     threshRow.style.marginTop = '8px';
     const threshLabel = document.createElement('label');
     threshLabel.textContent = 'Threshold';
-    const threshInput = document.createElement('input');
-    threshInput.type = 'range';
-    threshInput.min = 0;
-    threshInput.max = 1;
-    threshInput.step = 0.05;
-    threshInput.value = 0.5;
-    const threshVal = document.createElement('span');
-    threshVal.className = 'value';
-    threshVal.textContent = '0.5';
-    threshInput.addEventListener('input', () => { threshVal.textContent = threshInput.value; });
+    const threshApi = createSliderInput({
+      min: 0, max: 1, step: 0.05,
+      value: 0.5,
+      hardMin: 0, hardMax: 1,
+    });
     threshRow.appendChild(threshLabel);
-    threshRow.appendChild(threshInput);
-    threshRow.appendChild(threshVal);
+    threshRow.appendChild(threshApi.slider);
+    threshRow.appendChild(threshApi.valueInput);
     imgSection.appendChild(threshRow);
 
     const bgOpRow = document.createElement('div');
     bgOpRow.className = 'param-row';
     const bgOpLabel = document.createElement('label');
     bgOpLabel.textContent = 'BG Opacity';
-    const bgOpInput = document.createElement('input');
-    bgOpInput.type = 'range';
-    bgOpInput.min = 0;
-    bgOpInput.max = 1;
-    bgOpInput.step = 0.05;
-    bgOpInput.value = bgOpacity;
-    const bgOpVal = document.createElement('span');
-    bgOpVal.className = 'value';
-    bgOpVal.textContent = bgOpacity;
-    bgOpInput.addEventListener('input', () => {
-      bgOpacity = parseFloat(bgOpInput.value);
-      bgOpVal.textContent = bgOpInput.value;
-      redraw();
+    const bgOpApi = createSliderInput({
+      min: 0, max: 1, step: 0.05,
+      value: bgOpacity,
+      hardMin: 0, hardMax: 1,
+      onInput: (v) => {
+        bgOpacity = v;
+        redraw();
+      },
     });
     bgOpRow.appendChild(bgOpLabel);
-    bgOpRow.appendChild(bgOpInput);
-    bgOpRow.appendChild(bgOpVal);
+    bgOpRow.appendChild(bgOpApi.slider);
+    bgOpRow.appendChild(bgOpApi.valueInput);
     imgSection.appendChild(bgOpRow);
 
     // Image transform (per-character offset & scale to align glyph to metrics)
@@ -941,22 +914,38 @@ export function renderIndexPage(app) {
 
       const label = document.createElement('label');
       label.textContent = def.label;
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
 
-      const formatVal = (v) => v.toFixed(def.step < 0.1 ? 2 : 0);
+      const api = createSliderInput({
+        min: def.min, max: def.max, step: def.step,
+        value: def.default,
+        formatter: (v) => def.step < 0.1
+          ? v.toFixed(2)
+          : (Number.isInteger(v) ? String(v) : v.toFixed(2)),
+        onInput: (v) => {
+          const c = project.characters[selectedCharId];
+          if (!c) return;
+          if (v === def.default) delete c[def.key];
+          else c[def.key] = v;
+          syncOverrideUI();
+          redraw();
+        },
+        onChange: () => {
+          saveLocalChar();
+          refreshSelectedThumbnail();
+        },
+      });
 
       function syncFromState() {
         const cd = project.characters[selectedCharId] || {};
         const v = cd[def.key] ?? def.default;
+        api.setValue(v);
+        syncOverrideUI();
+      }
+
+      function syncOverrideUI() {
+        const cd = project.characters[selectedCharId] || {};
+        const v = cd[def.key] ?? def.default;
         const overridden = v !== def.default;
-        input.value = v;
-        valSpan.textContent = formatVal(parseFloat(v));
         label.classList.toggle('overridden', overridden);
         badge.classList.toggle('is-off', !overridden);
         badge.title = overridden ? 'Click to reset override' : '';
@@ -978,24 +967,10 @@ export function renderIndexPage(app) {
         resetThis();
       });
 
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        const c = project.characters[selectedCharId];
-        if (!c) return;
-        if (v === def.default) delete c[def.key];
-        else c[def.key] = v;
-        syncFromState();
-        redraw();
-      });
-      input.addEventListener('change', () => {
-        saveLocalChar();
-        refreshSelectedThumbnail();
-      });
-
       row.appendChild(badge);
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(api.slider);
+      row.appendChild(api.valueInput);
       imgSection.appendChild(row);
       syncFromState();
     }

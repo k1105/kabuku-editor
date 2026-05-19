@@ -348,7 +348,7 @@ body {
 }
 
 .preview-controls .param-row .value {
-  flex: 0 0 32px;
+  flex: 0 0 40px;
   font-size: 11px;
   text-align: right;
 }
@@ -566,10 +566,43 @@ body {
 
 .param-row .value {
   font-size: 11px;
-  flex: 0 0 36px;
+  flex: 0 0 44px;
   text-align: right;
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* Numeric value input — replaces the old read-only <span class="value">.
+   Strip native spinners and chrome so it visually matches the prior text. */
+input.value[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  width: 100%;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 1px 2px;
+  margin: 0;
+  font: inherit;
+  font-size: 11px;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+input.value[type="number"]::-webkit-outer-spin-button,
+input.value[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+input.value[type="number"]:hover {
+  border-color: var(--border);
+}
+input.value[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* === Custom range slider ===

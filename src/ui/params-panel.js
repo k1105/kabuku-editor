@@ -1,3 +1,14 @@
+import { createSliderInput } from './slider-input.js';
+
+/**
+ * Hard clamps for params with a strict mathematical range. Anything not listed
+ * here is free to accept arbitrary real values via the numeric input.
+ */
+const HARD_LIMITS = {
+  stretchAngle: { hardMin: 0, hardMax: 180 },
+  gapDirectionWeight: { hardMin: 0, hardMax: 1 },
+};
+
 /**
  * Build the override-state circle button. Always present in the row layout
  * (visibility hidden when off-without-callback) so labels stay aligned.
@@ -100,32 +111,26 @@ export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) 
       label.textContent = def.label;
       if (isOverridden) label.classList.add('overridden');
 
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
-      input.value = activeValues[def.key] ?? def.default;
-
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = input.value;
-
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        valSpan.textContent = v;
-        if (isGlobal) {
-          callbacks.onGlobalChange(def.key, v);
-        } else {
-          activeValues[def.key] = v;
-          callbacks.onLocalChange(def.key, v);
-        }
+      const { slider, valueInput } = createSliderInput({
+        min: def.min,
+        max: def.max,
+        step: def.step,
+        value: activeValues[def.key] ?? def.default,
+        ...(HARD_LIMITS[def.key] || {}),
+        onInput: (v) => {
+          if (isGlobal) {
+            callbacks.onGlobalChange(def.key, v);
+          } else {
+            activeValues[def.key] = v;
+            callbacks.onLocalChange(def.key, v);
+          }
+        },
       });
 
       row.appendChild(badge);
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(slider);
+      row.appendChild(valueInput);
 
       el.appendChild(row);
     }
@@ -169,27 +174,21 @@ export function createStretchPanel(global, onChange) {
       const label = document.createElement('label');
       label.textContent = def.label;
 
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
-      input.value = global[def.key] ?? def.default;
-
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = input.value;
-
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        global[def.key] = v;
-        valSpan.textContent = v;
-        onChange(def.key, v);
+      const { slider, valueInput } = createSliderInput({
+        min: def.min,
+        max: def.max,
+        step: def.step,
+        value: global[def.key] ?? def.default,
+        ...(HARD_LIMITS[def.key] || {}),
+        onInput: (v) => {
+          global[def.key] = v;
+          onChange(def.key, v);
+        },
       });
 
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(slider);
+      row.appendChild(valueInput);
       el.appendChild(row);
     }
   }
@@ -252,32 +251,28 @@ export function createTransformPanel(transform, globalValues, callbacks) {
       label.textContent = def.label;
       if (isOverridden) label.classList.add('overridden');
 
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = def.min;
-      input.max = def.max;
-      input.step = def.step;
-      input.value = isGlobal ? (globalValues[def.key] ?? def.default) : (transform[def.key] ?? def.default);
+      const initial = isGlobal ? (globalValues[def.key] ?? def.default) : (transform[def.key] ?? def.default);
 
-      const valSpan = document.createElement('span');
-      valSpan.className = 'value';
-      valSpan.textContent = input.value;
-
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        valSpan.textContent = v;
-        if (isGlobal) {
-          callbacks.onGlobalChange(def.key, v);
-        } else {
-          transform[def.key] = v;
-          callbacks.onLocalChange(def.key, v);
-        }
+      const { slider, valueInput } = createSliderInput({
+        min: def.min,
+        max: def.max,
+        step: def.step,
+        value: initial,
+        ...(HARD_LIMITS[def.key] || {}),
+        onInput: (v) => {
+          if (isGlobal) {
+            callbacks.onGlobalChange(def.key, v);
+          } else {
+            transform[def.key] = v;
+            callbacks.onLocalChange(def.key, v);
+          }
+        },
       });
 
       row.appendChild(badge);
       row.appendChild(label);
-      row.appendChild(input);
-      row.appendChild(valSpan);
+      row.appendChild(slider);
+      row.appendChild(valueInput);
 
       el.appendChild(row);
     }
