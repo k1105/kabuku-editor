@@ -226,6 +226,26 @@ export async function deleteAnimationProject(projectId) {
 }
 
 /**
+ * Update which FontProject this AnimationProject is linked to, without
+ * pulling a new snapshot. The character subcollection and snapshotGlobal
+ * keep the previously-snapshotted state until the user explicitly refreshes.
+ */
+export async function setLinkedFontProject(projectId, fontProjectId, fontProjectName) {
+  if (!projectId) throw new Error('No animation project specified');
+  const db = getDb();
+  await setDoc(doc(db, 'animationProjects', projectId), {
+    fontProjectId: fontProjectId || null,
+    fontProjectName: fontProjectName || '',
+    updatedAt: serverTimestamp(),
+    lastEditor: userInfo() || null,
+  }, { merge: true });
+  if (_apId === projectId && _ap) {
+    _ap.fontProjectId = fontProjectId || null;
+    _ap.fontProjectName = fontProjectName || '';
+  }
+}
+
+/**
  * Re-snapshot from the origin FontProject. Overwrites snapshotGlobal and
  * the characters subcollection with the current state of the FontProject.
  * Keeps the AnimationProject's animation data untouched.

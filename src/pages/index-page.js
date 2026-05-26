@@ -1323,9 +1323,14 @@ export function renderIndexPage(app) {
     }
     // Grow the offscreen canvas with the current transform so stretched / blurred
     // content that overshoots the glyph boundary doesn't get clipped at its edge.
+    // The editor preview uses true per-cell stretch (metrics guides need to
+    // stay un-skewed, so we can't use the image-affine approximation that
+    // compose/animation employ). Slider-bounded stretchAmount keeps memory in
+    // check here (~100 MB worst case at GLYPH_SIZE=1024, stretch=2).
     // Add extra margin on both sides for the metrics labels drawn just outside
     // the glyph (preview mode skips guides, so no extra room needed there).
-    const cacheScale = computeCacheScale(transform);
+    const stretchFactor = 1 + 2 * (transform.stretchAmount || 0);
+    const cacheScale = stretchFactor + (computeCacheScale(transform) - 1);
     const baseSize = Math.ceil(GLYPH_SIZE * cacheScale);
     const labelMargin = (!previewMode && global.fontMetrics) ? metricsLabelMargin(GLYPH_SIZE) * 2 : 0;
     const canvasSize = baseSize + labelMargin;

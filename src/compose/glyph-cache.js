@@ -9,19 +9,20 @@ export { RENDER_SIZE };
  * Scale factor (relative to glyph size) needed to contain the glyph
  * after the current transform without cropping.
  *
- * Stretch is now anchored to the baseline (off-center pivot), so the worst-case
- * bbox is asymmetric and larger than the symmetric center-pivot case. Use a
- * conservative `1 + 2*A` bound that covers any baseline position in [0,1].
- * Gap and blur add a constant pixel margin on top.
+ * Stretch is NOT included here — it would make the cache canvas grow
+ * unboundedly with stretchAmount. Stretch is applied as a draw-time affine
+ * on the cached (unstretched) bitmap by callers, accepting the visual
+ * approximation that cells stretch into ellipses rather than maintaining
+ * round shapes at displaced positions.
+ *
+ * Only bounded params (gap, blur) contribute to the cache margin.
  */
 export function computeCacheScale(transform) {
-  const A = transform?.stretchAmount || 0;
   const gap = transform?.baseGap || 0;
   const blur = transform?.metaballRadius || 0;
-  const stretchFactor = 1 + 2 * A;
   // Safety margin: cell extent (up to ~32px), gap, blur bleed, anti-aliasing
   const extraPx = 64 + gap * 2 + blur * 4;
-  return stretchFactor + extraPx / RENDER_SIZE;
+  return 1 + extraPx / RENDER_SIZE;
 }
 
 /**
@@ -55,8 +56,11 @@ export function createGlyphCache() {
       offscreen.height = canvasSize;
       const offCtx = offscreen.getContext('2d');
 
+      // Stretch is applied as a draw-time affine by callers, not baked in.
+      const cacheTransform = { ...transform, stretchAmount: 0, stretchAngle: 0 };
+
       renderCanvas(offCtx, layers, {
-        transform,
+        transform: cacheTransform,
         glyphSize: RENDER_SIZE,
         preview: true,
         fontMetrics: global?.fontMetrics,

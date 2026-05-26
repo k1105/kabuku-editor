@@ -1497,8 +1497,18 @@ select {
 }
 
 /* ============================================================
-   Animation page snapshot-refresh button
+   Animation page snapshot link selector + refresh button
    ============================================================ */
+.snapshot-link-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.snapshot-link-select {
+  font-size: 12px;
+  max-width: 200px;
+  padding: 2px 4px;
+}
 .snapshot-refresh-btn {
   font-size: 12px;
   display: inline-flex;

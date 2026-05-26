@@ -1,8 +1,9 @@
-import { resolveTransform, createDefaultAnimation, ANIMATED_PARAM_KEYS } from '../core/project.js';
+import { resolveTransform, createDefaultAnimation, ANIMATED_PARAM_KEYS, listFontProjects } from '../core/project.js';
 import {
   getSnapshotProject, getSnapshotGlobal, getAnimation, saveAnimation,
   currentAnimationProjectName, currentAnimationProjectId, refreshSnapshotFromOrigin,
-  getOriginFontProjectId, getOriginFontProjectName, getSnapshotAt,
+  getOriginFontProjectId, getOriginFontProjectName,
+  setLinkedFontProject,
   flushNow as flushAnimationNow,
 } from '../core/animation-project.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
@@ -124,15 +125,27 @@ export function renderAnimationPage(app) {
     historyMode: 'animation',
   });
 
-  // Snapshot status pill + Refresh button (re-pull latest from origin font project)
-  const originName = getOriginFontProjectName();
-  const snapAt = getSnapshotAt();
+  // Snapshot link selector + Refresh button.
+  // The selector lets the user re-link the snapshot to any existing Typeset —
+  // important when the original origin has been deleted. Selecting a new
+  // entry only updates the link; the snapshot itself is re-pulled only when
+  // the Refresh button is clicked explicitly.
+  const linkWrap = document.createElement('div');
+  linkWrap.className = 'snapshot-link-wrap';
+
+  const linkSelect = document.createElement('select');
+  linkSelect.className = 'snapshot-link-select';
+  linkSelect.disabled = true;
+  const loadingOpt = document.createElement('option');
+  loadingOpt.textContent = getOriginFontProjectName() || '(loading...)';
+  loadingOpt.value = getOriginFontProjectId() || '';
+  linkSelect.appendChild(loadingOpt);
+
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'tool-btn snapshot-refresh-btn';
-  refreshBtn.title = originName
-    ? `Snapshot of "${originName}" — click to re-pull the latest`
-    : 'Snapshot info';
-  refreshBtn.innerHTML = '';
+  refreshBtn.title = getOriginFontProjectName()
+    ? `Linked to "${getOriginFontProjectName()}" — click to re-pull the latest`
+    : 'No Typeset linked';
   const refreshIcon = iconEl('refresh');
   const refreshLabel = document.createElement('span');
   refreshLabel.textContent = 'Refresh Snapshot';
@@ -140,10 +153,10 @@ export function renderAnimationPage(app) {
   refreshBtn.appendChild(refreshLabel);
   refreshBtn.addEventListener('click', async () => {
     if (!getOriginFontProjectId()) {
-      alert('元の Typeset が見つかりません（削除済みの可能性）。');
+      alert('リンク先の Typeset が設定されていません。プルダウンから選択してください。');
       return;
     }
-    if (!confirm('元の Typeset の最新状態でスナップショットを上書きします。よろしいですか?')) return;
+    if (!confirm('リンク中の Typeset の最新状態でスナップショットを上書きします。よろしいですか?')) return;
     refreshBtn.disabled = true;
     refreshLabel.textContent = 'Refreshing...';
     try {
@@ -156,7 +169,68 @@ export function renderAnimationPage(app) {
       refreshLabel.textContent = 'Refresh Snapshot';
     }
   });
-  headerNav.insertBefore(refreshBtn, headerNav.firstChild);
+
+  linkWrap.appendChild(linkSelect);
+  linkWrap.appendChild(refreshBtn);
+  headerNav.insertBefore(linkWrap, headerNav.firstChild);
+
+  (async () => {
+    let list;
+    try {
+      list = await listFontProjects();
+    } catch (e) {
+      console.error('Failed to load Typeset list:', e);
+      return;
+    }
+    const currentId = getOriginFontProjectId();
+    const currentName = getOriginFontProjectName();
+    const currentExists = currentId && list.some(p => p.id === currentId);
+
+    linkSelect.innerHTML = '';
+    if (!currentId) {
+      const noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = '(未リンク)';
+      linkSelect.appendChild(noneOpt);
+    } else if (!currentExists) {
+      // Origin Typeset has been deleted — keep a placeholder so the user can
+      // see the broken link state and pick a replacement.
+      const missingOpt = document.createElement('option');
+      missingOpt.value = currentId;
+      missingOpt.textContent = `${currentName || '(unknown)'}（削除済み）`;
+      linkSelect.appendChild(missingOpt);
+    }
+    for (const p of list) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name || '(Untitled)';
+      if (p.id === currentId) opt.selected = true;
+      linkSelect.appendChild(opt);
+    }
+    linkSelect.disabled = false;
+
+    linkSelect.addEventListener('change', async () => {
+      const newId = linkSelect.value;
+      const prevId = getOriginFontProjectId() || '';
+      if (!newId || newId === prevId) return;
+      const newName = list.find(p => p.id === newId)?.name || '';
+      if (!confirm(`スナップショットのリンク先を "${newName}" に変更します。よろしいですか?\n（内容を取り込むには Refresh Snapshot を実行してください）`)) {
+        linkSelect.value = prevId;
+        return;
+      }
+      linkSelect.disabled = true;
+      try {
+        await setLinkedFontProject(currentAnimationProjectId(), newId, newName);
+        refreshBtn.title = `Linked to "${newName}" — click to re-pull the latest`;
+      } catch (e) {
+        console.error(e);
+        alert(`リンク変更に失敗しました: ${e.message}`);
+        linkSelect.value = prevId;
+      } finally {
+        linkSelect.disabled = false;
+      }
+    });
+  })();
 
   // === Page ===
   const page = document.createElement('div');
@@ -520,7 +594,11 @@ export function renderAnimationPage(app) {
 
   /** Full pipeline draw (slow). Renders to an offscreen at the frame cache's
    *  uniform dimensions, stores the result in cache at the current frame
-   *  index, then blits to the on-screen canvas. */
+   *  index, then blits to the on-screen canvas.
+   *
+   *  Stretch is applied as a draw-time affine on each cached (unstretched)
+   *  glyph bitmap — same approximation as compose-page redraw(). The actual
+   *  per-cell stretch only lives in the renderFrames() path (Render button). */
   function drawFull(params) {
     ensureFrameCacheShape();
     const cacheW = frameCache.width;
@@ -535,6 +613,16 @@ export function renderAnimationPage(app) {
     const layout = computeLayout(params);
     const dx = Math.floor((cacheW - layout.cw) / 2);
     const dy = Math.floor((cacheH - layout.ch) / 2);
+
+    // Stretch affine (image-stretch approximation around glyph baseline).
+    const rad = ((params.stretchAngle || 0) * Math.PI) / 180;
+    const s = 1 + (params.stretchAmount || 0);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const a = cos * cos * s + sin * sin;
+    const b = cos * sin * (s - 1);
+    const d = sin * sin * s + cos * cos;
+    const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
 
     octx.save();
     applyCameraTransform(octx, cacheW, cacheH, params);
@@ -553,7 +641,13 @@ export function renderAnimationPage(app) {
       const charData = project.characters[pos.charId];
       const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
       const cached = glyphCache.get(pos.charId, charData, global, charTransform);
-      if (cached) octx.drawImage(cached, gx - layout.drawOffset, gy - layout.drawOffset, layout.drawSize, layout.drawSize);
+      if (!cached) continue;
+      const cx = gx + params.fontSize / 2;
+      const cy = gy + params.fontSize * baselineRatio;
+      octx.save();
+      octx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
+      octx.drawImage(cached, gx - layout.drawOffset, gy - layout.drawOffset, layout.drawSize, layout.drawSize);
+      octx.restore();
     }
     octx.restore();
 

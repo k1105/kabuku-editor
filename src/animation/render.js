@@ -1,6 +1,10 @@
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
-import { computeCacheScale } from '../compose/glyph-cache.js';
+import { computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { resolveTransform } from '../core/project.js';
+import { buildRuntimeLayers } from '../core/layer-builder.js';
+import { applyStretch } from '../transform/stretch.js';
+import { applyGap } from '../transform/gap.js';
+import { applyMetaballFilter } from '../transform/metaball.js';
 import { sampleAnimation } from './animation.js';
 
 function transformFromParams(p, global) {
@@ -22,6 +26,9 @@ function computeLayout(params, animation, charIds, global) {
     lineHeight: params.lineHeight,
     writingMode: animation.writingMode,
   });
+  // cacheScale is stretch-independent now (only gap/blur margin), so layout
+  // dimensions don't grow with stretchAmount. Stretched cells that fall
+  // outside the frame are simply clipped at draw time.
   const cacheScale = computeCacheScale(transformFromParams(params, global));
   const drawSize = params.fontSize * cacheScale;
   const drawOffset = (drawSize - params.fontSize) / 2;
@@ -65,7 +72,73 @@ function paramsEqual(a, b) {
 }
 
 /**
+ * Render one glyph's cells (with full per-cell stretch + gap) into a work
+ * canvas, apply metaball blur within that canvas, then composite onto the
+ * frame canvas. Work canvas is frame-sized and reused across glyphs — the
+ * per-glyph metaball locality is preserved because each glyph is processed
+ * in isolation on the cleared work canvas, while memory stays bounded by
+ * the frame dimensions (independent of stretchAmount).
+ *
+ * Cells are positioned at the glyph's output coordinates (gx, gy) and drawn
+ * via ctx.scale(fontSize/RENDER_SIZE) so vector paths anti-alias at output
+ * resolution. Blur is scaled by fontSize/RENDER_SIZE so its on-screen extent
+ * matches the legacy "render at RENDER_SIZE, then downscale" path.
+ */
+function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layers, charTransform, global) {
+  workCtx.clearRect(0, 0, workCanvas.width, workCanvas.height);
+
+  const baselineLocalY = (global?.fontMetrics?.baseline != null)
+    ? RENDER_SIZE * global.fontMetrics.baseline
+    : RENDER_SIZE / 2;
+  const scale = fontSize / RENDER_SIZE;
+
+  workCtx.save();
+  workCtx.translate(gx, gy);
+  workCtx.scale(scale, scale);
+
+  for (const layer of layers) {
+    if (!layer.visible) continue;
+    workCtx.globalAlpha = layer.opacity;
+    for (const cell of layer.cells) {
+      if (!cell.filled) continue;
+      let pos = cell.center;
+      if (charTransform.stretchAmount) {
+        pos = applyStretch(pos, charTransform.stretchAngle || 0, charTransform.stretchAmount, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
+      }
+      if (charTransform.baseGap) {
+        pos = applyGap(pos, charTransform.stretchAngle || 0, charTransform.baseGap, charTransform.gapDirectionWeight || 0, RENDER_SIZE, RENDER_SIZE);
+      }
+      const cdx = pos.x - cell.center.x;
+      const cdy = pos.y - cell.center.y;
+      workCtx.save();
+      workCtx.translate(cdx, cdy);
+      workCtx.fillStyle = '#000';
+      workCtx.fill(cell.path);
+      workCtx.restore();
+    }
+  }
+  workCtx.globalAlpha = 1;
+  workCtx.restore();
+
+  // Blur radius in glyph-local px (RENDER_SIZE space); scale to output px so
+  // the visual blur matches the value the user sees in the slider regardless
+  // of fontSize.
+  const blur = (charTransform.metaballRadius || 0) * scale;
+  if (blur > 0) {
+    applyMetaballFilter(workCtx, blur, 100);
+  }
+
+  octx.drawImage(workCanvas, 0, 0);
+}
+
+/**
  * Render animation frames to offscreen canvases.
+ *
+ * Each glyph is drawn directly into a frame-sized work offscreen at its
+ * output position, then composited onto the frame canvas. Per-glyph
+ * metaball locality is preserved; memory is bounded by frame dimensions
+ * (independent of stretchAmount). Cells stretched beyond the frame are
+ * clipped naturally at the work canvas edge.
  *
  * Supports an external per-frame cache: when `ctx.cache` is provided, already
  * populated entries are skipped (no re-render), newly produced frames are
@@ -77,7 +150,7 @@ function paramsEqual(a, b) {
  * frames, so re-running render after editing only re-paints missing entries.
  */
 export async function renderFrames(animation, ctx) {
-  const { project, global, charIds, glyphCache, onProgress, cache, onCacheUpdate } = ctx;
+  const { project, global, charIds, onProgress, cache, onCacheUpdate } = ctx;
   const fps = animation.fps;
   const totalFrames = Math.max(1, Math.round(animation.duration * fps));
 
@@ -112,6 +185,29 @@ export async function renderFrames(animation, ctx) {
     onCacheUpdate?.();
   }
 
+  // Pre-build runtime layers per charId. Project geometry doesn't change
+  // during render, so we can reuse the cell paths across every frame.
+  const layersByChar = new Map();
+  function getLayersFor(charId) {
+    if (layersByChar.has(charId)) return layersByChar.get(charId);
+    const charData = project.characters[charId];
+    if (!charData) {
+      layersByChar.set(charId, null);
+      return null;
+    }
+    const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
+    layersByChar.set(charId, layers.length > 0 ? layers : null);
+    return layersByChar.get(charId);
+  }
+
+  // Single work canvas reused across all glyphs + frames. Size matches the
+  // frame canvas so a stretched cell that lands anywhere within the visible
+  // frame still rasterizes; cells beyond the frame are clipped naturally.
+  const workCanvas = document.createElement('canvas');
+  workCanvas.width = maxW;
+  workCanvas.height = maxH;
+  const workCtx = workCanvas.getContext('2d');
+
   const frames = new Array(totalFrames);
   for (let i = 0; i < totalFrames; i++) {
     // Reuse cached entry when present — no re-render needed.
@@ -136,10 +232,6 @@ export async function renderFrames(animation, ctx) {
       if (i % 4 === 3) await new Promise(r => setTimeout(r, 0));
       continue;
     }
-
-    // Glyph cache is keyed by charId only, so per-frame transforms would otherwise
-    // use a stale cached bitmap. Invalidate so each frame renders glyphs fresh.
-    glyphCache.invalidateAll();
 
     const off = document.createElement('canvas');
     off.width = maxW;
@@ -175,10 +267,9 @@ export async function renderFrames(animation, ctx) {
       }
       const charData = project.characters[pos.charId];
       const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
-      const cached = glyphCache.get(pos.charId, charData, global, charTransform);
-      if (cached) {
-        octx.drawImage(cached, gx - layout.drawOffset, gy - layout.drawOffset, layout.drawSize, layout.drawSize);
-      }
+      const layers = getLayersFor(pos.charId);
+      if (!layers) continue;
+      renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, params.fontSize, layers, charTransform, global);
     }
     octx.restore();
 
@@ -192,9 +283,6 @@ export async function renderFrames(animation, ctx) {
     // Yield to browser every few frames
     if (i % 4 === 3) await new Promise(r => setTimeout(r, 0));
   }
-  // After rendering, the glyph cache is populated with the last frame's glyphs
-  // only; clear it so subsequent compose-style usage starts fresh.
-  glyphCache.invalidateAll();
 
   return { frames, fps, width: maxW, height: maxH };
 }

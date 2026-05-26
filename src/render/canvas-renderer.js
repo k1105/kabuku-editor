@@ -17,8 +17,11 @@ export function renderCanvas(ctx, layers, opts = {}) {
   const height = ctx.canvas.height;
   const preview = !!opts.preview;
 
-  const ox = (width - glyphSize) / 2;
-  const oy = (height - glyphSize) / 2;
+  // Glyph origin within ctx.canvas. Defaults to auto-center; callers that
+  // place the glyph at a specific position (e.g. animation direct render)
+  // can override.
+  const ox = opts.originX != null ? opts.originX : (width - glyphSize) / 2;
+  const oy = opts.originY != null ? opts.originY : (height - glyphSize) / 2;
 
   // Stretch pivot Y in glyph-local px (relative to glyph top edge).
   // Defaults to glyphSize/2 if no metrics provided so behavior matches the old
@@ -69,13 +72,11 @@ export function renderCanvas(ctx, layers, opts = {}) {
     ctx.globalAlpha = opts.backgroundOpacity ?? 0.3;
     ctx.globalCompositeOperation = 'multiply';
 
-    // Image stretch pivots on glyph center so editing font metrics (baseline
-    // etc.) doesn't visually shift the source image. Cells still pivot on
-    // baseline above — that's intentional, the font's stretch is anchored
-    // there, but the underlay image is just a reference and shouldn't move
-    // when guides move.
+    // Image stretch pivots on baseline (matching the cells) so the underlay
+    // and glyph stay aligned as stretch increases. Pivoting at glyph center
+    // here would drift relative to the cells whenever baseline != 0.5.
     const gcx = ox + glyphSize / 2;
-    const gcy = oy + glyphSize / 2;
+    const gcy = oy + baselineLocalY;
 
     if (t.stretchAmount) {
       const rad = (t.stretchAngle || 0) * Math.PI / 180;

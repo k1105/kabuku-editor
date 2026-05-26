@@ -1,5 +1,5 @@
 import { loadProject, getGlobal, resolveTransform, currentFontProjectId, currentFontProjectName } from '../core/project.js';
-import { layoutText, layoutBounds } from '../compose/text-layout.js';
+import { layoutText } from '../compose/text-layout.js';
 import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { createStretchControl } from '../ui/preview-controls.js';
@@ -240,20 +240,58 @@ export function renderComposePage(app) {
 
   // === Rendering (shared layout) ===
 
-  /** Compute shared layout + canvas sizing */
+  /** Compute shared layout + canvas sizing.
+   *  cacheScale covers bounded transforms (gap/blur); stretch is folded in
+   *  here by transforming each glyph's drawn box through the per-glyph affine
+   *  and taking the overall AABB, so stretched glyphs don't get clipped. */
   function computeLayout() {
     const positions = layoutText(inputText, charIds, {
       fontSize, textBoxWidth, kerning, lineHeight, writingMode,
     });
-    // Match the draw size to the cache canvas so stretched glyphs never clip
     const cacheScale = computeCacheScale(getTransform());
     const drawSize = fontSize * cacheScale;
     const drawOffset = (drawSize - fontSize) / 2;
-    const pad = 32 + drawOffset;
-    const bounds = layoutBounds(positions, fontSize);
-    const cw = Math.max(bounds.width + pad * 2, 200);
-    const ch = Math.max(bounds.height + pad * 2, 200);
-    return { positions, pad, cw, ch, drawSize, drawOffset };
+    const basePad = 32;
+
+    const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
+    const s = 1 + (global.stretchAmount ?? 0);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const a = cos * cos * s + sin * sin;
+    const b = cos * sin * (s - 1);
+    const d = sin * sin * s + cos * cos;
+    const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const pos of positions) {
+      const px = pos.x + fontSize / 2;
+      const py = pos.y + fontSize * baselineRatio;
+      const x0 = pos.x - drawOffset;
+      const x1 = pos.x + fontSize + drawOffset;
+      const y0 = pos.y - drawOffset;
+      const y1 = pos.y + fontSize + drawOffset;
+      for (const cx of [x0, x1]) {
+        for (const cy of [y0, y1]) {
+          const dx = cx - px;
+          const dy = cy - py;
+          const nx = px + a * dx + b * dy;
+          const ny = py + b * dx + d * dy;
+          if (nx < minX) minX = nx;
+          if (nx > maxX) maxX = nx;
+          if (ny < minY) minY = ny;
+          if (ny > maxY) maxY = ny;
+        }
+      }
+    }
+    if (positions.length === 0) {
+      minX = 0; minY = 0; maxX = fontSize; maxY = fontSize;
+    }
+
+    const offX = basePad - minX;
+    const offY = basePad - minY;
+    const cw = Math.max(Math.ceil((maxX - minX) + basePad * 2), 200);
+    const ch = Math.max(Math.ceil((maxY - minY) + basePad * 2), 200);
+    return { positions, offX, offY, cw, ch, drawSize, drawOffset };
   }
 
   function prepareCanvas(layout) {
@@ -279,11 +317,23 @@ export function renderComposePage(app) {
     canvas.style.transform = '';
     const layout = computeLayout();
     prepareCanvas(layout);
-    const { positions, pad, drawSize, drawOffset } = layout;
+    const { positions, offX, offY, drawSize, drawOffset } = layout;
+
+    // Stretch is applied as a draw-time affine on the cached (unstretched)
+    // glyph bitmap. Pivot is glyph baseline (X-center, Y-baseline) to match
+    // the renderer's per-cell pivot semantics.
+    const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
+    const s = 1 + (global.stretchAmount ?? 0);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const a = cos * cos * s + sin * sin;
+    const b = cos * sin * (s - 1);
+    const d = sin * sin * s + cos * cos;
+    const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
 
     for (const pos of positions) {
-      const gx = pad + pos.x;
-      const gy = pad + pos.y;
+      const gx = offX + pos.x;
+      const gy = offY + pos.y;
 
       if (pos.missing) {
         drawMissing(gx, gy);
@@ -297,9 +347,13 @@ export function renderComposePage(app) {
         charData?.transformOverrides || {}
       );
       const cached = glyphCache.get(pos.charId, charData, global, charTransform);
-      if (cached) {
-        ctx.drawImage(cached, gx - drawOffset, gy - drawOffset, drawSize, drawSize);
-      }
+      if (!cached) continue;
+      const cx = gx + fontSize / 2;
+      const cy = gy + fontSize * baselineRatio;
+      ctx.save();
+      ctx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
+      ctx.drawImage(cached, gx - drawOffset, gy - drawOffset, drawSize, drawSize);
+      ctx.restore();
     }
   }
 
@@ -307,7 +361,7 @@ export function renderComposePage(app) {
   function redrawFast() {
     const layout = computeLayout();
     prepareCanvas(layout);
-    const { positions, pad } = layout;
+    const { positions, offX, offY } = layout;
 
     // Stretch matrix: rotate(angle) * scaleX(1+amount) * rotate(-angle)
     const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
@@ -321,8 +375,8 @@ export function renderComposePage(app) {
     // Image stretch pivots on glyph center, not on baseline — font metrics
     // are reference guides only and editing them must not shift the underlay.
     for (const pos of positions) {
-      const gx = pad + pos.x;
-      const gy = pad + pos.y;
+      const gx = offX + pos.x;
+      const gy = offY + pos.y;
       const cx = gx + fontSize / 2;
       const cy = gy + fontSize / 2;
 
