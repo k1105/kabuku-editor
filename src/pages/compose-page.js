@@ -1,6 +1,8 @@
 import { loadProject, getGlobal, resolveTransform, currentFontProjectId, currentFontProjectName } from '../core/project.js';
 import { layoutText } from '../compose/text-layout.js';
-import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
+import { computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
+import { buildRuntimeLayers } from '../core/layer-builder.js';
+import { renderCanvas } from '../render/canvas-renderer.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { createStretchControl } from '../ui/preview-controls.js';
 import { createSliderInput } from '../ui/slider-input.js';
@@ -11,7 +13,11 @@ export function renderComposePage(app) {
   const project = loadProject();
   const global = getGlobal();
   const charIds = new Set(Object.keys(project.characters));
-  const glyphCache = createGlyphCache();
+  // Per-charId stretched-glyph cache, invalidated on transform release.
+  // We bake stretch into the rasterized bitmap (per-cell repositioning) rather
+  // than applying a draw-time image affine, so cells keep their round shape
+  // instead of squashing into ellipses.
+  const stretchedGlyphCache = new Map();
   const sourceImageCache = new Map(); // charId -> Image (base images for stretch preview)
 
   /** Get or load the source image for a character. Image-imported chars use
@@ -68,6 +74,14 @@ export function renderComposePage(app) {
       metaballStrength: global.metaballStrength ?? 1,
       metaballRadius,
     };
+  }
+
+  /** Cache scale that fits both stretched glyphs and bounded transforms
+   *  (gap/blur). Mirrors the index-page editor preview so stretched cells
+   *  rendered at the offscreen edge aren't clipped. */
+  function totalCacheScale(transform) {
+    const stretchFactor = 1 + 2 * (transform?.stretchAmount || 0);
+    return stretchFactor + (computeCacheScale(transform) - 1);
   }
 
   // === Header ===
@@ -241,14 +255,14 @@ export function renderComposePage(app) {
   // === Rendering (shared layout) ===
 
   /** Compute shared layout + canvas sizing.
-   *  cacheScale covers bounded transforms (gap/blur); stretch is folded in
-   *  here by transforming each glyph's drawn box through the per-glyph affine
-   *  and taking the overall AABB, so stretched glyphs don't get clipped. */
+   *  cacheScale grows with the full transform (including stretch) so per-cell
+   *  stretched glyphs aren't clipped at the offscreen edge; the AABB pass
+   *  below walks every glyph's stretched corners to size the page canvas. */
   function computeLayout() {
     const positions = layoutText(inputText, charIds, {
       fontSize, textBoxWidth, kerning, lineHeight, writingMode,
     });
-    const cacheScale = computeCacheScale(getTransform());
+    const cacheScale = totalCacheScale(getTransform());
     const drawSize = fontSize * cacheScale;
     const drawOffset = (drawSize - fontSize) / 2;
     const basePad = 32;
@@ -313,23 +327,36 @@ export function renderComposePage(app) {
     ctx.textBaseline = 'middle';
   }
 
+  /** Render (and cache) a glyph bitmap with the current stretch baked in.
+   *  Stretch is applied per-cell inside renderCanvas so cells keep their
+   *  shape (round dots stay round) rather than squashing into ellipses, as
+   *  happens when stretch is applied as a draw-time image affine. */
+  function getStretchedGlyph(charId, charData, charTransform) {
+    if (stretchedGlyphCache.has(charId)) return stretchedGlyphCache.get(charId);
+    if (!charData) return null;
+    const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
+    if (layers.length === 0) return null;
+    const scale = totalCacheScale(charTransform);
+    const size = Math.ceil(RENDER_SIZE * scale);
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const offCtx = off.getContext('2d');
+    renderCanvas(offCtx, layers, {
+      transform: charTransform,
+      glyphSize: RENDER_SIZE,
+      preview: true,
+      fontMetrics: global?.fontMetrics,
+    });
+    stretchedGlyphCache.set(charId, off);
+    return off;
+  }
+
   function redraw() {
     canvas.style.transform = '';
     const layout = computeLayout();
     prepareCanvas(layout);
     const { positions, offX, offY, drawSize, drawOffset } = layout;
-
-    // Stretch is applied as a draw-time affine on the cached (unstretched)
-    // glyph bitmap. Pivot is glyph baseline (X-center, Y-baseline) to match
-    // the renderer's per-cell pivot semantics.
-    const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
-    const s = 1 + (global.stretchAmount ?? 0);
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const a = cos * cos * s + sin * sin;
-    const b = cos * sin * (s - 1);
-    const d = sin * sin * s + cos * cos;
-    const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
 
     for (const pos of positions) {
       const gx = offX + pos.x;
@@ -346,14 +373,9 @@ export function renderComposePage(app) {
         { ...global, baseGap, gapDirectionWeight, metaballRadius },
         charData?.transformOverrides || {}
       );
-      const cached = glyphCache.get(pos.charId, charData, global, charTransform);
+      const cached = getStretchedGlyph(pos.charId, charData, charTransform);
       if (!cached) continue;
-      const cx = gx + fontSize / 2;
-      const cy = gy + fontSize * baselineRatio;
-      ctx.save();
-      ctx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
       ctx.drawImage(cached, gx - drawOffset, gy - drawOffset, drawSize, drawSize);
-      ctx.restore();
     }
   }
 
@@ -408,7 +430,7 @@ export function renderComposePage(app) {
 
   function onTransformRelease() {
     canvas.style.transform = '';
-    glyphCache.invalidateAll();
+    stretchedGlyphCache.clear();
     redraw();
   }
 
