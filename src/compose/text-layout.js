@@ -1,3 +1,8 @@
+// Whitespace characters that advance position without rendering, even when
+// no glyph is registered in the project. Newline ('\n') is handled separately
+// because it controls line breaks.
+const WHITESPACE = new Set([' ', '　', '\t']);
+
 /**
  * Compute glyph positions for text composition.
  *
@@ -37,7 +42,7 @@ export function layoutText(text, availableCharIds, opts) {
         x -= lineStep;
         y = 0;
       }
-      result.push({ char, charId: char, x, y, missing: !availableCharIds.has(char) });
+      result.push({ char, charId: char, x, y, missing: !availableCharIds.has(char) && !WHITESPACE.has(char) });
       y += step;
     }
     // Shift all positions so the rightmost column is at x=0
@@ -58,7 +63,7 @@ export function layoutText(text, availableCharIds, opts) {
         x = 0;
         y += lineStep;
       }
-      result.push({ char, charId: char, x, y, missing: !availableCharIds.has(char) });
+      result.push({ char, charId: char, x, y, missing: !availableCharIds.has(char) && !WHITESPACE.has(char) });
       x += step;
     }
   }
