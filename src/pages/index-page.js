@@ -12,11 +12,11 @@ import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { exportLayerToSVG, exportAllLayersToSVG } from '../render/svg-exporter.js';
 import { buildFontBytes } from '../render/font-exporter.js';
 import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../render/font/vf-builder.js';
-import { svgExportDialog, staticFontDialog, variableFontDialog, fontImportDialog, saveFile } from '../ui/export-dialog.js';
+import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, saveFile } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
 import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
-import { iconButton, iconEl } from '../ui/icons.js';
+import { iconButton } from '../ui/icons.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
@@ -118,18 +118,6 @@ export function renderIndexPage(app) {
     input.click();
   });
 
-  const importImagesBtn = iconButton('imagePlus', 'Import Images', {
-    title: 'Bulk import character images',
-  });
-  importImagesBtn.addEventListener('click', () => triggerImport());
-
-  const importFontBtn = iconButton('typeFont', 'Import from Font', {
-    title: 'Generate glyphs from a Google Fonts family',
-  });
-  importFontBtn.addEventListener('click', () => triggerFontImport());
-
-  headerActions.appendChild(importImagesBtn);
-  headerActions.appendChild(importFontBtn);
   headerActions.appendChild(importJsonBtn);
   headerActions.appendChild(exportBtn);
 
@@ -210,7 +198,7 @@ export function renderIndexPage(app) {
 
   const cardElements = {};
   for (const charId of Object.keys(project.characters)) {
-    const card = createCharCard(charId, project.characters[charId], (id) => selectChar(id));
+    const card = createCharCard(charId, project.characters[charId], (id) => selectChar(id), (id) => deleteGlyph(id));
     if (charId === selectedCharId) card.classList.add('selected');
     cardElements[charId] = card;
     charStrip.appendChild(card);
@@ -220,7 +208,7 @@ export function renderIndexPage(app) {
   addGlyphTile.className = 'char-card add-glyph-tile';
   addGlyphTile.title = 'Add glyph';
   addGlyphTile.textContent = '+';
-  addGlyphTile.addEventListener('click', () => addEmptyGlyph());
+  addGlyphTile.addEventListener('click', () => openAddGlyphDialog());
   charStrip.appendChild(addGlyphTile);
 
   charStripWrap.appendChild(charStrip);
@@ -1099,7 +1087,7 @@ export function renderIndexPage(app) {
     const newId = generateUniqueCharId('new');
     createEmptyCharacter(newId);
     project.characters[newId] = { imagePath: '' };
-    const card = createCharCard(newId, project.characters[newId], (id) => selectChar(id));
+    const card = createCharCard(newId, project.characters[newId], (id) => selectChar(id), (id) => deleteGlyph(id));
     cardElements[newId] = card;
     charStrip.insertBefore(card, addGlyphTile);
     emptyState.style.display = 'none';
@@ -1137,37 +1125,46 @@ export function renderIndexPage(app) {
   // === Char delete ===
   function deleteSelectedGlyph() {
     if (!selectedCharId) return;
-    if (!confirm(`Delete glyph "${selectedCharId}"?`)) return;
-    const charId = selectedCharId;
+    deleteGlyph(selectedCharId);
+  }
+
+  function deleteGlyph(charId) {
+    if (!charId || !project.characters[charId]) return;
+    if (!confirm(`Delete glyph "${charId}"?`)) return;
+    const wasSelected = charId === selectedCharId;
     deleteCharacter(charId);
     delete project.characters[charId];
     const card = cardElements[charId];
     if (card) card.remove();
     delete cardElements[charId];
-    const remaining = Object.keys(project.characters);
-    selectedCharId = remaining[0] ?? null;
-    if (selectedCharId && cardElements[selectedCharId]) {
-      cardElements[selectedCharId].classList.add('selected');
+    if (wasSelected) {
+      const remaining = Object.keys(project.characters);
+      selectedCharId = remaining[0] ?? null;
+      if (selectedCharId && cardElements[selectedCharId]) {
+        cardElements[selectedCharId].classList.add('selected');
+      }
+      if (!selectedCharId) {
+        previewCanvas.style.display = 'none';
+        emptyState.style.display = '';
+      }
+      rebuildLocalState();
+      loadBackgroundImage();
+      renderSidebarBody();
+      redraw();
     }
-    if (!selectedCharId) {
-      previewCanvas.style.display = 'none';
-      emptyState.style.display = '';
-    }
-    rebuildLocalState();
-    loadBackgroundImage();
-    renderSidebarBody();
-    redraw();
     historyCommit('delete-glyph');
   }
 
   // === Char import ===
-  function triggerImport() {
-    importImages(project, {
+
+  /** Shared importer UI hooks for both image-file and font-family imports. */
+  function makeImportHooks(historyTag) {
+    return {
       progressWrap, progressBar, progressText,
       getStrip: () => charStrip,
       insertBefore: () => addGlyphTile,
       createCard: (charId, charData) => {
-        const card = createCharCard(charId, charData, (id) => selectChar(id));
+        const card = createCharCard(charId, charData, (id) => selectChar(id), (id) => deleteGlyph(id));
         cardElements[charId] = card;
         return card;
       },
@@ -1177,13 +1174,14 @@ export function renderIndexPage(app) {
           selectChar(firstId);
         }
         redraw();
-        historyCommit('import-images');
+        historyCommit(historyTag);
       },
-    });
+    };
   }
 
-  async function triggerFontImport() {
-    const result = await fontImportDialog({
+  /** Unified "+" affordance: tabbed dialog for image / font / empty. */
+  async function openAddGlyphDialog() {
+    const result = await glyphAddDialog({
       presets: FONT_IMPORT_PRESETS,
       familySuggestions: [
         'Noto Sans JP', 'Noto Serif JP', 'M PLUS 1p', 'Kosugi Maru',
@@ -1193,26 +1191,15 @@ export function renderIndexPage(app) {
       defaultPresetIds: ['hiragana'],
     });
     if (!result) return;
-    const chars = buildCharSet(result.presetIds, result.customText);
-    if (chars.length === 0) return;
-    await importFromFont(project, result.family, chars, {
-      progressWrap, progressBar, progressText,
-      getStrip: () => charStrip,
-      insertBefore: () => addGlyphTile,
-      createCard: (charId, charData) => {
-        const card = createCharCard(charId, charData, (id) => selectChar(id));
-        cardElements[charId] = card;
-        return card;
-      },
-      onDone: () => {
-        if (!selectedCharId && Object.keys(project.characters).length > 0) {
-          const firstId = Object.keys(project.characters)[0];
-          selectChar(firstId);
-        }
-        redraw();
-        historyCommit('import-from-font');
-      },
-    });
+    if (result.mode === 'image') {
+      importImages(project, makeImportHooks('import-images'));
+    } else if (result.mode === 'font') {
+      const chars = buildCharSet(result.presetIds, result.customText);
+      if (chars.length === 0) return;
+      await importFromFont(project, result.family, chars, makeImportHooks('import-from-font'));
+    } else if (result.mode === 'empty') {
+      addEmptyGlyph();
+    }
   }
 
   // === Selection ===
@@ -1401,7 +1388,7 @@ export function renderIndexPage(app) {
     const addedIds = new Set();
     for (const cid of charIds) {
       if (!cardElements[cid]) {
-        cardElements[cid] = createCharCard(cid, project.characters[cid], (id) => selectChar(id));
+        cardElements[cid] = createCharCard(cid, project.characters[cid], (id) => selectChar(id), (id) => deleteGlyph(id));
         addedIds.add(cid);
       }
       charStrip.appendChild(cardElements[cid]); // appending moves to end → ordered
@@ -1449,7 +1436,7 @@ export function renderIndexPage(app) {
   return { refresh };
 }
 
-function createCharCard(charId, charData, onSelect) {
+function createCharCard(charId, charData, onSelect, onDelete) {
   const card = document.createElement('div');
   card.className = 'char-card';
   card.addEventListener('click', () => onSelect(charId));
@@ -1462,6 +1449,18 @@ function createCharCard(charId, charData, onSelect) {
   label.textContent = charId;
   card.appendChild(canvas);
   card.appendChild(label);
+  if (onDelete) {
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'char-card-delete';
+    delBtn.title = `Delete glyph "${charId}"`;
+    delBtn.textContent = '×';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onDelete(charId);
+    });
+    card.appendChild(delBtn);
+  }
   return card;
 }
 

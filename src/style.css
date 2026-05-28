@@ -263,7 +263,33 @@ body {
   width: 56px;
   padding: 4px;
   border-radius: 6px;
+  position: relative;
 }
+
+.char-card-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+  z-index: 2;
+}
+
+.char-card:hover .char-card-delete { opacity: 1; }
+.char-card-delete:hover { background: var(--danger, #c0392b); }
 
 .index-char-strip .char-card canvas {
   border-radius: 3px;

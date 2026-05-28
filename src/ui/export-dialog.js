@@ -99,6 +99,27 @@ function ensureStyles() {
   color: #fff;
 }
 .export-modal .actions button:hover { border-color: var(--accent); }
+.export-modal .tab-bar {
+  display: flex; gap: 4px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.export-modal .tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  margin-bottom: -1px;
+}
+.export-modal .tab-btn:hover { color: var(--text); }
+.export-modal .tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.export-modal .tab-pane { margin-top: 4px; }
 `;
   document.head.appendChild(style);
 }
@@ -376,23 +397,57 @@ export function variableFontDialog({ angles, defaultFilenameSingle, defaultFilen
 }
 
 /**
- * Font-based import dialog: pick a Google Fonts family + character ranges.
+ * Unified add-glyph dialog. Lets the user choose one of:
+ *   - 画像から取り込み  → { mode: 'image' }   (caller opens the file picker)
+ *   - 書体から取り込み  → { mode: 'font', family, presetIds, customText }
+ *   - 空のグリフ        → { mode: 'empty' }
  *
- * @param {Object} opts
- * @param {Array<{id:string,label:string}>} opts.presets
- * @param {string[]} [opts.familySuggestions]
- * @param {string}   [opts.defaultFamily]
- * @param {string[]} [opts.defaultPresetIds]
- * @returns {Promise<{family:string, presetIds:string[], customText:string} | null>}
+ * @returns {Promise<null | { mode: 'image' | 'font' | 'empty', ... }>}
  */
-export function fontImportDialog({
+export function glyphAddDialog({
   presets,
   familySuggestions = [],
   defaultFamily = '',
   defaultPresetIds = [],
 }) {
-  return openModal('Import from Font', (body) => {
-    // Family input + datalist for suggestions
+  return openModal('Add Glyph', (body, okBtn) => {
+    // ── Tab strip ─────────────────────────────────────────────────────────
+    const tabs = [
+      { id: 'image', label: 'Image', okLabel: 'Choose Files' },
+      { id: 'font',  label: 'Font',  okLabel: 'Generate' },
+      { id: 'empty', label: 'Empty', okLabel: 'Add' },
+    ];
+    let activeTab = 'image';
+
+    const tabBar = document.createElement('div');
+    tabBar.className = 'tab-bar';
+    const tabBtns = {};
+    for (const t of tabs) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tab-btn';
+      btn.textContent = t.label;
+      btn.addEventListener('click', () => setActive(t.id));
+      tabBar.appendChild(btn);
+      tabBtns[t.id] = btn;
+    }
+    body.appendChild(tabBar);
+
+    // ── Tab panes ─────────────────────────────────────────────────────────
+    // Image pane
+    const imagePane = document.createElement('div');
+    imagePane.className = 'tab-pane';
+    const imgNote = document.createElement('div');
+    imgNote.className = 'note';
+    imgNote.textContent =
+      'OK を押すとファイル選択ダイアログが開きます。' +
+      '選択した PNG / JPEG / GIF ごとにグリフが追加されます (ファイル名がグリフID)。';
+    imagePane.appendChild(imgNote);
+    body.appendChild(imagePane);
+
+    // Font pane
+    const fontPane = document.createElement('div');
+    fontPane.className = 'tab-pane';
     const fRow = document.createElement('div');
     fRow.className = 'row';
     const fLabel = document.createElement('label');
@@ -419,9 +474,8 @@ export function fontImportDialog({
     }
     fRow.appendChild(fLabel);
     fRow.appendChild(fInput);
-    body.appendChild(fRow);
+    fontPane.appendChild(fRow);
 
-    // Range checkboxes
     const rangeRow = document.createElement('div');
     rangeRow.className = 'row';
     const rangeLabel = document.createElement('label');
@@ -454,9 +508,8 @@ export function fontImportDialog({
     }
     rangeRow.appendChild(rangeLabel);
     rangeRow.appendChild(checks);
-    body.appendChild(rangeRow);
+    fontPane.appendChild(rangeRow);
 
-    // Custom characters
     const cRow = document.createElement('div');
     cRow.className = 'row';
     const cLabel = document.createElement('label');
@@ -466,27 +519,48 @@ export function fontImportDialog({
     cInput.placeholder = 'extra characters (optional)';
     cRow.appendChild(cLabel);
     cRow.appendChild(cInput);
-    body.appendChild(cRow);
+    fontPane.appendChild(cRow);
 
-    const note = document.createElement('div');
-    note.className = 'note';
-    note.textContent =
-      'Glyphs are rendered from the chosen Google Fonts family and meshed locally. ' +
-      'Existing characters with the same ID are skipped.';
-    body.appendChild(note);
+    const fNote = document.createElement('div');
+    fNote.className = 'note';
+    fNote.textContent =
+      '選んだ Google Fonts ファミリーから各文字をレンダリングし、ローカルでメッシュ化します。' +
+      '同じIDの文字は既存のものを残してスキップします。';
+    fontPane.appendChild(fNote);
+    body.appendChild(fontPane);
+
+    // Empty pane
+    const emptyPane = document.createElement('div');
+    emptyPane.className = 'tab-pane';
+    const eNote = document.createElement('div');
+    eNote.className = 'note';
+    eNote.textContent =
+      '画像も書体も指定しない空のグリフを1つ追加します。' +
+      'あとから個別に画像を割り当てたり、メッシュを編集できます。';
+    emptyPane.appendChild(eNote);
+    body.appendChild(emptyPane);
+
+    function setActive(id) {
+      activeTab = id;
+      for (const t of tabs) {
+        tabBtns[t.id].classList.toggle('active', t.id === id);
+      }
+      imagePane.style.display = id === 'image' ? '' : 'none';
+      fontPane.style.display  = id === 'font'  ? '' : 'none';
+      emptyPane.style.display = id === 'empty' ? '' : 'none';
+      okBtn.textContent = tabs.find(t => t.id === id).okLabel;
+    }
+    setActive('image');
 
     return () => {
+      if (activeTab === 'image') return { mode: 'image' };
+      if (activeTab === 'empty') return { mode: 'empty' };
       const family = fInput.value.trim();
-      if (!family) {
-        fInput.focus();
-        return null;
-      }
+      if (!family) { fInput.focus(); return null; }
       const presetIds = Object.keys(cbMap).filter(id => cbMap[id].checked);
       const customText = cInput.value || '';
-      if (presetIds.length === 0 && customText.length === 0) {
-        return null;
-      }
-      return { family, presetIds, customText };
+      if (presetIds.length === 0 && customText.length === 0) return null;
+      return { mode: 'font', family, presetIds, customText };
     };
-  }, { okLabel: 'Generate' });
+  }, { okLabel: 'Choose Files' });
 }

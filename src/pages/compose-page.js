@@ -255,9 +255,12 @@ export function renderComposePage(app) {
   // === Rendering (shared layout) ===
 
   /** Compute shared layout + canvas sizing.
-   *  cacheScale grows with the full transform (including stretch) so per-cell
-   *  stretched glyphs aren't clipped at the offscreen edge; the AABB pass
-   *  below walks every glyph's stretched corners to size the page canvas. */
+   *  Stretch is baked per-cell into each glyph offscreen at draw time, so the
+   *  AABB walks each glyph's exact stretched corners (around its baseline
+   *  pivot) — no double application of the stretch matrix. Vertical padding
+   *  is taken symmetrically around the row baselines so the page area's
+   *  flexbox-centered canvas keeps the baseline at a stable viewport Y as
+   *  stretchAmount changes. */
   function computeLayout() {
     const positions = layoutText(inputText, charIds, {
       fontSize, textBoxWidth, kerning, lineHeight, writingMode,
@@ -275,36 +278,60 @@ export function renderComposePage(app) {
     const b = cos * sin * (s - 1);
     const d = sin * sin * s + cos * cos;
     const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
+    const above = fontSize * baselineRatio;          // glyph extent above baseline
+    const below = fontSize * (1 - baselineRatio);    // glyph extent below baseline
+    const halfW = fontSize / 2;
+    const cornersDx = [-halfW, halfW];
+    const cornersDy = [-above, below];
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity, minBaselineY = Infinity, maxX = -Infinity, maxBaselineY = -Infinity;
+    let aboveExt = 0;  // max distance the stretched glyph reaches above its row baseline
+    let belowExt = 0;  // ... and below
+
     for (const pos of positions) {
-      const px = pos.x + fontSize / 2;
-      const py = pos.y + fontSize * baselineRatio;
-      const x0 = pos.x - drawOffset;
-      const x1 = pos.x + fontSize + drawOffset;
-      const y0 = pos.y - drawOffset;
-      const y1 = pos.y + fontSize + drawOffset;
-      for (const cx of [x0, x1]) {
-        for (const cy of [y0, y1]) {
-          const dx = cx - px;
-          const dy = cy - py;
+      const px = pos.x + halfW;
+      const py = pos.y + above; // row baseline Y in layout space
+      if (py < minBaselineY) minBaselineY = py;
+      if (py > maxBaselineY) maxBaselineY = py;
+
+      for (const dx of cornersDx) {
+        for (const dy of cornersDy) {
           const nx = px + a * dx + b * dy;
           const ny = py + b * dx + d * dy;
           if (nx < minX) minX = nx;
           if (nx > maxX) maxX = nx;
-          if (ny < minY) minY = ny;
-          if (ny > maxY) maxY = ny;
+          const distFromBaseline = ny - py;
+          if (-distFromBaseline > aboveExt) aboveExt = -distFromBaseline;
+          if (distFromBaseline > belowExt) belowExt = distFromBaseline;
         }
       }
     }
+
     if (positions.length === 0) {
-      minX = 0; minY = 0; maxX = fontSize; maxY = fontSize;
+      minX = 0; maxX = fontSize;
+      minBaselineY = above; maxBaselineY = above;
+      aboveExt = above; belowExt = below;
     }
 
-    const offX = basePad - minX;
-    const offY = basePad - minY;
-    const cw = Math.max(Math.ceil((maxX - minX) + basePad * 2), 200);
-    const ch = Math.max(Math.ceil((maxY - minY) + basePad * 2), 200);
+    // Bounded-params (gap/blur) margin around the glyph extent.
+    const marginPx = fontSize * (computeCacheScale(getTransform()) - 1) / 2;
+    aboveExt += marginPx;
+    belowExt += marginPx;
+    const lateralPad = marginPx;
+
+    // Symmetric vertical padding around the row baselines: pad above the first
+    // baseline and below the last baseline by the SAME amount, picked to fit
+    // the larger of (stretched above, stretched below). This keeps the canvas
+    // growing symmetrically around the baselines so the centered viewport
+    // doesn't shift the baseline as stretch changes.
+    const vPad = Math.max(aboveExt, belowExt) + basePad;
+    const minY = minBaselineY - vPad;
+    const maxY = maxBaselineY + vPad;
+
+    const offX = basePad + lateralPad - minX;
+    const offY = -minY;
+    const cw = Math.max(Math.ceil((maxX - minX) + (basePad + lateralPad) * 2), 200);
+    const ch = Math.max(Math.ceil(maxY - minY), 200);
     return { positions, offX, offY, cw, ch, drawSize, drawOffset };
   }
 
