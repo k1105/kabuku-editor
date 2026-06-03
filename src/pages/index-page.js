@@ -15,8 +15,8 @@ import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } f
 import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, saveFile } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
 import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
-import { createPreviewControls, getPreviewMode, getPreviewScale } from '../ui/preview-controls.js';
-import { iconButton } from '../ui/icons.js';
+import { iconButton, iconEl } from '../ui/icons.js';
+import { createLangToggle } from '../ui/i18n.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
@@ -41,12 +41,54 @@ export function renderIndexPage(app) {
   // Mode: 'global' | 'local'
   let mode = sessionStorage.getItem(MODE_KEY) === 'local' ? 'local' : 'global';
 
-  // Preview / paint state
-  let previewMode = getPreviewMode();
+  // Paint state
   let currentTool = 'paint';
   let isPainting = false;
   let backgroundImage = null;
   let bgOpacity = 0.3;
+
+  // Left (guides) pane zoom, persisted across page renders.
+  const SCALE_L_KEY = 'kabuku.previewScaleL';
+  const loadScale = (key) => {
+    const v = parseFloat(sessionStorage.getItem(key));
+    return Number.isFinite(v) && v > 0 ? v : 1;
+  };
+  let scaleL = loadScale(SCALE_L_KEY);
+
+  // Preview panes: 1..3 independent preview views, each with its own zoom +
+  // stretch overlay. Persisted (settings only; DOM/canvas refs are attached at
+  // build time, not stored).
+  const MAX_PREVIEWS = 3;
+  const PANES_KEY = 'kabuku.previewPanes';
+  let previewPanes = loadPreviewPanes();
+
+  function loadPreviewPanes() {
+    try {
+      const raw = JSON.parse(sessionStorage.getItem(PANES_KEY));
+      if (Array.isArray(raw) && raw.length >= 1) {
+        return raw.slice(0, MAX_PREVIEWS).map(p => ({
+          scale: Number.isFinite(p.scale) && p.scale > 0 ? p.scale : 1,
+          stretchAngle: Number.isFinite(p.stretchAngle) ? p.stretchAngle : 0,
+          stretchAmount: Number.isFinite(p.stretchAmount) ? p.stretchAmount : 0,
+        }));
+      }
+    } catch { /* fall through to default */ }
+    return [{ scale: 1, stretchAngle: global.stretchAngle || 0, stretchAmount: global.stretchAmount || 0 }];
+  }
+
+  function savePreviewPanes() {
+    sessionStorage.setItem(PANES_KEY, JSON.stringify(previewPanes.map(p => ({
+      scale: p.scale, stretchAngle: p.stretchAngle, stretchAmount: p.stretchAmount,
+    }))));
+    // Keep global stretch in sync with the primary preview so font-export
+    // dialogs still default to a sensible stretch.
+    const p0 = previewPanes[0];
+    if (p0) {
+      global.stretchAngle = p0.stretchAngle;
+      global.stretchAmount = p0.stretchAmount;
+      saveGlobal(global);
+    }
+  }
 
   // Global-mode state
   let globalLayers = [];
@@ -70,11 +112,96 @@ export function renderIndexPage(app) {
   const progressBar = progressEl.bar;
   const progressText = progressEl.text;
 
-  const exportBtn = iconButton('download', 'Export', {
-    withText: true,
-    title: 'Export full project (includes base images as data URLs)',
+  // === Settings modal (shared style with the animation editor) ===
+  const settingsBackdrop = document.createElement('div');
+  settingsBackdrop.className = 'settings-modal-backdrop';
+  settingsBackdrop.style.display = 'none';
+
+  const settingsModal = document.createElement('div');
+  settingsModal.className = 'settings-modal';
+  settingsBackdrop.appendChild(settingsModal);
+
+  const settingsHead = document.createElement('div');
+  settingsHead.className = 'settings-modal-head';
+  const settingsTitle = document.createElement('h2');
+  settingsTitle.textContent = 'Settings';
+  const settingsCloseBtn = iconButton('close', 'Close', { title: 'Close' });
+  settingsCloseBtn.addEventListener('click', () => closeSettings());
+  settingsHead.appendChild(settingsTitle);
+  settingsHead.appendChild(settingsCloseBtn);
+  settingsModal.appendChild(settingsHead);
+
+  const settingsBody = document.createElement('div');
+  settingsBody.className = 'settings-modal-body';
+  settingsModal.appendChild(settingsBody);
+
+  function openSettings() { settingsBackdrop.style.display = 'flex'; }
+  function closeSettings() { settingsBackdrop.style.display = 'none'; }
+  settingsBackdrop.addEventListener('click', (e) => {
+    if (e.target === settingsBackdrop) closeSettings();
   });
-  exportBtn.addEventListener('click', async () => {
+  function onSettingsKeyDown(e) {
+    if (e.key === 'Escape' && settingsBackdrop.style.display !== 'none') closeSettings();
+  }
+  document.addEventListener('keydown', onSettingsKeyDown);
+  // Detach on hashchange so the listener doesn't leak across page navigations.
+  window.addEventListener('hashchange', function detachSettings() {
+    document.removeEventListener('keydown', onSettingsKeyDown);
+    window.removeEventListener('hashchange', detachSettings);
+  });
+
+  function makeSettingsGroup(title) {
+    const g = document.createElement('div');
+    g.className = 'param-group';
+    const h = document.createElement('h3');
+    h.textContent = title;
+    g.appendChild(h);
+    settingsBody.appendChild(g);
+    return g;
+  }
+  function settingsToolBtn(icon, label, onClick) {
+    const btn = document.createElement('button');
+    btn.className = 'tool-btn';
+    btn.appendChild(iconEl(icon));
+    const span = document.createElement('span');
+    span.textContent = label;
+    btn.appendChild(span);
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  // --- Project (JSON import / export) ---
+  const projectGroup = makeSettingsGroup('Project');
+  const projectRow = document.createElement('div');
+  projectRow.className = 'anim-button-row';
+  const importJsonBtn = settingsToolBtn('upload', 'Import (.json)', () => doImportProject());
+  importJsonBtn.title = 'Import a JSON project file';
+  const exportProjectBtn = settingsToolBtn('download', 'Export (.json)', () => doExportProject());
+  exportProjectBtn.title = 'Export full project (includes base images as data URLs)';
+  projectRow.appendChild(importJsonBtn);
+  projectRow.appendChild(exportProjectBtn);
+  projectGroup.appendChild(projectRow);
+
+  // --- Font Export ---
+  const fontExportGroup = makeSettingsGroup('Font Export');
+  const fontExportRow = document.createElement('div');
+  fontExportRow.className = 'anim-button-row';
+  fontExportRow.appendChild(settingsToolBtn('download', 'Static (.otf)', () => doStaticFontExport()));
+  fontExportRow.appendChild(settingsToolBtn('download', 'Variable Font', () => doVariableFontExport()));
+  fontExportGroup.appendChild(fontExportRow);
+
+  // --- Language ---
+  const langGroup = makeSettingsGroup('Language');
+  langGroup.appendChild(createLangToggle());
+
+  // Settings gear button in the header (first in the nav, like the animation
+  // editor).
+  const settingsBtn = iconButton('settings', 'Settings', { title: 'Settings' });
+  settingsBtn.addEventListener('click', () => openSettings());
+  headerActions.insertBefore(settingsBtn, headerActions.firstChild);
+
+  // === Settings actions ===
+  async function doExportProject() {
     // Strip session-level globals (preview stretch state) so re-importing
     // doesn't lock in a transient view.
     const out = JSON.parse(JSON.stringify(project));
@@ -88,13 +215,9 @@ export function renderIndexPage(app) {
       description: 'KABUKU project',
       accept: { 'application/json': ['.json'] },
     });
-  });
+  }
 
-  const importJsonBtn = iconButton('upload', 'Import (.json)', {
-    withText: true,
-    title: 'Import a JSON project file',
-  });
-  importJsonBtn.addEventListener('click', () => {
+  function doImportProject() {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
@@ -116,10 +239,73 @@ export function renderIndexPage(app) {
       }
     });
     input.click();
-  });
+  }
 
-  headerActions.appendChild(importJsonBtn);
-  headerActions.appendChild(exportBtn);
+  function fontFamilyName() {
+    return (global.fontInfo?.familyName || 'Kabuku').replace(/\s+/g, '');
+  }
+
+  async function doStaticFontExport() {
+    const familyName = fontFamilyName();
+    const result = await staticFontDialog({
+      defaultFilename: `${familyName}-Regular.otf`,
+      defaultStretch: global.stretchAmount || 0,
+      defaultAngle: global.stretchAngle || 0,
+    });
+    if (!result) return;
+    try {
+      const proj = loadProject();
+      const { bytes, skipped } = buildFontBytes(proj, {
+        transform: {
+          stretchAmount: result.stretchAmount,
+          stretchAngle: result.stretchAngle,
+          baseGap: 0,
+          gapDirectionWeight: 0,
+        },
+      });
+      const ok = await saveFile(bytes, result.filename, 'font/otf');
+      if (ok && skipped.length > 0) {
+        alert(`次のグリフはスキップされました（charId が Unicode 1文字でない）:\n${skipped.join(', ')}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Static font export failed: ${e.message}`);
+    }
+  }
+
+  async function doVariableFontExport() {
+    const familyName = fontFamilyName();
+    const result = await variableFontDialog({
+      angles: DEFAULT_FAMILY_ANGLES,
+      defaultFilenameSingle: `${familyName}-Angle$ANGLE.ttf`,
+      defaultFilenameAll: `${familyName}-VF-Family.zip`,
+    });
+    if (!result) return;
+    try {
+      const proj = loadProject();
+      if (result.mode === 'all') {
+        const { zip, skipped, fileCount } = buildVariableFontFamilyZip(proj);
+        const ok = await saveFile(zip, result.filename, 'application/zip');
+        if (ok) {
+          let msg = `${fileCount} ファイルを書き出しました。`;
+          if (skipped.length > 0) msg += `\n\nスキップ:\n${skipped.join(', ')}`;
+          alert(msg);
+        }
+      } else {
+        const { binary, skipped } = buildVariableTTF(proj, {
+          angle: result.angle,
+          styleName: `Angle ${result.angle}`,
+        });
+        const ok = await saveFile(binary, result.filename, 'font/ttf');
+        if (ok && skipped.length > 0) {
+          alert(`スキップ:\n${skipped.join(', ')}`);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Variable font export failed: ${e.message}`);
+    }
+  }
 
   // === Main layout ===
   const page = document.createElement('div');
@@ -162,20 +348,172 @@ export function renderIndexPage(app) {
   const previewSection = document.createElement('div');
   previewSection.className = 'index-preview';
 
-  const previewCanvas = document.createElement('canvas');
-  previewCanvas.className = 'index-preview-canvas';
-  const previewCtx = previewCanvas.getContext('2d');
-  previewSection.appendChild(previewCanvas);
+  // Split viewport: left pane = no stretch + all guides (the paintable editing
+  // reference), right pane = full transform + no guides (clean preview). The two
+  // are shown side-by-side so the un-transformed grid and the final result are
+  // visible at once.
+  const previewSplit = document.createElement('div');
+  previewSplit.className = 'index-preview-split';
 
-  const previewControls = createPreviewControls({
-    global,
-    onPreviewChange: (v) => { previewMode = v; redraw(); },
-    onStretchInput: () => { localTransform = resolveTransform(global, localTransformOverrides); redraw(); },
-    // Thumbnails are pinned to stretch=0/angle=0; no refresh needed on release.
-    onStretchRelease: () => {},
-    onScaleChange: () => redraw(),
-  });
-  previewSection.appendChild(previewControls.el);
+  // Build a Scale slider row. Zoom only changes the final blit scale, not the
+  // (expensive) offscreen render — so `apply` re-blits the existing buffer
+  // rather than re-rendering.
+  function createScaleRow(get, set, apply) {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+    const label = document.createElement('label');
+    label.textContent = 'Scale';
+    const { slider, valueInput } = createSliderInput({
+      min: 0.25,
+      max: 3,
+      step: 0.05,
+      value: get(),
+      onInput: (v) => { set(v); apply(); },
+    });
+    row.appendChild(label);
+    row.appendChild(slider);
+    row.appendChild(valueInput);
+    return row;
+  }
+
+  const leftPane = document.createElement('div');
+  leftPane.className = 'index-preview-pane';
+  const previewCanvasL = document.createElement('canvas');
+  previewCanvasL.className = 'index-preview-canvas';
+  const previewCtxL = previewCanvasL.getContext('2d');
+  const leftTag = document.createElement('span');
+  leftTag.className = 'index-preview-tag';
+  leftTag.textContent = 'Guides';
+  // Left pane controls (docked at bottom): zoom only — stretch never affects
+  // this pane.
+  const leftBar = document.createElement('div');
+  leftBar.className = 'index-pane-controls';
+  leftBar.appendChild(createScaleRow(
+    () => scaleL,
+    (v) => { scaleL = v; sessionStorage.setItem(SCALE_L_KEY, String(v)); },
+    () => blit(previewCanvasL, previewCtxL, offCanvasL, scaleL),
+  ));
+  leftPane.appendChild(previewCanvasL);
+  leftPane.appendChild(leftTag);
+  leftPane.appendChild(leftBar);
+
+  previewSplit.appendChild(leftPane);
+
+  // Right column: preview panes stack vertically (top→bottom) within it.
+  const previewRight = document.createElement('div');
+  previewRight.className = 'index-preview-right';
+  previewSplit.appendChild(previewRight);
+
+  // Build a stretch slider row (Angle / Amount) bound to a preview pane.
+  const PANE_STRETCH_DEFS = [
+    { key: 'stretchAngle', label: 'Angle', min: 0, max: 180, step: 1, hardMin: 0, hardMax: 180 },
+    { key: 'stretchAmount', label: 'Stretch', min: 0, max: 2, step: 0.05 },
+  ];
+  function createPaneStretchRow(pane, def) {
+    const row = document.createElement('div');
+    row.className = 'param-row';
+    const label = document.createElement('label');
+    label.textContent = def.label;
+    const { slider, valueInput } = createSliderInput({
+      min: def.min, max: def.max, step: def.step,
+      value: pane[def.key] ?? 0,
+      hardMin: def.hardMin, hardMax: def.hardMax,
+      // Stretch changes this pane's offscreen only — re-render just this pane,
+      // leaving the guides pane and the other previews untouched.
+      onInput: (v) => { pane[def.key] = v; savePreviewPanes(); renderOnePane(pane); },
+    });
+    row.appendChild(label);
+    row.appendChild(slider);
+    row.appendChild(valueInput);
+    return row;
+  }
+
+  // (Re)build the preview pane DOM from `previewPanes`. Each pane owns its
+  // canvas, offscreen buffer, and bottom control bar (zoom + stretch + the
+  // duplicate / remove actions).
+  function buildPreviewPanes() {
+    // Clear the whole container (not just panes still in `previewPanes`) so a
+    // pane removed via splice doesn't leave an orphaned element behind.
+    previewRight.replaceChildren();
+    const multi = previewPanes.length > 1;
+    previewPanes.forEach((pane, idx) => {
+      const el = document.createElement('div');
+      el.className = 'index-preview-pane';
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'index-preview-canvas index-preview-canvas-readonly';
+      const ctx = canvas.getContext('2d');
+
+      const tag = document.createElement('span');
+      tag.className = 'index-preview-tag';
+      tag.textContent = multi ? `Preview ${idx + 1}` : 'Preview';
+
+      const bar = document.createElement('div');
+      bar.className = 'index-pane-controls index-pane-controls-bottom';
+      bar.appendChild(createScaleRow(
+        () => pane.scale,
+        (v) => { pane.scale = v; savePreviewPanes(); },
+        () => blit(pane.canvas, pane.ctx, pane.offCanvas, pane.scale),
+      ));
+      for (const def of PANE_STRETCH_DEFS) bar.appendChild(createPaneStretchRow(pane, def));
+
+      const actions = document.createElement('div');
+      actions.className = 'index-pane-actions';
+      const dupBtn = iconButton('plus', 'Duplicate preview', {
+        onClick: () => addPreviewPane(idx),
+      });
+      dupBtn.disabled = previewPanes.length >= MAX_PREVIEWS;
+      actions.appendChild(dupBtn);
+      if (multi) {
+        const delBtn = iconButton('close', 'Remove preview', {
+          onClick: () => removePreviewPane(idx),
+        });
+        actions.appendChild(delBtn);
+      }
+      bar.appendChild(actions);
+
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = GLYPH_SIZE;
+      offCanvas.height = GLYPH_SIZE;
+
+      pane.el = el;
+      pane.canvas = canvas;
+      pane.ctx = ctx;
+      pane.offCanvas = offCanvas;
+      pane.offCtx = offCanvas.getContext('2d');
+
+      el.appendChild(canvas);
+      el.appendChild(tag);
+      el.appendChild(bar);
+      previewRight.appendChild(el);
+    });
+  }
+
+  function addPreviewPane(srcIdx) {
+    if (previewPanes.length >= MAX_PREVIEWS) return;
+    const src = previewPanes[srcIdx] || previewPanes[previewPanes.length - 1];
+    previewPanes.splice(srcIdx + 1, 0, {
+      scale: src.scale, stretchAngle: src.stretchAngle, stretchAmount: src.stretchAmount,
+    });
+    savePreviewPanes();
+    buildPreviewPanes();
+    observeCanvases();
+    sizeCanvases();
+    redraw();
+  }
+
+  function removePreviewPane(idx) {
+    if (previewPanes.length <= 1) return;
+    previewPanes.splice(idx, 1);
+    savePreviewPanes();
+    buildPreviewPanes();
+    observeCanvases();
+    sizeCanvases();
+    redraw();
+  }
+
+  buildPreviewPanes();
+  previewSection.appendChild(previewSplit);
 
   const emptyState = document.createElement('div');
   emptyState.className = 'empty-state';
@@ -183,7 +521,7 @@ export function renderIndexPage(app) {
   if (selectedCharId) {
     emptyState.style.display = 'none';
   } else {
-    previewCanvas.style.display = 'none';
+    previewSplit.style.display = 'none';
   }
   previewSection.appendChild(emptyState);
 
@@ -209,9 +547,11 @@ export function renderIndexPage(app) {
   addGlyphTile.title = 'Add glyph';
   addGlyphTile.textContent = '+';
   addGlyphTile.addEventListener('click', () => openAddGlyphDialog());
-  charStrip.appendChild(addGlyphTile);
 
+  // The "+" tile is pinned to the right edge (a sibling of the scroll strip),
+  // so the glyph list scrolls horizontally in front of it.
   charStripWrap.appendChild(charStrip);
+  charStripWrap.appendChild(addGlyphTile);
   mainArea.appendChild(charStripWrap);
 
   page.appendChild(sidebar);
@@ -219,41 +559,61 @@ export function renderIndexPage(app) {
 
   app.appendChild(header);
   app.appendChild(page);
+  app.appendChild(settingsBackdrop);
 
   // Canvas fills the preview area; internal pixels match display size × DPR so
   // CSS scaling doesn't distort the aspect ratio (was clamped to GLYPH_SIZE
   // which broke aspect when the preview area was smaller than the glyph).
-  function resizeCanvas() {
-    const rect = previewSection.getBoundingClientRect();
+  // Match each canvas's pixel buffer to its display size × DPR. Returns whether
+  // any canvas actually changed size (so callers can decide to redraw).
+  function sizeCanvases() {
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.floor(rect.width * dpr));
-    const h = Math.max(1, Math.floor(rect.height * dpr));
-    if (previewCanvas.width === w && previewCanvas.height === h) return;
-    previewCanvas.width = w;
-    previewCanvas.height = h;
-    redraw();
+    let changed = false;
+    for (const cv of [previewCanvasL, ...previewPanes.map(p => p.canvas)]) {
+      const rect = cv.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width * dpr));
+      const h = Math.max(1, Math.floor(rect.height * dpr));
+      if (cv.width === w && cv.height === h) continue;
+      cv.width = w;
+      cv.height = h;
+      changed = true;
+    }
+    return changed;
+  }
+  function resizeCanvas() {
+    if (sizeCanvases()) redraw();
   }
   const resizeObserver = new ResizeObserver(() => resizeCanvas());
-  resizeObserver.observe(previewSection);
+  // Observe each canvas (not just the section) so a change in the split ratio —
+  // which leaves the section size unchanged — still re-sizes the pixel buffers
+  // and avoids CSS-stretching a stale buffer (aspect distortion).
+  function observeCanvases() {
+    resizeObserver.disconnect();
+    resizeObserver.observe(previewCanvasL);
+    for (const p of previewPanes) resizeObserver.observe(p.canvas);
+  }
+  observeCanvases();
   requestAnimationFrame(() => resizeCanvas());
 
-  previewCanvas.addEventListener('mousedown', (e) => {
+  // Painting happens on the left (un-stretched, guide) pane only — its cell
+  // geometry matches the hit-test paths.
+  previewCanvasL.addEventListener('mousedown', (e) => {
     if (mode !== 'local') return;
     isPainting = true;
     handlePaint(e);
   });
-  previewCanvas.addEventListener('mousemove', (e) => {
+  previewCanvasL.addEventListener('mousemove', (e) => {
     if (!isPainting) return;
     handlePaint(e);
   });
-  previewCanvas.addEventListener('mouseup', () => {
+  previewCanvasL.addEventListener('mouseup', () => {
     if (!isPainting) return;
     isPainting = false;
     saveLocalChar();
     refreshSelectedThumbnail();
     historyCommit('paint');
   });
-  previewCanvas.addEventListener('mouseleave', () => {
+  previewCanvasL.addEventListener('mouseleave', () => {
     if (!isPainting) return;
     isPainting = false;
     saveLocalChar();
@@ -263,23 +623,23 @@ export function renderIndexPage(app) {
 
   function handlePaint(e) {
     if (!selectedCharId || localLayers.length === 0) return;
-    const rect = previewCanvas.getBoundingClientRect();
-    const sx = previewCanvas.width / rect.width;
-    const sy = previewCanvas.height / rect.height;
+    const rect = previewCanvasL.getBoundingClientRect();
+    const sx = previewCanvasL.width / rect.width;
+    const sy = previewCanvasL.height / rect.height;
     const px = (e.clientX - rect.left) * sx;
     const py = (e.clientY - rect.top) * sy;
     // Glyph is drawn scaled & centered: width = GLYPH_SIZE * s
-    const s = getPreviewScale();
+    const s = scaleL;
     const dw = GLYPH_SIZE * s;
     const dh = GLYPH_SIZE * s;
-    const dx = (previewCanvas.width - dw) / 2;
-    const dy = (previewCanvas.height - dh) / 2;
+    const dx = (previewCanvasL.width - dw) / 2;
+    const dy = (previewCanvasL.height - dh) / 2;
     const gx = (px - dx) / s;
     const gy = (py - dy) / s;
     const layer = localLayers[activeLocalLayerIdx];
     if (!layer) return;
     for (const cell of layer.cells) {
-      if (offCtx.isPointInPath(cell.path, gx, gy)) {
+      if (offCtxL.isPointInPath(cell.path, gx, gy)) {
         const newFilled = currentTool === 'paint';
         if (cell.filled !== newFilled) {
           cell.filled = newFilled;
@@ -611,88 +971,7 @@ export function renderIndexPage(app) {
     autoMeshAllBtn.addEventListener('click', () => autoMeshAll(autoMeshAllBtn));
     autoMeshSection.appendChild(autoMeshAllBtn);
     sidebarBody.appendChild(autoMeshSection);
-
-    // Font Export
-    const fontExportSection = document.createElement('div');
-    fontExportSection.className = 'param-group';
-    const fontExportTitle = document.createElement('h3');
-    fontExportTitle.textContent = 'Font Export';
-    fontExportSection.appendChild(fontExportTitle);
-
-    const familyName = (global.fontInfo?.familyName || 'Kabuku').replace(/\s+/g, '');
-
-    // Static font (.otf) — pick Stretch + Angle
-    const staticFontBtn = document.createElement('button');
-    staticFontBtn.className = 'tool-btn';
-    staticFontBtn.textContent = 'Static Font (.otf)';
-    staticFontBtn.addEventListener('click', async () => {
-      const result = await staticFontDialog({
-        defaultFilename: `${familyName}-Regular.otf`,
-        defaultStretch: global.stretchAmount || 0,
-        defaultAngle: global.stretchAngle || 0,
-      });
-      if (!result) return;
-      try {
-        const project = loadProject();
-        const { bytes, skipped } = buildFontBytes(project, {
-          transform: {
-            stretchAmount: result.stretchAmount,
-            stretchAngle: result.stretchAngle,
-            baseGap: 0,
-            gapDirectionWeight: 0,
-          },
-        });
-        const ok = await saveFile(bytes, result.filename, 'font/otf');
-        if (ok && skipped.length > 0) {
-          alert(`次のグリフはスキップされました（charId が Unicode 1文字でない）:\n${skipped.join(', ')}`);
-        }
-      } catch (e) {
-        console.error(e);
-        alert(`Static font export failed: ${e.message}`);
-      }
-    });
-    fontExportSection.appendChild(staticFontBtn);
-
-    // Variable font (.ttf or .zip) — angle dropdown with "All" option
-    const vfBtn = document.createElement('button');
-    vfBtn.className = 'tool-btn';
-    vfBtn.textContent = 'Variable Font';
-    vfBtn.style.marginLeft = '4px';
-    vfBtn.addEventListener('click', async () => {
-      const result = await variableFontDialog({
-        angles: DEFAULT_FAMILY_ANGLES,
-        defaultFilenameSingle: `${familyName}-Angle$ANGLE.ttf`,
-        defaultFilenameAll: `${familyName}-VF-Family.zip`,
-      });
-      if (!result) return;
-      try {
-        const project = loadProject();
-        if (result.mode === 'all') {
-          const { zip, skipped, fileCount } = buildVariableFontFamilyZip(project);
-          const ok = await saveFile(zip, result.filename, 'application/zip');
-          if (ok) {
-            let msg = `${fileCount} ファイルを書き出しました。`;
-            if (skipped.length > 0) msg += `\n\nスキップ:\n${skipped.join(', ')}`;
-            alert(msg);
-          }
-        } else {
-          const { binary, skipped } = buildVariableTTF(project, {
-            angle: result.angle,
-            styleName: `Angle ${result.angle}`,
-          });
-          const ok = await saveFile(binary, result.filename, 'font/ttf');
-          if (ok && skipped.length > 0) {
-            alert(`スキップ:\n${skipped.join(', ')}`);
-          }
-        }
-      } catch (e) {
-        console.error(e);
-        alert(`Variable font export failed: ${e.message}`);
-      }
-    });
-    fontExportSection.appendChild(vfBtn);
-
-    sidebarBody.appendChild(fontExportSection);
+    // Font export moved to the Settings modal (gear icon in the header).
   }
 
   function renderLocalSidebar() {
@@ -1089,9 +1368,9 @@ export function renderIndexPage(app) {
     project.characters[newId] = { imagePath: '' };
     const card = createCharCard(newId, project.characters[newId], (id) => selectChar(id), (id) => deleteGlyph(id));
     cardElements[newId] = card;
-    charStrip.insertBefore(card, addGlyphTile);
+    charStrip.appendChild(card);
     emptyState.style.display = 'none';
-    previewCanvas.style.display = '';
+    previewSplit.style.display = '';
     selectChar(newId);
     historyCommit('add-glyph');
   }
@@ -1144,7 +1423,7 @@ export function renderIndexPage(app) {
         cardElements[selectedCharId].classList.add('selected');
       }
       if (!selectedCharId) {
-        previewCanvas.style.display = 'none';
+        previewSplit.style.display = 'none';
         emptyState.style.display = '';
       }
       rebuildLocalState();
@@ -1162,7 +1441,9 @@ export function renderIndexPage(app) {
     return {
       progressWrap, progressBar, progressText,
       getStrip: () => charStrip,
-      insertBefore: () => addGlyphTile,
+      // The "+" tile lives outside the strip now, so imported cards just append
+      // to the end of the scroll strip.
+      insertBefore: () => null,
       createCard: (charId, charData) => {
         const card = createCharCard(charId, charData, (id) => selectChar(id), (id) => deleteGlyph(id));
         cardElements[charId] = card;
@@ -1212,7 +1493,7 @@ export function renderIndexPage(app) {
     else sessionStorage.removeItem(SEL_CHAR_KEY);
     if (cardElements[charId]) cardElements[charId].classList.add('selected');
     emptyState.style.display = 'none';
-    previewCanvas.style.display = '';
+    previewSplit.style.display = '';
     rebuildLocalState();
     loadBackgroundImage();
     if (mode === 'local') renderSidebarBody();
@@ -1290,36 +1571,62 @@ export function renderIndexPage(app) {
   }
 
   // === Render preview ===
-  const offCanvas = document.createElement('canvas');
-  offCanvas.width = GLYPH_SIZE;
-  offCanvas.height = GLYPH_SIZE;
-  const offCtx = offCanvas.getContext('2d');
+  // Left (guides) pane offscreen buffer. offCtxL doubles as the hit-test
+  // context in handlePaint. Each preview pane carries its own offscreen buffer
+  // (pane.offCanvas / pane.offCtx), built in buildPreviewPanes().
+  const offCanvasL = document.createElement('canvas');
+  offCanvasL.width = GLYPH_SIZE;
+  offCanvasL.height = GLYPH_SIZE;
+  const offCtxL = offCanvasL.getContext('2d');
 
-  function redraw() {
-    previewCtx.fillStyle = '#fff';
-    previewCtx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
-    if (!selectedCharId) return;
-    let layers, transform;
+  // Resolve the layers + base transform for the selected glyph. Shared by the
+  // full redraw and the per-pane updates so the (potentially costly) layer build
+  // happens once per render pass, not once per pane.
+  function currentRender() {
     if (mode === 'local') {
-      layers = localLayers;
-      transform = localTransform;
-    } else {
-      const cd = project.characters[selectedCharId];
-      layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
-      transform = resolveTransform(global, cd.transformOverrides || {});
+      return { layers: localLayers, transform: localTransform };
     }
-    // Grow the offscreen canvas with the current transform so stretched / blurred
-    // content that overshoots the glyph boundary doesn't get clipped at its edge.
-    // The editor preview uses true per-cell stretch (metrics guides need to
-    // stay un-skewed, so we can't use the image-affine approximation that
-    // compose/animation employ). Slider-bounded stretchAmount keeps memory in
-    // check here (~100 MB worst case at GLYPH_SIZE=1024, stretch=2).
-    // Add extra margin on both sides for the metrics labels drawn just outside
-    // the glyph (preview mode skips guides, so no extra room needed there).
+    const cd = project.characters[selectedCharId];
+    return {
+      layers: buildRuntimeLayers(global, cd, GLYPH_SIZE),
+      transform: resolveTransform(global, cd.transformOverrides || {}),
+    };
+  }
+
+  function clearDisplay(canvas, ctx) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Cheap step: paint an already-rendered offscreen buffer into a display canvas
+  // at the given zoom. Zoom does NOT affect the offscreen, so changing scale
+  // only needs this, not a re-render. The offscreen is square and the glyph is
+  // centered in it, so centering the offscreen in the display yields a
+  // zoom-independent glyph center (relied on by handlePaint).
+  function blit(canvas, ctx, offCanvas, scale) {
+    clearDisplay(canvas, ctx);
+    const size = offCanvas.width;
+    const dw = size * scale;
+    const dh = size * scale;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(offCanvas, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+  }
+
+  // Heavy step: render the glyph into an offscreen buffer (this runs the
+  // per-cell transform + the metaball blur/contrast filter), then blit it.
+  //
+  // The offscreen grows with the current transform so stretched / blurred
+  // content that overshoots the glyph boundary isn't clipped. The editor uses
+  // true per-cell stretch (metrics guides must stay un-skewed, so we can't use
+  // the image-affine approximation compose/animation employ). Slider-bounded
+  // stretchAmount keeps memory in check (~100 MB worst case at GLYPH_SIZE=1024,
+  // stretch=2). Extra margin is added for metrics labels drawn just outside the
+  // glyph; preview panes skip guides so they need no margin.
+  function renderTarget(canvas, ctx, offCanvas, offCtx, { layers, transform, preview, showBackground, scale }) {
     const stretchFactor = 1 + 2 * (transform.stretchAmount || 0);
     const cacheScale = stretchFactor + (computeCacheScale(transform) - 1);
     const baseSize = Math.ceil(GLYPH_SIZE * cacheScale);
-    const labelMargin = (!previewMode && global.fontMetrics) ? metricsLabelMargin(GLYPH_SIZE) * 2 : 0;
+    const labelMargin = (!preview && global.fontMetrics) ? metricsLabelMargin(GLYPH_SIZE) * 2 : 0;
     const canvasSize = baseSize + labelMargin;
     if (offCanvas.width !== canvasSize || offCanvas.height !== canvasSize) {
       offCanvas.width = canvasSize;
@@ -1329,11 +1636,11 @@ export function renderIndexPage(app) {
     offCtx.fillRect(0, 0, canvasSize, canvasSize);
     const cd = project.characters[selectedCharId];
     renderCanvas(offCtx, layers, {
-      backgroundImage,
+      backgroundImage: showBackground ? backgroundImage : null,
       backgroundOpacity: bgOpacity,
       transform,
       glyphSize: GLYPH_SIZE,
-      preview: previewMode,
+      preview,
       fontMetrics: global.fontMetrics,
       imageTransform: {
         imageOffsetX: cd?.imageOffsetX ?? 0,
@@ -1341,13 +1648,36 @@ export function renderIndexPage(app) {
         imageScale: cd?.imageScale ?? 1,
       },
     });
-    const s = getPreviewScale();
-    const dw = canvasSize * s;
-    const dh = canvasSize * s;
-    const dx = (previewCanvas.width - dw) / 2;
-    const dy = (previewCanvas.height - dh) / 2;
-    previewCtx.imageSmoothingEnabled = true;
-    previewCtx.drawImage(offCanvas, dx, dy, dw, dh);
+    blit(canvas, ctx, offCanvas, scale);
+  }
+
+  // Left (guides) pane: drop stretch only (gap/blur kept), show every guide +
+  // the source image — the paintable reference.
+  function renderLeft(rc = currentRender()) {
+    const leftTransform = { ...rc.transform, stretchAmount: 0, stretchAngle: 0 };
+    renderTarget(previewCanvasL, previewCtxL, offCanvasL, offCtxL, {
+      layers: rc.layers, transform: leftTransform, preview: false, showBackground: true, scale: scaleL,
+    });
+  }
+
+  // One preview pane: full transform with this pane's stretch overlay, no
+  // guides, no underlay — an independent clean preview.
+  function renderOnePane(pane, rc = currentRender()) {
+    const paneTransform = { ...rc.transform, stretchAngle: pane.stretchAngle, stretchAmount: pane.stretchAmount };
+    renderTarget(pane.canvas, pane.ctx, pane.offCanvas, pane.offCtx, {
+      layers: rc.layers, transform: paneTransform, preview: true, showBackground: false, scale: pane.scale,
+    });
+  }
+
+  function redraw() {
+    if (!selectedCharId) {
+      clearDisplay(previewCanvasL, previewCtxL);
+      for (const pane of previewPanes) clearDisplay(pane.canvas, pane.ctx);
+      return;
+    }
+    const rc = currentRender();
+    renderLeft(rc);
+    for (const pane of previewPanes) renderOnePane(pane, rc);
   }
 
   /**
@@ -1393,7 +1723,6 @@ export function renderIndexPage(app) {
       }
       charStrip.appendChild(cardElements[cid]); // appending moves to end → ordered
     }
-    charStrip.appendChild(addGlyphTile);
 
     for (const cid of Object.keys(cardElements)) {
       cardElements[cid].classList.toggle('selected', cid === selectedCharId);
@@ -1401,10 +1730,10 @@ export function renderIndexPage(app) {
 
     if (!selectedCharId) {
       emptyState.style.display = '';
-      previewCanvas.style.display = 'none';
+      previewSplit.style.display = 'none';
     } else {
       emptyState.style.display = 'none';
-      previewCanvas.style.display = '';
+      previewSplit.style.display = '';
     }
 
     // Thumbnails are the heavy part — each does a 1024² buildRuntimeLayers
@@ -1444,11 +1773,7 @@ function createCharCard(charId, charData, onSelect, onDelete) {
   canvas.width = 80;
   canvas.height = 80;
   renderThumbnail(canvas, charData);
-  const label = document.createElement('div');
-  label.className = 'label';
-  label.textContent = charId;
   card.appendChild(canvas);
-  card.appendChild(label);
   if (onDelete) {
     const delBtn = document.createElement('button');
     delBtn.type = 'button';

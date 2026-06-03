@@ -236,6 +236,58 @@ body {
   overflow: hidden;
 }
 
+.index-preview-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+/* Guides (left) : Preview (right) split is 6:4. */
+.index-preview-pane {
+  position: relative;
+  flex: 6 1 0;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Right column: preview panes stacked vertically (top→bottom). */
+.index-preview-right {
+  flex: 4 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+}
+
+.index-preview-right .index-preview-pane {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  height: auto;
+}
+
+.index-preview-right .index-preview-pane + .index-preview-pane {
+  border-top: 1px solid var(--border);
+}
+
+.index-preview-tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  pointer-events: none;
+}
+
 .index-preview-canvas {
   display: block;
   width: 100%;
@@ -244,18 +296,128 @@ body {
   cursor: crosshair;
 }
 
+.index-preview-canvas-readonly {
+  cursor: default;
+}
+
+/* Per-pane controls docked at the bottom of each viewport pane. */
+.index-pane-controls {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100% - 24px);
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+/* Variant: a toolbar stuck flush to the bottom edge of the pane, sliders in a
+   single horizontal row. */
+.index-pane-controls-bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  flex-wrap: nowrap;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  overflow-x: auto;
+}
+
+.index-pane-controls .param-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0;
+}
+
+.index-pane-controls .param-row label {
+  flex: 0 0 auto;
+  min-width: auto;
+  font-size: 11px;
+}
+
+.index-pane-controls .param-row input[type="range"] {
+  flex: 0 0 100px;
+  width: 100px;
+}
+
+.index-pane-controls .param-row .value {
+  flex: 0 0 40px;
+  font-size: 11px;
+  text-align: right;
+}
+
+/* In the docked bottom bar (narrow preview panes), let each row + its slider
+   flex to share the available width so labels never overlap. */
+.index-pane-controls-bottom .param-row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.index-pane-controls-bottom .param-row label {
+  white-space: nowrap;
+}
+
+.index-pane-controls-bottom .param-row input[type="range"] {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.index-pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.index-pane-actions .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.index-pane-actions .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .index-char-strip-wrap {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
 
 .index-char-strip {
+  flex: 1;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   display: flex;
   gap: 4px;
   padding: 4px 8px 8px;
+}
+
+/* "+" tile pinned to the right edge, outside the scroll strip. */
+.index-char-strip-wrap > .add-glyph-tile {
+  margin: 4px 8px;
 }
 
 .index-char-strip .char-card {
@@ -293,14 +455,11 @@ body {
 
 .index-char-strip .char-card canvas {
   border-radius: 3px;
-}
-
-.index-char-strip .char-card .label {
-  font-size: 10px;
-  margin-top: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Thumbnails are black glyph on a white fill. Invert (→ white glyph on black)
+     then screen against the dark strip: black drops into the surface color and
+     the glyph stays bright. */
+  filter: invert(1);
+  mix-blend-mode: screen;
 }
 
 .index-char-strip .char-card.selected {
@@ -328,55 +487,6 @@ body {
 .add-glyph-tile:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-
-.preview-toggle-btn {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-}
-
-.preview-controls {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-}
-
-.preview-controls .preview-toggle-btn-inline {
-  flex-shrink: 0;
-}
-
-.preview-controls .param-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 0;
-}
-
-.preview-controls .param-row label {
-  flex: 0 0 auto;
-  min-width: auto;
-  font-size: 11px;
-}
-
-.preview-controls .param-row input[type="range"] {
-  flex: 0 0 100px;
-  width: 100px;
-}
-
-.preview-controls .param-row .value {
-  flex: 0 0 40px;
-  font-size: 11px;
-  text-align: right;
 }
 
 .import-progress {
@@ -1556,31 +1666,79 @@ select {
    User badge in headers
    ============================================================ */
 .user-badge {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-dim);
   margin-left: 8px;
 }
-.user-badge-label {
-  max-width: 140px;
+/* Match the header's other icon buttons (32×32), just circular. The
+   `.user-badge` prefix raises specificity above the generic
+   `.header-nav button` rule (padding / border-radius), which would otherwise
+   squash the avatar into a rounded rectangle. */
+.user-badge .user-badge-avatar {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.user-badge .user-badge-avatar:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+/* Photo fills the whole circle, edge to edge, cropped to a circle. */
+.user-badge .user-badge-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
+}
+.user-badge-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1000;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 6px;
+}
+.user-badge-name {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 8px 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
 }
-.user-badge-signout {
+.user-badge-menu .user-badge-signout {
+  display: block;
+  width: 100%;
+  text-align: left;
   background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 11px;
-  padding: 3px 8px;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 8px;
   border-radius: 4px;
   cursor: pointer;
 }
-.user-badge-signout:hover {
-  color: var(--text);
-  border-color: var(--accent);
+.user-badge-menu .user-badge-signout:hover {
+  background: var(--bg);
+  color: var(--accent);
 }
 
 /* ============================================================

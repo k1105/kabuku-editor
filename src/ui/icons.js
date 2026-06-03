@@ -43,6 +43,7 @@ const PATHS = {
   close:      '<path d="M18 6 6 18"/><path d="M6 6l12 12"/>',
   preview:    '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/><circle cx="7" cy="7" r="0.5"/><circle cx="9" cy="7" r="0.5"/>',
   layers:     '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+  user:       '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
 };
 
 export function iconSvg(name) {

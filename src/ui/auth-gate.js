@@ -1,5 +1,6 @@
 import { signInWithGoogle, userInfo, signOut } from '../core/auth.js';
 import { isFirebaseConfigured } from '../core/firebase.js';
+import { iconEl } from './icons.js';
 
 export function renderSetupRequiredScreen(app) {
   app.innerHTML = '';
@@ -62,26 +63,71 @@ export function renderLoginScreen(app, onSignedIn) {
   app.appendChild(wrap);
 }
 
-/** Compact user badge for the page header. Click to sign out. */
+/**
+ * Compact user badge for the page header: a circular avatar (the account photo,
+ * or a generic user icon) that opens a small menu with the account name and a
+ * Sign out action.
+ */
 export function createUserBadge() {
   const info = userInfo();
   const wrap = document.createElement('div');
   wrap.className = 'user-badge';
   if (!info) return wrap;
-  const label = document.createElement('span');
-  label.className = 'user-badge-label';
-  label.textContent = info.name;
+
+  // Avatar button
+  const avatar = document.createElement('button');
+  avatar.type = 'button';
+  avatar.className = 'user-badge-avatar';
+  avatar.title = info.name;
+  avatar.setAttribute('aria-label', info.name);
+  if (info.photoURL) {
+    const img = document.createElement('img');
+    img.src = info.photoURL;
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    avatar.appendChild(img);
+  } else {
+    avatar.appendChild(iconEl('user'));
+  }
+
+  // Dropdown menu
+  const menu = document.createElement('div');
+  menu.className = 'user-badge-menu';
+  menu.style.display = 'none';
+  const nameLine = document.createElement('div');
+  nameLine.className = 'user-badge-name';
+  nameLine.textContent = info.name;
+  menu.appendChild(nameLine);
   const out = document.createElement('button');
   out.type = 'button';
   out.className = 'user-badge-signout';
-  out.title = 'Sign out';
-  out.textContent = 'Sign out';
+  out.textContent = 'サインアウト';
   out.addEventListener('click', async () => {
     await signOut();
     location.reload();
   });
-  wrap.appendChild(label);
-  wrap.appendChild(out);
+  menu.appendChild(out);
+
+  function closeMenu() {
+    menu.style.display = 'none';
+    document.removeEventListener('click', onDocClick);
+  }
+  function onDocClick(e) {
+    if (!wrap.contains(e.target)) closeMenu();
+  }
+  avatar.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (menu.style.display !== 'none') {
+      closeMenu();
+    } else {
+      menu.style.display = '';
+      // Defer so this same click doesn't immediately close it.
+      setTimeout(() => document.addEventListener('click', onDocClick), 0);
+    }
+  });
+
+  wrap.appendChild(avatar);
+  wrap.appendChild(menu);
   return wrap;
 }
 
