@@ -26,6 +26,9 @@ const TRANSLATIONS = {
   Text: "文字",
   "Animated Parameters": "動かす項目",
   CAMERA: "視点",
+  Camera: "カメラ",
+  Layer: "レイヤー",
+  "Project Data": "プロジェクトデータ",
   Playback: "再生",
   Typography: "組版",
 

@@ -17,7 +17,7 @@ import { commit as historyCommit } from '../core/animation-history.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
 import { createSliderInput } from '../ui/slider-input.js';
-import { createLangToggle } from '../ui/i18n.js';
+import { createLangToggle, t } from '../ui/i18n.js';
 import { getGrid } from '../grids/grid-plugin.js';
 
 const ANIMATED_SLIDER_DEFS = [
@@ -215,8 +215,31 @@ export function renderAnimationPage(app) {
   const sfTypeface = makeSettingsGroup('Typeface');
   const sfCanvas = makeSettingsGroup('Canvas');
   const sfMovie = makeSettingsGroup('Duration & FPS');
+  const sfProject = makeSettingsGroup('Project Data');
   const sfLanguage = makeSettingsGroup('Language');
   sfLanguage.appendChild(createLangToggle());
+
+  // JSON export / import of the whole animation — moved here from the sidebar so
+  // the Export panel stays focused on rendered output (PNG / GIF).
+  const jsonRow = document.createElement('div');
+  jsonRow.className = 'anim-button-row';
+  const jsonExport = document.createElement('button');
+  jsonExport.className = 'tool-btn';
+  jsonExport.appendChild(iconEl('download'));
+  const jsonExportLabel = document.createElement('span');
+  jsonExportLabel.textContent = 'Export JSON';
+  jsonExport.appendChild(jsonExportLabel);
+  jsonExport.addEventListener('click', () => doJsonExport());
+  const jsonImport = document.createElement('button');
+  jsonImport.className = 'tool-btn';
+  jsonImport.appendChild(iconEl('upload'));
+  const jsonImportLabel = document.createElement('span');
+  jsonImportLabel.textContent = 'Import JSON';
+  jsonImport.appendChild(jsonImportLabel);
+  jsonImport.addEventListener('click', () => doJsonImport());
+  jsonRow.appendChild(jsonExport);
+  jsonRow.appendChild(jsonImport);
+  sfProject.appendChild(jsonRow);
 
   function openSettings() { settingsBackdrop.style.display = 'flex'; }
   function closeSettings() { settingsBackdrop.style.display = 'none'; }
@@ -339,9 +362,54 @@ export function renderAnimationPage(app) {
   const page = document.createElement('div');
   page.className = 'edit-page anim-page';
 
+  // --- Left icon rail ---
+  // A vertical strip of icon buttons left of the sidebar (mirrors the Glyphs
+  // editor). Each button swaps the sidebar to a dedicated panel: Text, Camera,
+  // Layer, Export. Icons come from Iconify (Lucide set) via <iconify-icon>.
+  const iconRail = document.createElement('div');
+  iconRail.className = 'icon-rail';
+  const RAIL_ITEMS = [
+    { id: 'text',   icon: 'lucide:type',   title: 'Text' },
+    { id: 'camera', icon: 'lucide:video',  title: 'Camera' },
+    { id: 'layer',  icon: 'lucide:layers', title: 'Layer' },
+  ];
+  let activePanel = 'text';
+  const railButtons = {};
+  for (const item of RAIL_ITEMS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rail-btn';
+    btn.title = t(item.title);
+    btn.setAttribute('aria-label', item.title);
+    const ic = document.createElement('iconify-icon');
+    ic.setAttribute('icon', item.icon);
+    btn.appendChild(ic);
+    btn.addEventListener('click', () => setPanel(item.id));
+    railButtons[item.id] = btn;
+    iconRail.appendChild(btn);
+  }
+
   // --- Sidebar ---
   const sidebar = document.createElement('div');
   sidebar.className = 'sidebar';
+  const sidebarBody = document.createElement('div');
+  sidebarBody.className = 'sidebar-body';
+  sidebar.appendChild(sidebarBody);
+
+  // One container per rail panel; setPanel() shows the active one and hides the
+  // rest. Groups are built once (so slider/timeline wiring stays intact) and
+  // parented into these containers — toggling visibility, not rebuilding.
+  const panelText = document.createElement('div');
+  const panelCamera = document.createElement('div');
+  const panelLayer = document.createElement('div');
+  const PANEL_ELS = { text: panelText, camera: panelCamera, layer: panelLayer };
+  for (const el of Object.values(PANEL_ELS)) sidebarBody.appendChild(el);
+
+  function setPanel(id) {
+    activePanel = id;
+    for (const [k, el] of Object.entries(PANEL_ELS)) el.style.display = k === id ? '' : 'none';
+    for (const [k, btn] of Object.entries(railButtons)) btn.classList.toggle('active', k === id);
+  }
 
   // Text group (non-animated)
   const textGroup = document.createElement('div');
@@ -388,7 +456,7 @@ export function renderAnimationPage(app) {
   modeRow.appendChild(modeLbl);
   modeRow.appendChild(modeWrap);
   textGroup.appendChild(modeRow);
-  sidebar.appendChild(textGroup);
+  panelText.appendChild(textGroup);
 
   // Animated param sliders
   const paramsGroup = document.createElement('div');
@@ -436,7 +504,7 @@ export function renderAnimationPage(app) {
   }
 
   addAnimatedSliders(paramsGroup, ANIMATED_SLIDER_DEFS);
-  sidebar.appendChild(paramsGroup);
+  panelText.appendChild(paramsGroup);
 
   // CAMERA group
   const cameraGroup = document.createElement('div');
@@ -445,7 +513,7 @@ export function renderAnimationPage(app) {
   cameraTitle.textContent = 'CAMERA';
   cameraGroup.appendChild(cameraTitle);
   addAnimatedSliders(cameraGroup, CAMERA_SLIDER_DEFS);
-  sidebar.appendChild(cameraGroup);
+  panelCamera.appendChild(cameraGroup);
 
   // GLYPH / GRID group — animatable grid params (size/scale/etc.) per layer.
   // Animating any of these switches that glyph to per-frame cell regeneration
@@ -465,7 +533,18 @@ export function renderAnimationPage(app) {
       gridGroup.appendChild(sub);
       addAnimatedSliders(gridGroup, lg.defs);
     }
-    sidebar.appendChild(gridGroup);
+    panelLayer.appendChild(gridGroup);
+  } else {
+    // No animatable grid params (typeset has no grid layers) — leave a hint so
+    // the Layer panel isn't blank.
+    const emptyMsg = document.createElement('div');
+    emptyMsg.className = 'param-group';
+    const p = document.createElement('p');
+    p.style.color = 'var(--text-dim)';
+    p.style.fontSize = '12px';
+    p.textContent = 'No grid layers available.';
+    emptyMsg.appendChild(p);
+    panelLayer.appendChild(emptyMsg);
   }
 
   // Canvas size + movie duration/fps live in the settings popup (see above).
@@ -529,6 +608,14 @@ export function renderAnimationPage(app) {
   renderBtn.appendChild(iconEl('refresh'));
   renderBtn.addEventListener('click', () => doRender());
 
+  // Download button — opens the export popup (PNG / GIF). Sits to the right of
+  // Play in the transport zone (Render sits to the left).
+  const downloadBtn = document.createElement('button');
+  downloadBtn.className = 'tool-btn';
+  downloadBtn.title = 'Export';
+  downloadBtn.appendChild(iconEl('download'));
+  downloadBtn.addEventListener('click', () => openExport());
+
   // Render progress popup — a centered overlay shown only while rendering.
   const progressBackdrop = document.createElement('div');
   progressBackdrop.className = 'progress-modal-backdrop';
@@ -553,13 +640,30 @@ export function renderAnimationPage(app) {
   progressBox.appendChild(progressWrap);
   progressBackdrop.appendChild(progressBox);
 
-  // Export group
+  // === Export popup (opened via the download button in the transport zone) ===
+  // Reuses the settings-modal styling. Holds the rendered-output options
+  // (PNG sequence / GIF); applies on click, no confirm/cancel.
+  const exportBackdrop = document.createElement('div');
+  exportBackdrop.className = 'settings-modal-backdrop';
+  exportBackdrop.style.display = 'none';
+  const exportModal = document.createElement('div');
+  exportModal.className = 'settings-modal';
+  exportBackdrop.appendChild(exportModal);
+  const exportHead = document.createElement('div');
+  exportHead.className = 'settings-modal-head';
+  const exportModalTitle = document.createElement('h2');
+  exportModalTitle.textContent = 'Export';
+  const exportCloseBtn = iconButton('close', 'Close', { title: 'Close' });
+  exportCloseBtn.addEventListener('click', () => closeExport());
+  exportHead.appendChild(exportModalTitle);
+  exportHead.appendChild(exportCloseBtn);
+  exportModal.appendChild(exportHead);
+  const exportBody = document.createElement('div');
+  exportBody.className = 'settings-modal-body';
+  exportModal.appendChild(exportBody);
+
   const exportGroup = document.createElement('div');
   exportGroup.className = 'param-group';
-  const exportTitle = document.createElement('h3');
-  exportTitle.textContent = 'Export';
-  exportGroup.appendChild(exportTitle);
-
   const exportRow = document.createElement('div');
   exportRow.className = 'anim-button-row';
   const pngBtn = document.createElement('button');
@@ -579,28 +683,16 @@ export function renderAnimationPage(app) {
   exportRow.appendChild(pngBtn);
   exportRow.appendChild(gifBtn);
   exportGroup.appendChild(exportRow);
+  exportBody.appendChild(exportGroup);
 
-  const jsonRow = document.createElement('div');
-  jsonRow.className = 'anim-button-row';
-  const jsonExport = document.createElement('button');
-  jsonExport.className = 'tool-btn';
-  jsonExport.appendChild(iconEl('download'));
-  const jsonExportLabel = document.createElement('span');
-  jsonExportLabel.textContent = 'Export JSON';
-  jsonExport.appendChild(jsonExportLabel);
-  jsonExport.addEventListener('click', () => doJsonExport());
-  const jsonImport = document.createElement('button');
-  jsonImport.className = 'tool-btn';
-  jsonImport.appendChild(iconEl('upload'));
-  const jsonImportLabel = document.createElement('span');
-  jsonImportLabel.textContent = 'Import JSON';
-  jsonImport.appendChild(jsonImportLabel);
-  jsonImport.addEventListener('click', () => doJsonImport());
-  jsonRow.appendChild(jsonExport);
-  jsonRow.appendChild(jsonImport);
-  exportGroup.appendChild(jsonRow);
+  function openExport() { exportBackdrop.style.display = 'flex'; }
+  function closeExport() { exportBackdrop.style.display = 'none'; }
+  exportBackdrop.addEventListener('click', (e) => {
+    if (e.target === exportBackdrop) closeExport();
+  });
 
-  sidebar.appendChild(exportGroup);
+  // Show the default (Text) panel.
+  setPanel('text');
 
   // --- Main area ---
   const mainArea = document.createElement('div');
@@ -644,11 +736,12 @@ export function renderAnimationPage(app) {
   zoomZone.appendChild(zoomLbl);
   zoomZone.appendChild(zoomSelect);
 
-  // Centered transport (Play / Render).
+  // Centered transport: Render (left) / Play (center) / Download (right).
   const transportZone = document.createElement('div');
   transportZone.className = 'anim-view-transport';
-  transportZone.appendChild(playBtn);
   transportZone.appendChild(renderBtn);
+  transportZone.appendChild(playBtn);
+  transportZone.appendChild(downloadBtn);
 
   viewToolbar.appendChild(zoomZone);
   viewToolbar.appendChild(transportZone);
@@ -693,12 +786,14 @@ export function renderAnimationPage(app) {
   leftCol.appendChild(viewToolbar);
   leftCol.appendChild(timelineWrap);
 
+  page.appendChild(iconRail);
   page.appendChild(sidebar);
   page.appendChild(leftCol);
 
   app.appendChild(header);
   app.appendChild(page);
   app.appendChild(settingsBackdrop);
+  app.appendChild(exportBackdrop);
   app.appendChild(progressBackdrop);
 
   // === Rendering ===
@@ -1012,6 +1107,10 @@ export function renderAnimationPage(app) {
 
     if (e.code === 'Escape' && settingsBackdrop.style.display !== 'none') {
       closeSettings();
+      return;
+    }
+    if (e.code === 'Escape' && exportBackdrop.style.display !== 'none') {
+      closeExport();
       return;
     }
     if (e.code === 'Space') {
