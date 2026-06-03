@@ -62,6 +62,7 @@ export const ANIMATED_PARAM_KEYS = [
   'cameraX',
   'cameraY',
   'cameraDistance',
+  'cameraRotation',
 ];
 
 export const DEFAULT_ANIMATION_BASE_VALUES = {
@@ -77,6 +78,7 @@ export const DEFAULT_ANIMATION_BASE_VALUES = {
   cameraX: 0,
   cameraY: 0,
   cameraDistance: 1,
+  cameraRotation: 0,
 };
 
 function initialTracks(baseValues) {

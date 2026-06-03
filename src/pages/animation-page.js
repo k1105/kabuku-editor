@@ -37,6 +37,7 @@ const CAMERA_SLIDER_DEFS = [
   { key: 'cameraX', label: 'X', min: -1000, max: 1000, step: 1 },
   { key: 'cameraY', label: 'Y', min: -1000, max: 1000, step: 1 },
   { key: 'cameraDistance', label: 'Distance', min: 0.1, max: 5, step: 0.05 },
+  { key: 'cameraRotation', label: 'Rotation', min: -180, max: 180, step: 1 },
 ];
 
 /**
@@ -888,11 +889,12 @@ export function renderAnimationPage(app) {
     ctx.strokeRect(gx, gy, size, size);
   }
 
-  /** Apply camera transform (pan + zoom) around the canvas center. */
+  /** Apply camera transform (pan + rotation + zoom) around the canvas center. */
   function applyCameraTransform(targetCtx, cw, ch, p) {
     const cx = cw / 2;
     const cy = ch / 2;
     targetCtx.translate(cx + (p.cameraX || 0), cy + (p.cameraY || 0));
+    targetCtx.rotate(((p.cameraRotation || 0) * Math.PI) / 180);
     const dist = p.cameraDistance != null ? p.cameraDistance : 1;
     targetCtx.scale(dist, dist);
     targetCtx.translate(-cx, -cy);
