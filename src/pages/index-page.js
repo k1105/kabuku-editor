@@ -788,6 +788,7 @@ export function renderIndexPage(app) {
         gridSelect.value = layer.gridPlugin.name;
         renderGridParamSliders();
         globalLayerPanel.update(globalLayers, activeGlobalLayerIdx);
+        redraw();
       },
       onVisibilityChange() { saveGlobalLayers(); redraw(); refreshAllThumbnails(); historyCommit('layer-visibility'); },
       // Opacity slider commits via the delegated 'change' listener on release;
@@ -1622,7 +1623,7 @@ export function renderIndexPage(app) {
   // stretchAmount keeps memory in check (~100 MB worst case at GLYPH_SIZE=1024,
   // stretch=2). Extra margin is added for metrics labels drawn just outside the
   // glyph; preview panes skip guides so they need no margin.
-  function renderTarget(canvas, ctx, offCanvas, offCtx, { layers, transform, preview, showBackground, scale }) {
+  function renderTarget(canvas, ctx, offCanvas, offCtx, { layers, transform, preview, showBackground, scale, activeLayerIndex, overlayActiveFill }) {
     const stretchFactor = 1 + 2 * (transform.stretchAmount || 0);
     const cacheScale = stretchFactor + (computeCacheScale(transform) - 1);
     const baseSize = Math.ceil(GLYPH_SIZE * cacheScale);
@@ -1642,6 +1643,8 @@ export function renderIndexPage(app) {
       glyphSize: GLYPH_SIZE,
       preview,
       fontMetrics: global.fontMetrics,
+      activeLayerIndex,
+      overlayActiveFill,
       imageTransform: {
         imageOffsetX: cd?.imageOffsetX ?? 0,
         imageOffsetY: cd?.imageOffsetY ?? 0,
@@ -1657,6 +1660,10 @@ export function renderIndexPage(app) {
     const leftTransform = { ...rc.transform, stretchAmount: 0, stretchAngle: 0 };
     renderTarget(previewCanvasL, previewCtxL, offCanvasL, offCtxL, {
       layers: rc.layers, transform: leftTransform, preview: false, showBackground: true, scale: scaleL,
+      // Active-layer highlight: red grid outline (+ red fill overlay in the
+      // per-character / local editor) so it's clear which layer is being painted.
+      activeLayerIndex: mode === 'local' ? activeLocalLayerIdx : activeGlobalLayerIdx,
+      overlayActiveFill: mode === 'local',
     });
   }
 

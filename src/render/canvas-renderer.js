@@ -17,6 +17,14 @@ export function renderCanvas(ctx, layers, opts = {}) {
   const height = ctx.canvas.height;
   const preview = !!opts.preview;
 
+  // Active-layer highlight: the active layer's grid outline is drawn red, and
+  // (when overlayActiveFill is set — i.e. the per-character editor) its filled
+  // cells get a red overlay above the metaball blur so the user can see which
+  // cells belong to the layer they're painting.
+  const activeLayerIndex = opts.activeLayerIndex;
+  const overlayActiveFill = !!opts.overlayActiveFill;
+  const ACTIVE_GRID_COLOR = '#ff0000';
+
   // Glyph origin within ctx.canvas. Defaults to auto-center; callers that
   // place the glyph at a specific position (e.g. animation direct render)
   // can override.
@@ -95,9 +103,42 @@ export function renderCanvas(ctx, layers, opts = {}) {
 
   // ── 3. Cell outlines + glyph boundary (front-most) ──
   if (!preview) {
-    for (const layer of layers) {
+    // Active-layer filled-cell overlay (editing aid). Drawn above the metaball
+    // blur — recoloring the black fills themselves wouldn't survive the filter,
+    // which rewrites every pixel to black based on brightness.
+    if (overlayActiveFill && activeLayerIndex != null) {
+      const layer = layers[activeLayerIndex];
+      if (layer && layer.visible) {
+        ctx.globalAlpha = layer.opacity;
+        for (const cell of layer.cells) {
+          if (!cell.filled) continue;
+
+          let pos = { ...cell.center };
+          if (t.stretchAmount) {
+            pos = applyStretch(pos, t.stretchAngle || 0, t.stretchAmount, glyphSize, glyphSize, baselineLocalY);
+          }
+          if (t.baseGap) {
+            pos = applyGap(pos, t.stretchAngle || 0, t.baseGap, t.gapDirectionWeight || 0, glyphSize, glyphSize);
+          }
+
+          const dx = (pos.x - cell.center.x) + ox;
+          const dy = (pos.y - cell.center.y) + oy;
+
+          ctx.save();
+          ctx.translate(dx, dy);
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.55)';
+          ctx.fill(cell.path);
+          ctx.restore();
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    for (let li = 0; li < layers.length; li++) {
+      const layer = layers[li];
       if (!layer.visible) continue;
       ctx.globalAlpha = layer.opacity;
+      const strokeColor = li === activeLayerIndex ? ACTIVE_GRID_COLOR : '#ccc';
 
       for (const cell of layer.cells) {
         let pos = { ...cell.center };
@@ -113,7 +154,7 @@ export function renderCanvas(ctx, layers, opts = {}) {
 
         ctx.save();
         ctx.translate(dx, dy);
-        ctx.strokeStyle = '#ccc';
+        ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 0.5;
         ctx.stroke(cell.path);
         ctx.restore();
