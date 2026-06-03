@@ -2,10 +2,51 @@ import { layoutText, layoutBounds } from '../compose/text-layout.js';
 import { computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { resolveTransform } from '../core/project.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
+import { getGrid } from '../grids/grid-plugin.js';
+import { autoMesh } from '../core/mesh.js';
+import { loadImageCached } from '../core/image-cache.js';
+import { drawSourceImage } from '../render/canvas-renderer.js';
+import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { applyStretch } from '../transform/stretch.js';
 import { applyGap } from '../transform/gap.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
 import { sampleAnimation } from './animation.js';
+
+// Threshold for per-frame auto-mesh of animated-grid glyphs. Matches the
+// editor's "Auto Mesh All" default (index-page.js) so animated frames mesh the
+// same way a static glyph would.
+const AUTO_MESH_THRESHOLD = 0.5;
+
+/**
+ * Parse animated grid-param tracks out of an animation. Track keys have the
+ * shape `grid.<layerIndex>.<paramKey>` (see animation-page.js). Returns the set
+ * of layer indices that have at least one animated param plus, per layer, the
+ * list of animated param keys.
+ */
+function parseAnimatedGrid(tracks) {
+  const layers = new Set();
+  const byLayer = new Map();
+  for (const key of Object.keys(tracks || {})) {
+    const m = /^grid\.(\d+)\.(.+)$/.exec(key);
+    if (!m) continue;
+    if (!tracks[key] || tracks[key].length === 0) continue;
+    const idx = parseInt(m[1], 10);
+    const param = m[2];
+    layers.add(idx);
+    if (!byLayer.has(idx)) byLayer.set(idx, []);
+    byLayer.get(idx).push(param);
+  }
+  return { layers, byLayer };
+}
+
+/** Stable, quantized signature of grid params for dynamic-cell caching. Values
+ *  are rounded to 2 decimals so smoothly-interpolated frames that land on the
+ *  same effective grid reuse the cached (already auto-meshed) cells. */
+function gridParamsSignature(params) {
+  return Object.keys(params).sort()
+    .map(k => `${k}:${Math.round((params[k] ?? 0) * 100)}`)
+    .join(',');
+}
 
 // Animation frames use a fixed canvas regardless of character count, so the
 // output dimensions stay constant while content is centered within the frame.
@@ -173,6 +214,101 @@ export function createFrameRenderer(animation, ctx) {
     return layersByChar.get(charId);
   }
 
+  // === Animated grid params ===
+  // When grid params are keyframed, a glyph's cell grid changes shape per frame,
+  // so the manual fill/erase (manualOverride) can't be carried across — instead
+  // we regenerate cells per frame and re-run auto-mesh against the glyph's
+  // source image. This is bounded to the *input* characters (only chars laid
+  // out by the text are ever processed below), keeping the cost manageable.
+  const animatedGrid = parseAnimatedGrid(animation.tracks);
+  const hasAnimatedGrid = animatedGrid.layers.size > 0;
+  const defaultLayers = global.defaultLayers || [];
+
+  // Per-input-char source image rasterized at RENDER_SIZE, used as the auto-mesh
+  // sampling target. Loaded asynchronously; until ready, renderInto falls back
+  // to the static (manual) cells so something always draws.
+  const sourceCtxByChar = new Map();
+  let _sourcesLoaded = !hasAnimatedGrid;
+  let _readyPromise = null;
+  async function loadSources() {
+    const chars = new Set();
+    for (const ch of (animation.text || '')) {
+      if (project.characters[ch]) chars.add(ch);
+    }
+    await Promise.all([...chars].map(async (cid) => {
+      const cd = project.characters[cid];
+      let source = null;
+      if (cd?.imagePath) {
+        source = await loadImageCached(cd.imagePath);
+      } else if (cd?.fontSource) {
+        try { source = await renderFontSourceToCanvas(cd.fontSource, RENDER_SIZE, global.fontMetrics); }
+        catch { source = null; }
+      }
+      if (!source) { sourceCtxByChar.set(cid, null); return; }
+      const off = document.createElement('canvas');
+      off.width = RENDER_SIZE;
+      off.height = RENDER_SIZE;
+      const sctx = off.getContext('2d', { willReadFrequently: true });
+      sctx.fillStyle = '#fff';
+      sctx.fillRect(0, 0, RENDER_SIZE, RENDER_SIZE);
+      drawSourceImage(sctx, source, 0, 0, RENDER_SIZE, {
+        imageOffsetX: cd?.imageOffsetX ?? 0,
+        imageOffsetY: cd?.imageOffsetY ?? 0,
+        imageScale: cd?.imageScale ?? 1,
+      });
+      sourceCtxByChar.set(cid, sctx);
+    }));
+    _sourcesLoaded = true;
+  }
+  function ready() {
+    if (!hasAnimatedGrid) return Promise.resolve();
+    if (!_readyPromise) _readyPromise = loadSources();
+    return _readyPromise;
+  }
+  function isReady() { return _sourcesLoaded; }
+
+  // Cache of per-frame generated + auto-meshed cells, keyed by char + layer +
+  // quantized grid-param signature so identical frames don't recompute.
+  const dynCellCache = new Map();
+  function dynamicCellsFor(charId, layerIdx, gridName, effParams) {
+    const sctx = sourceCtxByChar.get(charId);
+    if (!sctx) return null; // no source (not loaded / failed) → caller uses static
+    const cacheKey = `${charId}|${layerIdx}|${gridName}|${gridParamsSignature(effParams)}`;
+    let cells = dynCellCache.get(cacheKey);
+    if (cells) return cells;
+    const gridPlugin = getGrid(gridName);
+    if (!gridPlugin) return null;
+    cells = gridPlugin.generateCells(RENDER_SIZE, RENDER_SIZE, effParams);
+    autoMesh(sctx, cells, AUTO_MESH_THRESHOLD);
+    dynCellCache.set(cacheKey, cells);
+    return cells;
+  }
+
+  /** Resolve the layers to draw for one glyph at the given sampled params.
+   *  Layers without animated grid params keep their static (manual) cells; for
+   *  animated layers, cells are regenerated + auto-meshed for this frame. */
+  function effectiveLayers(charId, params) {
+    const staticLayers = getLayersFor(charId);
+    if (!staticLayers) return null;
+    if (!hasAnimatedGrid || !_sourcesLoaded) return staticLayers;
+    // Index alignment with defaultLayers is required to map animated params back
+    // to the right layer; bail to static if buildRuntimeLayers dropped a layer.
+    if (staticLayers.length !== defaultLayers.length) return staticLayers;
+    return staticLayers.map((layer, idx) => {
+      if (!animatedGrid.layers.has(idx)) return layer;
+      const gl = defaultLayers[idx];
+      if (!gl) return layer;
+      const effParams = { ...(gl.gridParams || {}) };
+      for (const pk of animatedGrid.byLayer.get(idx)) {
+        const tk = `grid.${idx}.${pk}`;
+        if (params[tk] != null) effParams[pk] = params[tk];
+      }
+      const cells = dynamicCellsFor(charId, idx, gl.gridName, effParams);
+      if (!cells) return layer;
+      return { ...layer, cells };
+    });
+  }
+
   // Single work canvas reused across all glyphs + frames. Size matches the
   // frame canvas so a stretched cell that lands anywhere within the visible
   // frame still rasterizes; cells beyond the frame are clipped naturally.
@@ -212,14 +348,14 @@ export function createFrameRenderer(animation, ctx) {
       }
       const charData = project.characters[pos.charId];
       const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
-      const layers = getLayersFor(pos.charId);
+      const layers = effectiveLayers(pos.charId, params);
       if (!layers) continue;
       renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, params.fontSize, layers, charTransform, global);
     }
     octx.restore();
   }
 
-  return { width, height, renderInto };
+  return { width, height, renderInto, ready, isReady };
 }
 
 /**
@@ -248,6 +384,9 @@ export async function renderFrames(animation, ctx) {
   // Shared single-frame renderer — same path used by live scrub preview, so
   // exported frames and on-screen frames are pixel-identical.
   const renderer = createFrameRenderer(animation, ctx);
+  // Load per-glyph source images first when grid params are animated, so the
+  // per-frame auto-mesh has its sampling targets ready (no-op otherwise).
+  await renderer.ready();
   const maxW = renderer.width;
   const maxH = renderer.height;
 

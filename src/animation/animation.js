@@ -45,13 +45,23 @@ export function findKeyframeAt(track, time) {
 /**
  * Sample all animated parameters at given time.
  * Returns object keyed by param name.
+ *
+ * Besides the fixed ANIMATED_PARAM_KEYS, any extra track present on the
+ * animation is sampled too — this covers the dynamic `grid.<layerIndex>.<param>`
+ * tracks added when glyph grid params are animated. Missing tracks fall back to
+ * baseValues, so a param the user hasn't keyframed yet still resolves to its
+ * snapshot/global value.
  */
 export function sampleAnimation(animation, time) {
   const out = {};
+  const tracks = animation.tracks || {};
+  const baseValues = animation.baseValues || {};
   for (const key of ANIMATED_PARAM_KEYS) {
-    const track = animation.tracks?.[key] || [];
-    const fallback = animation.baseValues?.[key] ?? 0;
-    out[key] = sampleTrack(track, time, fallback);
+    out[key] = sampleTrack(tracks[key] || [], time, baseValues[key] ?? 0);
+  }
+  for (const key of Object.keys(tracks)) {
+    if (key in out) continue;
+    out[key] = sampleTrack(tracks[key], time, baseValues[key] ?? 0);
   }
   return out;
 }

@@ -1,4 +1,4 @@
-import { createDefaultAnimation, ANIMATED_PARAM_KEYS, listFontProjects } from '../core/project.js';
+import { createDefaultAnimation, listFontProjects } from '../core/project.js';
 import {
   getSnapshotProject, getSnapshotGlobal, getAnimation, saveAnimation,
   currentAnimationProjectName, currentAnimationProjectId, refreshSnapshotFromOrigin,
@@ -18,6 +18,7 @@ import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
 import { createSliderInput } from '../ui/slider-input.js';
 import { createLangToggle } from '../ui/i18n.js';
+import { getGrid } from '../grids/grid-plugin.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -38,6 +39,37 @@ const CAMERA_SLIDER_DEFS = [
   { key: 'cameraDistance', label: 'Distance', min: 0.1, max: 5, step: 0.05 },
 ];
 
+/**
+ * Build animatable grid-param sliders grouped by default layer. Returns one
+ * group per layer: `{ title, defs }`, where each def's `label` is the plain
+ * param name (the layer name lives in the group heading, so rows stay short).
+ * `timelineLabel` disambiguates with the layer name only when there are
+ * multiple layers (the timeline is a flat list with no grouping).
+ *
+ * Track keys are namespaced `grid.<layerIndex>.<paramKey>` and the slider's
+ * baseline value comes from the snapshot's global.defaultLayers, so an
+ * unkeyframed grid param rests at the typeset's configured value.
+ */
+function buildGridLayerGroups(global) {
+  const groups = [];
+  const layers = global.defaultLayers || [];
+  const multi = layers.length > 1;
+  layers.forEach((gl, i) => {
+    const grid = getGrid(gl.gridName);
+    if (!grid) return;
+    const title = gl.name || gl.gridName;
+    const defs = grid.getParamDefs().map((pd) => ({
+      key: `grid.${i}.${pd.key}`,
+      label: pd.label,
+      timelineLabel: multi ? `${title}: ${pd.label}` : pd.label,
+      min: pd.min, max: pd.max, step: pd.step,
+      base: gl.gridParams?.[pd.key] ?? pd.default,
+    }));
+    if (defs.length > 0) groups.push({ title, defs });
+  });
+  return groups;
+}
+
 export function renderAnimationPage(app) {
   const project = getSnapshotProject();
   const global = getSnapshotGlobal() || project.global;
@@ -53,17 +85,31 @@ export function renderAnimationPage(app) {
   if (animation.canvasWidth == null) animation.canvasWidth = DEFAULT_CANVAS_WIDTH;
   if (animation.canvasHeight == null) animation.canvasHeight = DEFAULT_CANVAS_HEIGHT;
 
-  // Ensure every animated track has at least one keyframe at t=0.
-  let tracksFilled = false;
-  for (const key of ANIMATED_PARAM_KEYS) {
-    if (!animation.tracks[key]) animation.tracks[key] = [];
-    if (animation.tracks[key].length === 0) {
-      const v = animation.baseValues?.[key] ?? 0;
-      animation.tracks[key].push({ time: 0, value: v, easing: 'linear' });
-      tracksFilled = true;
+  // Grid param sliders, grouped by default layer (one sub-section per layer).
+  // The flattened def list is used for baseValues seeding + timeline labels.
+  const gridLayerGroups = buildGridLayerGroups(global);
+  const gridSliderDefs = gridLayerGroups.flatMap(g => g.defs);
+  if (!animation.baseValues) animation.baseValues = {};
+  for (const def of gridSliderDefs) {
+    if (animation.baseValues[def.key] == null) animation.baseValues[def.key] = def.base;
+  }
+
+  // Only params that hold keyframe info get a timeline row. Collapse any track
+  // that is just a constant (a single keyframe at t≈0 — the legacy auto-seed)
+  // back into baseValues and drop it, so existing projects don't show a row for
+  // every param. Tracks with real animation (≥2 keyframes, or a single keyframe
+  // at t>0) are kept untouched.
+  let tracksChanged = false;
+  for (const key of Object.keys(animation.tracks || {})) {
+    const tr = animation.tracks[key];
+    if (!tr || tr.length === 0) { delete animation.tracks[key]; tracksChanged = true; continue; }
+    if (tr.length === 1 && Math.abs(tr[0].time) < 1e-4) {
+      animation.baseValues[key] = tr[0].value;
+      delete animation.tracks[key];
+      tracksChanged = true;
     }
   }
-  if (tracksFilled) saveAnimation(animation);
+  if (tracksChanged) saveAnimation(animation);
 
   // State
   let currentTime = 0;
@@ -369,6 +415,9 @@ export function renderAnimationPage(app) {
           redrawFast(overrideWith(def.key, v));
         },
         onChange: (v) => {
+          // Tracks are created lazily — a param gets a timeline row only once
+          // it holds a keyframe (see track cleanup above).
+          if (!animation.tracks[def.key]) animation.tracks[def.key] = [];
           upsertKeyframe(animation.tracks[def.key], currentTime, v);
           persist();
           markDirty();
@@ -397,6 +446,27 @@ export function renderAnimationPage(app) {
   cameraGroup.appendChild(cameraTitle);
   addAnimatedSliders(cameraGroup, CAMERA_SLIDER_DEFS);
   sidebar.appendChild(cameraGroup);
+
+  // GLYPH / GRID group — animatable grid params (size/scale/etc.) per layer.
+  // Animating any of these switches that glyph to per-frame cell regeneration
+  // + auto-mesh in the render pipeline (see render.js).
+  if (gridLayerGroups.length > 0) {
+    const gridGroup = document.createElement('div');
+    gridGroup.className = 'param-group';
+    const gridTitle = document.createElement('h3');
+    gridTitle.textContent = 'Glyph / Grid';
+    gridGroup.appendChild(gridTitle);
+    // One sub-section per layer: the layer name is the heading, params sit
+    // under it with plain labels so rows stay readable.
+    for (const lg of gridLayerGroups) {
+      const sub = document.createElement('h4');
+      sub.className = 'param-subhead';
+      sub.textContent = lg.title;
+      gridGroup.appendChild(sub);
+      addAnimatedSliders(gridGroup, lg.defs);
+    }
+    sidebar.appendChild(gridGroup);
+  }
 
   // Canvas size + movie duration/fps live in the settings popup (see above).
   // Output dimensions are independent of character count.
@@ -591,6 +661,17 @@ export function renderAnimationPage(app) {
   timeDisplay.className = 'anim-time-display';
   timelineWrap.appendChild(timeDisplay);
 
+  // Friendly track labels for the timeline rows (e.g. 'grid.0.scale' -> 'Scale').
+  // The timeline is flat, so grid rows use `timelineLabel` (layer-qualified when
+  // there are multiple layers) to stay unambiguous.
+  const trackLabelMap = {};
+  for (const d of [...ANIMATED_SLIDER_DEFS, ...CAMERA_SLIDER_DEFS]) {
+    trackLabelMap[d.key] = d.label;
+  }
+  for (const d of gridSliderDefs) {
+    trackLabelMap[d.key] = d.timelineLabel || d.label;
+  }
+
   const timeline = createTimelineUI(animation, {
     onSeek: (t) => {
       currentTime = clampTime(t, animation.duration);
@@ -601,6 +682,7 @@ export function renderAnimationPage(app) {
     },
     onChange: () => { persist(); markDirty(); commitHistory('keyframe-edit'); },
     getCurrentTime: () => currentTime,
+    labelFor: (key) => trackLabelMap[key] || key,
   });
   timelineWrap.appendChild(timeline.el);
 
@@ -662,9 +744,32 @@ export function renderAnimationPage(app) {
   // the (static) font snapshot, not on params, so the renderer is reused across
   // redraws; only a canvas-size change forces a rebuild (work canvas dims).
   let frameRenderer = null;
+  let frameRendererSig = null;
+  // The renderer caches per-glyph source images and static cells, both of which
+  // depend on the input text and on which grid params are animated. Rebuild it
+  // when that structure changes (not on mere value edits — dynamic cells are
+  // keyed by sampled params, so new values reuse the same renderer).
+  function rendererSignature() {
+    const gridKeys = Object.keys(animation.tracks || {})
+      .filter(k => k.startsWith('grid.') && animation.tracks[k]?.length)
+      .sort()
+      .join(',');
+    return `${animation.text || ''}|${gridKeys}`;
+  }
   function getFrameRenderer() {
-    if (!frameRenderer || frameRenderer.width !== canvasW() || frameRenderer.height !== canvasH()) {
+    const sig = rendererSignature();
+    if (!frameRenderer
+        || frameRenderer.width !== canvasW()
+        || frameRenderer.height !== canvasH()
+        || sig !== frameRendererSig) {
       frameRenderer = createFrameRenderer(animation, { project, global, charIds });
+      frameRendererSig = sig;
+      // Warm the per-glyph source images used by per-frame auto-mesh. Until
+      // they're ready renderInto draws static cells; once loaded, drop the
+      // (static) cached frames and redraw so the meshed result shows.
+      if (frameRenderer.isReady && !frameRenderer.isReady()) {
+        frameRenderer.ready().then(() => { markDirty(); redrawPreview(); });
+      }
     }
     return frameRenderer;
   }
@@ -831,10 +936,13 @@ export function renderAnimationPage(app) {
 
   function updateSlidersFromTime() {
     const p = sampleAnimation(animation, currentTime);
-    for (const key of ANIMATED_PARAM_KEYS) {
+    for (const key of Object.keys(sliderInputs)) {
       const ref = sliderInputs[key];
       if (!ref) continue;
-      ref.api.setValue(p[key]);
+      // p only carries keys that have a track; unkeyframed params (e.g. an
+      // untouched grid slider) fall back to their baseline value.
+      const v = p[key] ?? animation.baseValues?.[key];
+      if (v != null) ref.api.setValue(v);
     }
   }
 

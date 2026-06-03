@@ -18,6 +18,10 @@ export function createTimelineUI(animation, callbacks) {
   const el = document.createElement('div');
   el.className = 'anim-timeline';
 
+  // Human-friendly row label resolver (e.g. 'grid.0.scale' -> 'Scale').
+  // Falls back to the raw track key.
+  const labelFor = callbacks.labelFor || ((key) => key);
+
   // Current keyframe selection: { key: string, time: number } or null.
   // Persists across re-renders; matching dot gets `.selected` class.
   let selectedKf = null;
@@ -25,6 +29,26 @@ export function createTimelineUI(animation, callbacks) {
   // Set of param keys whose row is expanded into the curve-graph view.
   // Clicking a label toggles membership.
   const expandedRows = new Set();
+
+  /**
+   * Track keys to show, in a stable order: only params that actually hold
+   * keyframes get a row (instead of the full fixed ANIMATED_PARAM_KEYS list),
+   * so the panel stays compact as more animatable params (e.g. grid params)
+   * are introduced. Canonical params come first in their declared order, then
+   * any extra tracks (grid.*) sorted lexically.
+   */
+  function activeKeys() {
+    const tracks = animation.tracks || {};
+    const seen = new Set();
+    const keys = [];
+    for (const k of ANIMATED_PARAM_KEYS) {
+      if (tracks[k] && tracks[k].length > 0) { keys.push(k); seen.add(k); }
+    }
+    const rest = Object.keys(tracks)
+      .filter(k => !seen.has(k) && tracks[k] && tracks[k].length > 0)
+      .sort();
+    return [...keys, ...rest];
+  }
 
   function rowHeight(key) {
     return expandedRows.has(key) ? ROW_HEIGHT_EXPANDED : ROW_HEIGHT;
@@ -34,7 +58,7 @@ export function createTimelineUI(animation, callbacks) {
   function computeRowLayout() {
     const tops = {};
     let y = 0;
-    for (const key of ANIMATED_PARAM_KEYS) {
+    for (const key of activeKeys()) {
       tops[key] = y;
       y += rowHeight(key);
     }
@@ -150,7 +174,7 @@ export function createTimelineUI(animation, callbacks) {
 
   function renderLabels() {
     labelCol.innerHTML = '';
-    for (const key of ANIMATED_PARAM_KEYS) {
+    for (const key of activeKeys()) {
       const isExpanded = expandedRows.has(key);
       const lbl = document.createElement('div');
       lbl.className = 'anim-timeline-label' + (isExpanded ? ' expanded' : '');
@@ -164,7 +188,7 @@ export function createTimelineUI(animation, callbacks) {
 
       const text = document.createElement('span');
       text.className = 'anim-timeline-label-text';
-      text.textContent = key;
+      text.textContent = labelFor(key);
       lbl.appendChild(text);
 
       lbl.addEventListener('click', () => {
@@ -316,7 +340,7 @@ export function createTimelineUI(animation, callbacks) {
     const { tops, total } = computeRowLayout();
     rowsInner.style.height = total + 'px';
 
-    for (const key of ANIMATED_PARAM_KEYS) {
+    for (const key of activeKeys()) {
       const isExpanded = expandedRows.has(key);
       const h = rowHeight(key);
       const top = tops[key];

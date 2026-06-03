@@ -603,6 +603,19 @@ body {
   margin-top: 0;
 }
 
+/* Layer sub-section heading inside a param group (e.g. Glyph / Grid layers). */
+.param-subhead {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin: 12px 0 6px;
+  padding-left: 6px;
+  border-left: 2px solid var(--accent, #4a9eff);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* === Left icon rail === */
 .icon-rail {
   flex-shrink: 0;
