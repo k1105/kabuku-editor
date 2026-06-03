@@ -94,6 +94,8 @@ export function createDefaultAnimation() {
     fps: 30,
     text: '',
     writingMode: 'horizontal',
+    canvasWidth: 1920,
+    canvasHeight: 1080,
     tracks: initialTracks(baseValues),
     baseValues,
   };

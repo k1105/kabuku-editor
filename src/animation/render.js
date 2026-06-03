@@ -7,6 +7,20 @@ import { applyGap } from '../transform/gap.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
 import { sampleAnimation } from './animation.js';
 
+// Animation frames use a fixed canvas regardless of character count, so the
+// output dimensions stay constant while content is centered within the frame.
+// The size is configurable per-animation (animation.canvasWidth/Height); these
+// are the fallback defaults when unset.
+export const DEFAULT_CANVAS_WIDTH = 1920;
+export const DEFAULT_CANVAS_HEIGHT = 1080;
+
+function canvasWidthOf(animation) {
+  return Math.max(1, Math.round(animation.canvasWidth || DEFAULT_CANVAS_WIDTH));
+}
+function canvasHeightOf(animation) {
+  return Math.max(1, Math.round(animation.canvasHeight || DEFAULT_CANVAS_HEIGHT));
+}
+
 function transformFromParams(p, global) {
   return {
     stretchAngle: p.stretchAngle,
@@ -18,10 +32,13 @@ function transformFromParams(p, global) {
   };
 }
 
-function computeLayout(params, animation, charIds, global) {
+export function computeLayout(params, animation, charIds, global) {
   const positions = layoutText(animation.text, charIds, {
     fontSize: params.fontSize,
-    textBoxWidth: params.textBoxWidth,
+    // Animation text never wraps — it grows infinitely (line breaks only on an
+    // explicit '\n'), and the whole block is centered on the canvas. (The
+    // compose page still wraps via its own finite textBoxWidth.)
+    textBoxWidth: Infinity,
     kerning: params.kerning,
     lineHeight: params.lineHeight,
     writingMode: animation.writingMode,
@@ -40,24 +57,17 @@ function computeLayout(params, animation, charIds, global) {
 }
 
 /**
- * Compute the uniform cache canvas dimensions for an animation — runs the
- * same first pass as renderFrames(), but stops before rendering. Used to
- * seed the frame cache so live scrubbing can write entries at the same
- * dimensions as the Render-button output.
+ * Compute the uniform cache canvas dimensions for an animation. Used to seed
+ * the frame cache so live scrubbing writes entries at the same dimensions as
+ * the Render-button output. The canvas size is fixed per-animation and
+ * independent of character count.
  */
-export function computeFrameCacheShape(animation, ctx) {
-  const { charIds, global } = ctx;
+export function computeFrameCacheShape(animation) {
   const fps = animation.fps;
   const totalFrames = Math.max(1, Math.round(animation.duration * fps));
-  let maxW = 0, maxH = 0;
-  for (let i = 0; i < totalFrames; i++) {
-    const t = i / fps;
-    const params = sampleAnimation(animation, t);
-    const layout = computeLayout(params, animation, charIds, global);
-    if (layout.cw > maxW) maxW = layout.cw;
-    if (layout.ch > maxH) maxH = layout.ch;
-  }
-  return { fps, totalFrames, width: Math.ceil(maxW), height: Math.ceil(maxH) };
+  // Fixed canvas size — independent of character count. Content is centered
+  // within these dimensions at draw time.
+  return { fps, totalFrames, width: canvasWidthOf(animation), height: canvasHeightOf(animation) };
 }
 
 function paramsEqual(a, b) {
@@ -132,6 +142,87 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
 }
 
 /**
+ * Create a reusable single-frame renderer for an animation. Owns the
+ * runtime-layer cache (cell paths are transform-independent, so they're built
+ * once per character) and a single frame-sized work canvas.
+ *
+ * `renderInto(octx, params, layout)` is the SINGLE source of truth for frame
+ * pixels: it fills the background, centers the content within the fixed frame,
+ * applies the camera transform, and draws every glyph with full per-cell
+ * stretch/gap + metaball blur. Both renderFrames() (the Render button / export)
+ * and live scrub-time preview call it, so on-screen frames and exported output
+ * are pixel-identical — no second, approximate draw path.
+ */
+export function createFrameRenderer(animation, ctx) {
+  const { project, global } = ctx;
+  const width = canvasWidthOf(animation);
+  const height = canvasHeightOf(animation);
+
+  // Pre-build runtime layers per charId. Project geometry doesn't change during
+  // a render/scrub session, so cell paths are reused across every frame.
+  const layersByChar = new Map();
+  function getLayersFor(charId) {
+    if (layersByChar.has(charId)) return layersByChar.get(charId);
+    const charData = project.characters[charId];
+    if (!charData) {
+      layersByChar.set(charId, null);
+      return null;
+    }
+    const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
+    layersByChar.set(charId, layers.length > 0 ? layers : null);
+    return layersByChar.get(charId);
+  }
+
+  // Single work canvas reused across all glyphs + frames. Size matches the
+  // frame canvas so a stretched cell that lands anywhere within the visible
+  // frame still rasterizes; cells beyond the frame are clipped naturally.
+  const workCanvas = document.createElement('canvas');
+  workCanvas.width = width;
+  workCanvas.height = height;
+  const workCtx = workCanvas.getContext('2d');
+
+  function renderInto(octx, params, layout) {
+    octx.fillStyle = '#fff';
+    octx.fillRect(0, 0, width, height);
+
+    // Center the content within the fixed frame.
+    const dx = Math.floor((width - layout.cw) / 2);
+    const dy = Math.floor((height - layout.ch) / 2);
+
+    // Apply camera transform around the frame center.
+    octx.save();
+    const fcx = width / 2;
+    const fcy = height / 2;
+    octx.translate(fcx + (params.cameraX || 0), fcy + (params.cameraY || 0));
+    const dist = params.cameraDistance != null ? params.cameraDistance : 1;
+    octx.scale(dist, dist);
+    octx.translate(-fcx, -fcy);
+
+    const transform = transformFromParams(params, global);
+    for (const pos of layout.positions) {
+      const gx = dx + layout.pad + pos.x;
+      const gy = dy + layout.pad + pos.y;
+      if (pos.missing) {
+        octx.fillStyle = '#f0f0f0';
+        octx.fillRect(gx, gy, params.fontSize, params.fontSize);
+        octx.strokeStyle = '#bbb';
+        octx.lineWidth = 1;
+        octx.strokeRect(gx, gy, params.fontSize, params.fontSize);
+        continue;
+      }
+      const charData = project.characters[pos.charId];
+      const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
+      const layers = getLayersFor(pos.charId);
+      if (!layers) continue;
+      renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, params.fontSize, layers, charTransform, global);
+    }
+    octx.restore();
+  }
+
+  return { width, height, renderInto };
+}
+
+/**
  * Render animation frames to offscreen canvases.
  *
  * Each glyph is drawn directly into a frame-sized work offscreen at its
@@ -150,23 +241,24 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
  * frames, so re-running render after editing only re-paints missing entries.
  */
 export async function renderFrames(animation, ctx) {
-  const { project, global, charIds, onProgress, cache, onCacheUpdate } = ctx;
+  const { global, charIds, onProgress, cache, onCacheUpdate } = ctx;
   const fps = animation.fps;
   const totalFrames = Math.max(1, Math.round(animation.duration * fps));
 
-  // First pass: find maximum canvas dimensions across all frames
-  let maxW = 0, maxH = 0;
+  // Shared single-frame renderer — same path used by live scrub preview, so
+  // exported frames and on-screen frames are pixel-identical.
+  const renderer = createFrameRenderer(animation, ctx);
+  const maxW = renderer.width;
+  const maxH = renderer.height;
+
+  // First pass: compute per-frame content layout (used for centering offsets).
   const perFrame = [];
   for (let i = 0; i < totalFrames; i++) {
     const t = i / fps;
     const params = sampleAnimation(animation, t);
     const layout = computeLayout(params, animation, charIds, global);
-    if (layout.cw > maxW) maxW = layout.cw;
-    if (layout.ch > maxH) maxH = layout.ch;
     perFrame.push({ params, layout });
   }
-  maxW = Math.ceil(maxW);
-  maxH = Math.ceil(maxH);
 
   // Prepare external cache (if any). Reset its shape when fps/totalFrames or
   // canvas dimensions don't match — those changes invalidate every entry.
@@ -184,29 +276,6 @@ export async function renderFrames(animation, ctx) {
     }
     onCacheUpdate?.();
   }
-
-  // Pre-build runtime layers per charId. Project geometry doesn't change
-  // during render, so we can reuse the cell paths across every frame.
-  const layersByChar = new Map();
-  function getLayersFor(charId) {
-    if (layersByChar.has(charId)) return layersByChar.get(charId);
-    const charData = project.characters[charId];
-    if (!charData) {
-      layersByChar.set(charId, null);
-      return null;
-    }
-    const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
-    layersByChar.set(charId, layers.length > 0 ? layers : null);
-    return layersByChar.get(charId);
-  }
-
-  // Single work canvas reused across all glyphs + frames. Size matches the
-  // frame canvas so a stretched cell that lands anywhere within the visible
-  // frame still rasterizes; cells beyond the frame are clipped naturally.
-  const workCanvas = document.createElement('canvas');
-  workCanvas.width = maxW;
-  workCanvas.height = maxH;
-  const workCtx = workCanvas.getContext('2d');
 
   const frames = new Array(totalFrames);
   for (let i = 0; i < totalFrames; i++) {
@@ -237,41 +306,7 @@ export async function renderFrames(animation, ctx) {
     off.width = maxW;
     off.height = maxH;
     const octx = off.getContext('2d');
-    octx.fillStyle = '#fff';
-    octx.fillRect(0, 0, maxW, maxH);
-
-    // Center the content
-    const dx = Math.floor((maxW - layout.cw) / 2);
-    const dy = Math.floor((maxH - layout.ch) / 2);
-
-    // Apply camera transform around the frame center
-    octx.save();
-    const fcx = maxW / 2;
-    const fcy = maxH / 2;
-    octx.translate(fcx + (params.cameraX || 0), fcy + (params.cameraY || 0));
-    const dist = params.cameraDistance != null ? params.cameraDistance : 1;
-    octx.scale(dist, dist);
-    octx.translate(-fcx, -fcy);
-
-    const transform = transformFromParams(params, global);
-    for (const pos of layout.positions) {
-      const gx = dx + layout.pad + pos.x;
-      const gy = dy + layout.pad + pos.y;
-      if (pos.missing) {
-        octx.fillStyle = '#f0f0f0';
-        octx.fillRect(gx, gy, params.fontSize, params.fontSize);
-        octx.strokeStyle = '#bbb';
-        octx.lineWidth = 1;
-        octx.strokeRect(gx, gy, params.fontSize, params.fontSize);
-        continue;
-      }
-      const charData = project.characters[pos.charId];
-      const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
-      const layers = getLayersFor(pos.charId);
-      if (!layers) continue;
-      renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, params.fontSize, layers, charTransform, global);
-    }
-    octx.restore();
+    renderer.renderInto(octx, params, layout);
 
     frames[i] = off;
     if (cache) {

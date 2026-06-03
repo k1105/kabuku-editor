@@ -983,6 +983,220 @@ select {
 .anim-canvas-area {
   flex: 1;
   min-height: 0;
+  /* Distinguish the canvas (white) from the surrounding view area (editor
+     background black). */
+  background: var(--bg);
+}
+
+.anim-canvas-area canvas {
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+/* View toolbar above the timeline: zoom pinned left, transport centered. */
+.anim-view-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.anim-view-zoom {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.anim-view-transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Icon-only transport buttons (no text label). */
+.anim-view-transport .tool-btn {
+  justify-content: center;
+  padding: 6px;
+  width: 32px;
+  height: 32px;
+}
+
+.anim-view-transport .tool-btn .icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* Render progress popup (centered overlay shown only while rendering). */
+.progress-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.progress-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  min-width: 280px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.progress-modal-title {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.progress-modal .import-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 24px;
+  width: 100%;
+  max-width: none;
+}
+
+.anim-view-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.anim-zoom-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 120px;
+}
+
+.anim-zoom-select:hover {
+  border-color: var(--accent);
+}
+
+/* === Settings popup === */
+.settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.settings-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 360px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.settings-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.settings-modal-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-modal-body {
+  padding: 6px 16px 16px;
+}
+
+/* Section blocks: clear separation, no default-h3 chrome. */
+.settings-modal-body .param-group {
+  margin: 0;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-modal-body .param-group:first-child {
+  border-top: none;
+}
+
+.settings-modal-body .param-group h3 {
+  margin: 0 0 10px 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.settings-modal-body .param-row {
+  margin-bottom: 0;
+}
+
+.settings-modal-body .param-row + .param-row {
+  margin-top: 8px;
+}
+
+.settings-modal-body .param-row label {
+  flex: 0 0 90px;
+}
+
+/* Typeface loader stacks vertically in the popup (it sits inline in the nav
+   elsewhere). */
+.settings-modal-body .snapshot-link-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.settings-modal-body .snapshot-link-select {
+  max-width: none;
+  width: 100%;
+}
+
+.settings-modal-body .snapshot-refresh-btn {
+  justify-content: center;
+}
+
+.settings-modal-body .param-row input[type="number"] {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
 }
 
 .anim-button-row {

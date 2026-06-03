@@ -1,4 +1,4 @@
-import { resolveTransform, createDefaultAnimation, ANIMATED_PARAM_KEYS, listFontProjects } from '../core/project.js';
+import { createDefaultAnimation, ANIMATED_PARAM_KEYS, listFontProjects } from '../core/project.js';
 import {
   getSnapshotProject, getSnapshotGlobal, getAnimation, saveAnimation,
   currentAnimationProjectName, currentAnimationProjectId, refreshSnapshotFromOrigin,
@@ -6,14 +6,13 @@ import {
   setLinkedFontProject,
   flushNow as flushAnimationNow,
 } from '../core/animation-project.js';
-import { layoutText, layoutBounds } from '../compose/text-layout.js';
-import { createGlyphCache, computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
+import { RENDER_SIZE } from '../compose/glyph-cache.js';
 import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime } from '../animation/animation.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
-import { renderFrames, computeFrameCacheShape } from '../animation/render.js';
+import { renderFrames, computeFrameCacheShape, createFrameRenderer, computeLayout, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
 import { createPageHeader } from '../ui/page-header.js';
-import { iconEl, iconSvg } from '../ui/icons.js';
+import { iconEl, iconSvg, iconButton } from '../ui/icons.js';
 import { commit as historyCommit } from '../core/animation-history.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
@@ -21,7 +20,8 @@ import { createSliderInput } from '../ui/slider-input.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
-  { key: 'textBoxWidth', label: 'Box Width', min: 200, max: 2000, step: 10 },
+  // textBoxWidth intentionally omitted: animation text no longer wraps, so the
+  // Box Width control has no effect (see computeLayout in render.js).
   { key: 'kerning', label: 'Kerning', min: -40, max: 100, step: 1 },
   { key: 'lineHeight', label: 'Line Height', min: 0.4, max: 6.0, step: 0.1 },
   { key: 'stretchAngle', label: 'Stretch Angle', min: 0, max: 180, step: 1, hardMin: 0, hardMax: 180 },
@@ -42,13 +42,15 @@ export function renderAnimationPage(app) {
   const global = getSnapshotGlobal() || project.global;
   project.global = global;
   const charIds = new Set(Object.keys(project.characters));
-  const glyphCache = createGlyphCache();
   const sourceImageCache = new Map();
 
   let animation = getAnimation();
   // Cap the auto-filled text to 5 chars; with large typesets, dumping every
   // glyph here freezes the page during layout/render.
   if (!animation.text) animation.text = Object.keys(project.characters).slice(0, 5).join('');
+  // Back-fill canvas size on animations created before it was configurable.
+  if (animation.canvasWidth == null) animation.canvasWidth = DEFAULT_CANVAS_WIDTH;
+  if (animation.canvasHeight == null) animation.canvasHeight = DEFAULT_CANVAS_HEIGHT;
 
   // Ensure every animated track has at least one keyframe at t=0.
   let tracksFilled = false;
@@ -73,6 +75,10 @@ export function renderAnimationPage(app) {
   // animation edit. redrawPreview() checks per-frame; missing entries fall
   // back to live drawing.
   let frameCache = null;
+  // Editor display zoom: a number (1 = 100%) or 'fit' (scale the whole canvas
+  // into the view with padding). Affects only on-screen display size, not the
+  // canvas resolution or rendered output.
+  let displayZoom = 'fit';
 
   function persist() {
     saveAnimation(animation);
@@ -125,6 +131,54 @@ export function renderAnimationPage(app) {
     historyMode: 'animation',
   });
 
+  // === Settings popup (opened via the gear icon in the nav) ===
+  // Holds the less-frequently-touched setup: typeface loading, canvas size,
+  // and movie duration/fps. Controls apply live (each persists on change), so
+  // there's no confirm/cancel — just open and close.
+  const settingsBackdrop = document.createElement('div');
+  settingsBackdrop.className = 'settings-modal-backdrop';
+  settingsBackdrop.style.display = 'none';
+  const settingsModal = document.createElement('div');
+  settingsModal.className = 'settings-modal';
+  settingsBackdrop.appendChild(settingsModal);
+  const settingsHead = document.createElement('div');
+  settingsHead.className = 'settings-modal-head';
+  const settingsTitle = document.createElement('h2');
+  settingsTitle.textContent = 'Settings';
+  const settingsCloseBtn = iconButton('close', 'Close', { title: 'Close' });
+  settingsCloseBtn.addEventListener('click', () => closeSettings());
+  settingsHead.appendChild(settingsTitle);
+  settingsHead.appendChild(settingsCloseBtn);
+  settingsModal.appendChild(settingsHead);
+  const settingsBody = document.createElement('div');
+  settingsBody.className = 'settings-modal-body';
+  settingsModal.appendChild(settingsBody);
+
+  function makeSettingsGroup(title) {
+    const g = document.createElement('div');
+    g.className = 'param-group';
+    const h = document.createElement('h3');
+    h.textContent = title;
+    g.appendChild(h);
+    settingsBody.appendChild(g);
+    return g;
+  }
+  // Created up-front so child controls land in a fixed visual order regardless
+  // of when they're built below.
+  const sfTypeface = makeSettingsGroup('Typeface');
+  const sfCanvas = makeSettingsGroup('Canvas');
+  const sfMovie = makeSettingsGroup('Duration & FPS');
+
+  function openSettings() { settingsBackdrop.style.display = 'flex'; }
+  function closeSettings() { settingsBackdrop.style.display = 'none'; }
+  settingsBackdrop.addEventListener('click', (e) => {
+    if (e.target === settingsBackdrop) closeSettings();
+  });
+
+  const settingsBtn = iconButton('settings', 'Settings', { title: 'Settings' });
+  settingsBtn.addEventListener('click', () => openSettings());
+  headerNav.insertBefore(settingsBtn, headerNav.firstChild);
+
   // Snapshot link selector + Refresh button.
   // The selector lets the user re-link the snapshot to any existing Typeset —
   // important when the original origin has been deleted. Selecting a new
@@ -172,7 +226,7 @@ export function renderAnimationPage(app) {
 
   linkWrap.appendChild(linkSelect);
   linkWrap.appendChild(refreshBtn);
-  headerNav.insertBefore(linkWrap, headerNav.firstChild);
+  sfTypeface.appendChild(linkWrap);
 
   (async () => {
     let list;
@@ -341,13 +395,18 @@ export function renderAnimationPage(app) {
   addAnimatedSliders(cameraGroup, CAMERA_SLIDER_DEFS);
   sidebar.appendChild(cameraGroup);
 
-  // Duration + FPS + playback controls
-  const playbackGroup = document.createElement('div');
-  playbackGroup.className = 'param-group';
-  const playbackTitle = document.createElement('h3');
-  playbackTitle.textContent = 'Playback';
-  playbackGroup.appendChild(playbackTitle);
+  // Canvas size + movie duration/fps live in the settings popup (see above).
+  // Output dimensions are independent of character count.
+  addNumberField(sfCanvas, 'Width (px)', animation.canvasWidth, 100, 7680, 1, (v) => {
+    animation.canvasWidth = Math.max(1, Math.round(v));
+    persist(); markDirty(); applyDisplayZoom(); redrawPreview(); commitHistory('canvas-size');
+  });
+  addNumberField(sfCanvas, 'Height (px)', animation.canvasHeight, 100, 7680, 1, (v) => {
+    animation.canvasHeight = Math.max(1, Math.round(v));
+    persist(); markDirty(); applyDisplayZoom(); redrawPreview(); commitHistory('canvas-size');
+  });
 
+  // Duration & FPS number fields (rendered into the settings popup).
   function addNumberField(parent, label, value, min, max, step, onChange) {
     const row = document.createElement('div');
     row.className = 'param-row';
@@ -370,45 +429,44 @@ export function renderAnimationPage(app) {
     return input;
   }
 
-  addNumberField(playbackGroup, 'Duration (s)', animation.duration, 0.5, 120, 0.5, (v) => {
+  addNumberField(sfMovie, 'Duration (s)', animation.duration, 0.5, 120, 0.5, (v) => {
     animation.duration = v;
     if (currentTime > v) currentTime = v;
     persist(); markDirty(); timeline.render(); updateSlidersFromTime();
   });
-  addNumberField(playbackGroup, 'FPS', animation.fps, 1, 60, 1, (v) => {
+  addNumberField(sfMovie, 'FPS', animation.fps, 1, 60, 1, (v) => {
     animation.fps = Math.round(v);
     persist(); markDirty();
   });
 
-  const btnRow = document.createElement('div');
-  btnRow.className = 'anim-button-row';
+  // Transport buttons (Play / Render) — icon-only, appended to the view toolbar
+  // above the timeline (centered). Handlers reference togglePlay/doRender.
   const playBtn = document.createElement('button');
   playBtn.className = 'tool-btn';
   playBtn.title = 'Play / Pause (Space)';
   const playIcon = iconEl('play');
-  const playLabel = document.createElement('span');
-  playLabel.textContent = 'Play';
   playBtn.appendChild(playIcon);
-  playBtn.appendChild(playLabel);
   playBtn.addEventListener('click', () => togglePlay());
   function setPlayState(isPlaying) {
     playIcon.innerHTML = iconSvg(isPlaying ? 'pause' : 'play');
-    playLabel.textContent = isPlaying ? 'Pause' : 'Play';
   }
   const renderBtn = document.createElement('button');
   renderBtn.className = 'tool-btn';
+  renderBtn.title = 'Render';
   renderBtn.appendChild(iconEl('refresh'));
-  const renderLabel = document.createElement('span');
-  renderLabel.textContent = 'Render';
-  renderBtn.appendChild(renderLabel);
   renderBtn.addEventListener('click', () => doRender());
-  btnRow.appendChild(playBtn);
-  btnRow.appendChild(renderBtn);
-  playbackGroup.appendChild(btnRow);
 
+  // Render progress popup — a centered overlay shown only while rendering.
+  const progressBackdrop = document.createElement('div');
+  progressBackdrop.className = 'progress-modal-backdrop';
+  progressBackdrop.style.display = 'none';
+  const progressBox = document.createElement('div');
+  progressBox.className = 'progress-modal';
+  const progressTitle = document.createElement('div');
+  progressTitle.className = 'progress-modal-title';
+  progressTitle.textContent = 'Rendering…';
   const progressWrap = document.createElement('div');
   progressWrap.className = 'import-progress';
-  progressWrap.style.display = 'none';
   const progressTrack = document.createElement('div');
   progressTrack.className = 'import-progress-track';
   const progressBar = document.createElement('div');
@@ -418,9 +476,9 @@ export function renderAnimationPage(app) {
   progressText.className = 'import-progress-text';
   progressWrap.appendChild(progressTrack);
   progressWrap.appendChild(progressText);
-  playbackGroup.appendChild(progressWrap);
-
-  sidebar.appendChild(playbackGroup);
+  progressBox.appendChild(progressTitle);
+  progressBox.appendChild(progressWrap);
+  progressBackdrop.appendChild(progressBox);
 
   // Export group
   const exportGroup = document.createElement('div');
@@ -478,6 +536,50 @@ export function renderAnimationPage(app) {
   const ctx = canvas.getContext('2d');
   mainArea.appendChild(canvas);
 
+  // --- View toolbar (above timeline): zoom (left) + transport (centered) ---
+  const viewToolbar = document.createElement('div');
+  viewToolbar.className = 'anim-view-toolbar';
+  const zoomZone = document.createElement('div');
+  zoomZone.className = 'anim-view-zoom';
+  const zoomLbl = document.createElement('span');
+  zoomLbl.className = 'anim-view-label';
+  zoomLbl.textContent = 'Zoom';
+  const zoomSelect = document.createElement('select');
+  zoomSelect.className = 'anim-zoom-select';
+  const ZOOM_OPTIONS = [
+    { value: 'fit', label: '全体表示' },
+    { value: '25', label: '25%' },
+    { value: '50', label: '50%' },
+    { value: '75', label: '75%' },
+    { value: '100', label: '100%' },
+    { value: '125', label: '125%' },
+    { value: '150', label: '150%' },
+    { value: '175', label: '175%' },
+    { value: '200', label: '200%' },
+  ];
+  for (const o of ZOOM_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.label;
+    zoomSelect.appendChild(opt);
+  }
+  zoomSelect.value = 'fit';
+  zoomSelect.addEventListener('change', () => {
+    displayZoom = zoomSelect.value === 'fit' ? 'fit' : parseInt(zoomSelect.value, 10) / 100;
+    applyDisplayZoom();
+  });
+  zoomZone.appendChild(zoomLbl);
+  zoomZone.appendChild(zoomSelect);
+
+  // Centered transport (Play / Render).
+  const transportZone = document.createElement('div');
+  transportZone.className = 'anim-view-transport';
+  transportZone.appendChild(playBtn);
+  transportZone.appendChild(renderBtn);
+
+  viewToolbar.appendChild(zoomZone);
+  viewToolbar.appendChild(transportZone);
+
   // --- Bottom timeline ---
   const timelineWrap = document.createElement('div');
   timelineWrap.className = 'anim-timeline-wrap';
@@ -503,6 +605,7 @@ export function renderAnimationPage(app) {
   const leftCol = document.createElement('div');
   leftCol.className = 'anim-main-col';
   leftCol.appendChild(mainArea);
+  leftCol.appendChild(viewToolbar);
   leftCol.appendChild(timelineWrap);
 
   page.appendChild(sidebar);
@@ -510,8 +613,40 @@ export function renderAnimationPage(app) {
 
   app.appendChild(header);
   app.appendChild(page);
+  app.appendChild(settingsBackdrop);
+  app.appendChild(progressBackdrop);
 
   // === Rendering ===
+
+  function canvasW() { return Math.max(1, Math.round(animation.canvasWidth || DEFAULT_CANVAS_WIDTH)); }
+  function canvasH() { return Math.max(1, Math.round(animation.canvasHeight || DEFAULT_CANVAS_HEIGHT)); }
+
+  /**
+   * Size the on-screen canvas element via CSS (its internal resolution is
+   * always canvasW×canvasH). 'fit' scales the whole canvas into the view with
+   * padding; a numeric zoom maps 1→100%.
+   */
+  function applyDisplayZoom() {
+    const cw = canvasW(), ch = canvasH();
+    let scale;
+    if (displayZoom === 'fit') {
+      const padPx = 24;
+      const availW = Math.max(1, mainArea.clientWidth - padPx * 2);
+      const availH = Math.max(1, mainArea.clientHeight - padPx * 2);
+      scale = Math.min(availW / cw, availH / ch);
+      if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+    } else {
+      scale = displayZoom;
+    }
+    canvas.style.width = (cw * scale) + 'px';
+    canvas.style.height = (ch * scale) + 'px';
+  }
+
+  // Re-fit when the view area resizes (only matters in 'fit' mode).
+  const viewResizeObserver = new ResizeObserver(() => {
+    if (displayZoom === 'fit') applyDisplayZoom();
+  });
+  viewResizeObserver.observe(mainArea);
 
   function overrideWith(key, val) {
     const p = sampleAnimation(animation, currentTime);
@@ -519,33 +654,20 @@ export function renderAnimationPage(app) {
     return p;
   }
 
-  function getTransformFromParams(p) {
-    return {
-      stretchAngle: p.stretchAngle,
-      stretchAmount: p.stretchAmount,
-      baseGap: p.baseGap,
-      gapDirectionWeight: p.gapDirectionWeight,
-      metaballStrength: global.metaballStrength ?? 1,
-      metaballRadius: p.metaballRadius,
-    };
+  // Lazily-built single-frame renderer, shared with the Render/export path so
+  // scrub-time frames are pixel-identical to exported frames. Layers depend on
+  // the (static) font snapshot, not on params, so the renderer is reused across
+  // redraws; only a canvas-size change forces a rebuild (work canvas dims).
+  let frameRenderer = null;
+  function getFrameRenderer() {
+    if (!frameRenderer || frameRenderer.width !== canvasW() || frameRenderer.height !== canvasH()) {
+      frameRenderer = createFrameRenderer(animation, { project, global, charIds });
+    }
+    return frameRenderer;
   }
 
-  function computeLayout(params) {
-    const positions = layoutText(animation.text, charIds, {
-      fontSize: params.fontSize,
-      textBoxWidth: params.textBoxWidth,
-      kerning: params.kerning,
-      lineHeight: params.lineHeight,
-      writingMode: animation.writingMode,
-    });
-    const cacheScale = computeCacheScale(getTransformFromParams(params));
-    const drawSize = params.fontSize * cacheScale;
-    const drawOffset = (drawSize - params.fontSize) / 2;
-    const pad = 32 + drawOffset;
-    const bounds = layoutBounds(positions, params.fontSize);
-    const cw = Math.max(bounds.width + pad * 2, 200);
-    const ch = Math.max(bounds.height + pad * 2, 200);
-    return { positions, pad, cw, ch, drawSize, drawOffset, params };
+  function layoutFor(params) {
+    return computeLayout(params, animation, charIds, global);
   }
 
   function prepareCanvas(cw, ch) {
@@ -581,7 +703,7 @@ export function renderAnimationPage(app) {
    */
   function ensureFrameCacheShape() {
     if (frameCache?.frames?.length) return;
-    const shape = computeFrameCacheShape(animation, { charIds, global });
+    const shape = computeFrameCacheShape(animation);
     frameCache = {
       fps: shape.fps,
       totalFrames: shape.totalFrames,
@@ -592,13 +714,11 @@ export function renderAnimationPage(app) {
     timeline?.updateFrameCacheIndicator?.(frameCache);
   }
 
-  /** Full pipeline draw (slow). Renders to an offscreen at the frame cache's
-   *  uniform dimensions, stores the result in cache at the current frame
-   *  index, then blits to the on-screen canvas.
-   *
-   *  Stretch is applied as a draw-time affine on each cached (unstretched)
-   *  glyph bitmap — same approximation as compose-page redraw(). The actual
-   *  per-cell stretch only lives in the renderFrames() path (Render button). */
+  /** Full pipeline draw (slow). Renders one frame through the SAME renderer as
+   *  the Render button / export (createFrameRenderer), stores it in the cache
+   *  at the current frame index, then blits to the on-screen canvas. Because it
+   *  shares the render path, scrub-time frames and exported frames are
+   *  pixel-identical — no separate approximation. */
   function drawFull(params) {
     ensureFrameCacheShape();
     const cacheW = frameCache.width;
@@ -607,53 +727,11 @@ export function renderAnimationPage(app) {
     off.width = cacheW;
     off.height = cacheH;
     const octx = off.getContext('2d');
-    octx.fillStyle = '#fff';
-    octx.fillRect(0, 0, cacheW, cacheH);
-
-    const layout = computeLayout(params);
-    const dx = Math.floor((cacheW - layout.cw) / 2);
-    const dy = Math.floor((cacheH - layout.ch) / 2);
-
-    // Stretch affine (image-stretch approximation around glyph baseline).
-    const rad = ((params.stretchAngle || 0) * Math.PI) / 180;
-    const s = 1 + (params.stretchAmount || 0);
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const a = cos * cos * s + sin * sin;
-    const b = cos * sin * (s - 1);
-    const d = sin * sin * s + cos * cos;
-    const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
-
-    octx.save();
-    applyCameraTransform(octx, cacheW, cacheH, params);
-    const transform = getTransformFromParams(params);
-    for (const pos of layout.positions) {
-      const gx = dx + layout.pad + pos.x;
-      const gy = dy + layout.pad + pos.y;
-      if (pos.missing) {
-        octx.fillStyle = '#f0f0f0';
-        octx.fillRect(gx, gy, params.fontSize, params.fontSize);
-        octx.strokeStyle = '#bbb';
-        octx.lineWidth = 1;
-        octx.strokeRect(gx, gy, params.fontSize, params.fontSize);
-        continue;
-      }
-      const charData = project.characters[pos.charId];
-      const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
-      const cached = glyphCache.get(pos.charId, charData, global, charTransform);
-      if (!cached) continue;
-      const cx = gx + params.fontSize / 2;
-      const cy = gy + params.fontSize * baselineRatio;
-      octx.save();
-      octx.transform(a, b, b, d, cx - (a * cx + b * cy), cy - (b * cx + d * cy));
-      octx.drawImage(cached, gx - layout.drawOffset, gy - layout.drawOffset, layout.drawSize, layout.drawSize);
-      octx.restore();
-    }
-    octx.restore();
+    getFrameRenderer().renderInto(octx, params, layoutFor(params));
 
     // Cache at the current time slot (only when empty — Render-button frames
-    // win over scrub-time captures, and we never overwrite a previously cached
-    // entry with this potentially older glyph-cache state).
+    // win over scrub-time captures, though both paths now produce identical
+    // pixels).
     const idx = Math.min(frameCache.frames.length - 1,
       Math.max(0, Math.round(currentTime * frameCache.fps)));
     if (!frameCache.frames[idx]) {
@@ -675,7 +753,7 @@ export function renderAnimationPage(app) {
     ensureFrameCacheShape();
     const cacheW = frameCache.width;
     const cacheH = frameCache.height;
-    const layout = computeLayout(p);
+    const layout = layoutFor(p);
     prepareCanvas(cacheW, cacheH);
     const dx = Math.floor((cacheW - layout.cw) / 2);
     const dy = Math.floor((cacheH - layout.ch) / 2);
@@ -740,16 +818,12 @@ export function renderAnimationPage(app) {
       return;
     }
     const params = sampleAnimation(animation, currentTime);
-    if (playing) {
-      // Live playback: source-image multiply (fast).
-      redrawFast(params);
-    } else {
-      // Paused / scrubbing: show the actual font state via cached glyphs.
-      // Cache is keyed by charId only, so per-frame transforms would otherwise
-      // hit stale bitmaps — invalidate before drawing.
-      glyphCache.invalidateAll();
-      drawFull(params);
-    }
+    // Playback and scrubbing both render each frame through the full per-cell
+    // pipeline (drawFull) — identical to the exported output, no base-image
+    // stretch approximation. Frames are cached as they're produced, so a second
+    // pass plays back from cache. (redrawFast survives only for live slider
+    // dragging, where transient responsiveness matters more than fidelity.)
+    drawFull(params);
   }
 
   function updateSlidersFromTime() {
@@ -825,6 +899,10 @@ export function renderAnimationPage(app) {
     const tag = t?.tagName;
     const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable;
 
+    if (e.code === 'Escape' && settingsBackdrop.style.display !== 'none') {
+      closeSettings();
+      return;
+    }
     if (e.code === 'Space') {
       if (typing || tag === 'BUTTON') return;
       e.preventDefault();
@@ -845,6 +923,7 @@ export function renderAnimationPage(app) {
   window.addEventListener('hashchange', function detach() {
     document.removeEventListener('keydown', onKeyDown);
     timeline.destroy?.();
+    viewResizeObserver.disconnect();
     window.removeEventListener('hashchange', detach);
   });
 
@@ -859,8 +938,7 @@ export function renderAnimationPage(app) {
 
   async function doRender() {
     renderBtn.disabled = true;
-    renderLabel.textContent = 'Rendering...';
-    progressWrap.style.display = '';
+    progressBackdrop.style.display = 'flex';
     progressBar.style.width = '0%';
     progressText.textContent = '0%';
     // Seed cache so renderFrames can write into it directly. Mismatched
@@ -869,7 +947,7 @@ export function renderAnimationPage(app) {
     timeline.updateFrameCacheIndicator(frameCache);
     try {
       await renderFrames(animation, {
-        project, global, charIds, glyphCache,
+        project, global, charIds,
         cache: frameCache,
         onCacheUpdate: () => { timeline.updateFrameCacheIndicator(frameCache); },
         onProgress: (done, total) => {
@@ -883,9 +961,8 @@ export function renderAnimationPage(app) {
       console.error('Render failed:', e);
       alert('Render failed: ' + e.message);
     } finally {
-      progressWrap.style.display = 'none';
+      progressBackdrop.style.display = 'none';
       renderBtn.disabled = false;
-      renderLabel.textContent = 'Render';
     }
   }
 
@@ -976,6 +1053,7 @@ export function renderAnimationPage(app) {
   requestAnimationFrame(() => {
     timeline.render();
     redrawPreview();
+    applyDisplayZoom();
   });
 
   /**
@@ -997,6 +1075,7 @@ export function renderAnimationPage(app) {
     markDirty();
     timeline.render();
     redrawPreview();
+    applyDisplayZoom();
   }
 
   return { refresh };
