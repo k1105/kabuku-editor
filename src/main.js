@@ -55,6 +55,9 @@ function isAnimationRoute() {
 function injectLangToggle(app) {
   const header = app.querySelector('.header');
   if (!header) return;
+  // Pages with a Settings panel host the language toggle inside it (gear menu)
+  // instead of cluttering the header.
+  if (app.querySelector('.settings-modal')) return;
   const headerNav = header.querySelector('.header-nav');
   (headerNav || header).appendChild(createLangToggle());
 }

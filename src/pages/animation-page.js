@@ -17,6 +17,7 @@ import { commit as historyCommit } from '../core/animation-history.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
 import { createSliderInput } from '../ui/slider-input.js';
+import { createLangToggle } from '../ui/i18n.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -168,6 +169,8 @@ export function renderAnimationPage(app) {
   const sfTypeface = makeSettingsGroup('Typeface');
   const sfCanvas = makeSettingsGroup('Canvas');
   const sfMovie = makeSettingsGroup('Duration & FPS');
+  const sfLanguage = makeSettingsGroup('Language');
+  sfLanguage.appendChild(createLangToggle());
 
   function openSettings() { settingsBackdrop.style.display = 'flex'; }
   function closeSettings() { settingsBackdrop.style.display = 'none'; }
