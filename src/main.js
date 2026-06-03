@@ -1,3 +1,4 @@
+import 'iconify-icon';
 import { renderIndexPage } from './pages/index-page.js';
 import { renderComposePage } from './pages/compose-page.js';
 import { renderAnimationPage } from './pages/animation-page.js';

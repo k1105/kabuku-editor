@@ -16,7 +16,7 @@ import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, 
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
 import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { iconButton, iconEl } from '../ui/icons.js';
-import { createLangToggle } from '../ui/i18n.js';
+import { createLangToggle, t } from '../ui/i18n.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
@@ -24,7 +24,7 @@ import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.j
 import { createSliderInput } from '../ui/slider-input.js';
 
 const GLYPH_SIZE = 1024;
-const MODE_KEY = 'kabuku.editMode';
+const PANEL_KEY = 'kabuku.editPanel';
 const SEL_CHAR_KEY = 'kabuku.selectedChar';
 
 export function renderIndexPage(app) {
@@ -38,8 +38,15 @@ export function renderIndexPage(app) {
     ? savedSel
     : (Object.keys(project.characters)[0] ?? null);
 
-  // Mode: 'global' | 'local'
-  let mode = sessionStorage.getItem(MODE_KEY) === 'local' ? 'local' : 'global';
+  // Active sidebar panel, chosen from the left icon rail.
+  const PANELS = ['layers', 'pen', 'automesh', 'metrics', 'props'];
+  let panel = PANELS.includes(sessionStorage.getItem(PANEL_KEY))
+    ? sessionStorage.getItem(PANEL_KEY)
+    : 'layers';
+  // Panels that edit the selected glyph's per-character state (live paint
+  // edits, image placement, meshing) need the in-memory local layers; the
+  // others render straight from the global config.
+  const isLocalContext = () => panel === 'pen' || panel === 'props' || panel === 'automesh';
 
   // Paint state
   let currentTool = 'paint';
@@ -90,12 +97,12 @@ export function renderIndexPage(app) {
     }
   }
 
-  // Global-mode state
+  // Font-wide (global) layer state
   let globalLayers = [];
   let activeGlobalLayerIdx = 0;
   rebuildGlobalLayers();
 
-  // Local-mode state (rebuilt on char/mode change)
+  // Per-character state (rebuilt on char/panel change)
   let localLayers = [];
   let activeLocalLayerIdx = 0;
   let localTransformOverrides = {};
@@ -315,27 +322,39 @@ export function renderIndexPage(app) {
   const sidebar = document.createElement('div');
   sidebar.className = 'sidebar';
 
-  // Mode toggle
-  const modeBar = document.createElement('div');
-  modeBar.className = 'mode-bar';
-  const globalBtn = document.createElement('button');
-  globalBtn.className = 'mode-tab';
-  globalBtn.textContent = 'Global';
-  const localBtn = document.createElement('button');
-  localBtn.className = 'mode-tab';
-  localBtn.textContent = 'Local';
-  modeBar.appendChild(globalBtn);
-  modeBar.appendChild(localBtn);
-  sidebar.appendChild(modeBar);
-
-  function syncModeButtons() {
-    globalBtn.classList.toggle('active', mode === 'global');
-    localBtn.classList.toggle('active', mode === 'local');
+  // === Left icon rail ===
+  // A vertical strip of icon buttons sitting left of the sidebar. Each button
+  // swaps the sidebar to a dedicated panel. Icons come from Iconify (Lucide
+  // set) via the <iconify-icon> web component registered in main.js.
+  const iconRail = document.createElement('div');
+  iconRail.className = 'icon-rail';
+  const RAIL_ITEMS = [
+    { id: 'layers',   icon: 'lucide:layers',             title: 'Layers' },
+    { id: 'pen',      icon: 'lucide:pen-tool',           title: 'Pen' },
+    { id: 'automesh', icon: 'lucide:grid-3x3',           title: 'Auto Mesh' },
+    { id: 'metrics',  icon: 'lucide:ruler',              title: 'Font Metrics' },
+    { id: 'props',    icon: 'lucide:sliders-horizontal', title: 'Properties' },
+  ];
+  const railButtons = {};
+  for (const item of RAIL_ITEMS) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rail-btn';
+    btn.title = t(item.title);
+    btn.setAttribute('aria-label', item.title);
+    const ic = document.createElement('iconify-icon');
+    ic.setAttribute('icon', item.icon);
+    btn.appendChild(ic);
+    btn.addEventListener('click', () => setPanel(item.id));
+    railButtons[item.id] = btn;
+    iconRail.appendChild(btn);
   }
-  syncModeButtons();
-
-  globalBtn.addEventListener('click', () => setMode('global'));
-  localBtn.addEventListener('click', () => setMode('local'));
+  function syncRailButtons() {
+    for (const [id, btn] of Object.entries(railButtons)) {
+      btn.classList.toggle('active', panel === id);
+    }
+  }
+  syncRailButtons();
 
   const sidebarBody = document.createElement('div');
   sidebarBody.className = 'sidebar-body';
@@ -554,6 +573,7 @@ export function renderIndexPage(app) {
   charStripWrap.appendChild(addGlyphTile);
   mainArea.appendChild(charStripWrap);
 
+  page.appendChild(iconRail);
   page.appendChild(sidebar);
   page.appendChild(mainArea);
 
@@ -598,7 +618,7 @@ export function renderIndexPage(app) {
   // Painting happens on the left (un-stretched, guide) pane only — its cell
   // geometry matches the hit-test paths.
   previewCanvasL.addEventListener('mousedown', (e) => {
-    if (mode !== 'local') return;
+    if (panel !== 'pen') return;
     isPainting = true;
     handlePaint(e);
   });
@@ -657,12 +677,12 @@ export function renderIndexPage(app) {
   renderSidebarBody();
 
   // ============ Functions ============
-  function setMode(newMode) {
-    if (mode === newMode) return;
-    mode = newMode;
-    sessionStorage.setItem(MODE_KEY, mode);
-    syncModeButtons();
-    if (mode === 'local') rebuildLocalState();
+  function setPanel(newPanel) {
+    if (panel === newPanel) return;
+    panel = newPanel;
+    sessionStorage.setItem(PANEL_KEY, panel);
+    syncRailButtons();
+    if (isLocalContext()) rebuildLocalState();
     renderSidebarBody();
     redraw();
   }
@@ -775,11 +795,25 @@ export function renderIndexPage(app) {
   // === Sidebar bodies ===
   function renderSidebarBody() {
     sidebarBody.innerHTML = '';
-    if (mode === 'global') renderGlobalSidebar();
-    else renderLocalSidebar();
+    switch (panel) {
+      case 'layers':   renderLayersPanel(); break;
+      case 'pen':      renderPenPanel(); break;
+      case 'automesh': renderAutoMeshPanel(); break;
+      case 'metrics':  renderMetricsPanel(); break;
+      case 'props':    renderPropsPanel(); break;
+    }
   }
 
-  function renderGlobalSidebar() {
+  function appendNoSelMsg() {
+    const msg = document.createElement('div');
+    msg.className = 'param-group';
+    msg.style.color = 'var(--text-dim)';
+    msg.style.fontSize = '12px';
+    msg.textContent = 'Select a glyph below to edit.';
+    sidebarBody.appendChild(msg);
+  }
+
+  function renderLayersPanel() {
     // Layers
     const globalLayerPanel = createLayerPanel(globalLayers, activeGlobalLayerIdx, {
       onSelect(idx) {
@@ -890,7 +924,44 @@ export function renderIndexPage(app) {
     }
     renderGridParamSliders();
 
-    // Font Metrics (global)
+    // Transform (global)
+    const transformDefs = [
+      { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
+      { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05, hardMin: 0, hardMax: 1 },
+      { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
+    ];
+    const transformGroup = document.createElement('div');
+    transformGroup.className = 'param-group';
+    const transformTitle = document.createElement('h3');
+    transformTitle.textContent = 'Transform';
+    transformGroup.appendChild(transformTitle);
+    for (const def of transformDefs) {
+      const row = document.createElement('div');
+      row.className = 'param-row';
+      const label = document.createElement('label');
+      label.textContent = def.label;
+      const { slider, valueInput } = createSliderInput({
+        min: def.min, max: def.max, step: def.step,
+        value: global[def.key] ?? def.default,
+        hardMin: def.hardMin, hardMax: def.hardMax,
+        onInput: (v) => {
+          global[def.key] = v;
+          saveGlobal(global);
+          redraw();
+        },
+        onChange: () => refreshAllThumbnails(),
+      });
+      row.appendChild(label);
+      row.appendChild(slider);
+      row.appendChild(valueInput);
+      transformGroup.appendChild(row);
+    }
+    sidebarBody.appendChild(transformGroup);
+    // Font export moved to the Settings modal (gear icon in the header).
+  }
+
+  // Font Metrics (global) — ascender / x-height / baseline / descender guides.
+  function renderMetricsPanel() {
     const metricsDefs = [
       { key: 'ascender',  label: 'Ascender',  default: 0.05 },
       { key: 'xHeight',   label: 'x-Height',  default: 0.30 },
@@ -925,106 +996,61 @@ export function renderIndexPage(app) {
       metricsGroup.appendChild(row);
     }
     sidebarBody.appendChild(metricsGroup);
-
-    // Transform (global)
-    const transformDefs = [
-      { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
-      { key: 'gapDirectionWeight', label: 'Gap Dir Weight', min: 0, max: 1, default: 0, step: 0.05, hardMin: 0, hardMax: 1 },
-      { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, default: 10, step: 1 },
-    ];
-    const transformGroup = document.createElement('div');
-    transformGroup.className = 'param-group';
-    const transformTitle = document.createElement('h3');
-    transformTitle.textContent = 'Transform';
-    transformGroup.appendChild(transformTitle);
-    for (const def of transformDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      const { slider, valueInput } = createSliderInput({
-        min: def.min, max: def.max, step: def.step,
-        value: global[def.key] ?? def.default,
-        hardMin: def.hardMin, hardMax: def.hardMax,
-        onInput: (v) => {
-          global[def.key] = v;
-          saveGlobal(global);
-          redraw();
-        },
-        onChange: () => refreshAllThumbnails(),
-      });
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(valueInput);
-      transformGroup.appendChild(row);
-    }
-    sidebarBody.appendChild(transformGroup);
-
-    // Auto Mesh All
-    const autoMeshSection = document.createElement('div');
-    autoMeshSection.className = 'param-group';
-    const autoMeshTitle = document.createElement('h3');
-    autoMeshTitle.textContent = 'Actions';
-    autoMeshSection.appendChild(autoMeshTitle);
-    const autoMeshAllBtn = document.createElement('button');
-    autoMeshAllBtn.className = 'tool-btn';
-    autoMeshAllBtn.textContent = 'Auto Mesh All';
-    autoMeshAllBtn.addEventListener('click', () => autoMeshAll(autoMeshAllBtn));
-    autoMeshSection.appendChild(autoMeshAllBtn);
-    sidebarBody.appendChild(autoMeshSection);
-    // Font export moved to the Settings modal (gear icon in the header).
   }
 
-  function renderLocalSidebar() {
-    if (!selectedCharId) {
-      const msg = document.createElement('div');
-      msg.className = 'param-group';
-      msg.style.color = 'var(--text-dim)';
-      msg.style.fontSize = '12px';
-      msg.textContent = 'Select a glyph below to edit.';
-      sidebarBody.appendChild(msg);
-      return;
-    }
+  // Auto Mesh — one shared threshold drives both the single-glyph mesh and the
+  // batch "all glyphs" pass.
+  function renderAutoMeshPanel() {
+    const group = document.createElement('div');
+    group.className = 'param-group';
+    const title = document.createElement('h3');
+    title.textContent = 'Auto Mesh';
+    group.appendChild(title);
 
-    // Glyph (name + delete)
-    const glyphSection = document.createElement('div');
-    glyphSection.className = 'param-group';
-    const glyphTitle = document.createElement('h3');
-    glyphTitle.textContent = 'Glyph';
-    glyphSection.appendChild(glyphTitle);
-
-    // Capture charId at render time so blur after a glyph switch doesn't
-    // try to rename the newly-selected glyph.
-    const editingCharId = selectedCharId;
-    const nameRow = document.createElement('div');
-    nameRow.className = 'param-row';
-    const nameLabel = document.createElement('label');
-    nameLabel.textContent = 'Name';
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'glyph-name-input';
-    nameInput.value = editingCharId;
-    function commitName() {
-      if (selectedCharId !== editingCharId) return;
-      const v = nameInput.value.trim();
-      if (!v) { nameInput.value = editingCharId; return; }
-      if (v === editingCharId) return;
-      const result = renameSelectedGlyph(v);
-      if (!result.ok) {
-        if (result.reason === 'conflict') alert(`A glyph named "${v}" already exists.`);
-        else if (result.reason === 'empty') alert('Name cannot be empty.');
-        nameInput.value = editingCharId;
-      }
-    }
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
-      else if (e.key === 'Escape') { nameInput.value = editingCharId; nameInput.blur(); }
+    const threshRow = document.createElement('div');
+    threshRow.className = 'param-row';
+    const threshLabel = document.createElement('label');
+    threshLabel.textContent = 'Threshold';
+    const threshApi = createSliderInput({
+      min: 0, max: 1, step: 0.05,
+      value: 0.5,
+      hardMin: 0, hardMax: 1,
     });
-    nameInput.addEventListener('blur', commitName);
-    nameRow.appendChild(nameLabel);
-    nameRow.appendChild(nameInput);
-    glyphSection.appendChild(nameRow);
-    sidebarBody.appendChild(glyphSection);
+    threshRow.appendChild(threshLabel);
+    threshRow.appendChild(threshApi.slider);
+    threshRow.appendChild(threshApi.valueInput);
+    group.appendChild(threshRow);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'anim-button-row';
+    btnRow.style.marginTop = '8px';
+
+    const meshBtn = document.createElement('button');
+    meshBtn.className = 'tool-btn';
+    meshBtn.textContent = 'Auto Mesh';
+    meshBtn.disabled = !selectedCharId;
+    meshBtn.addEventListener('click', () => doAutoMesh(threshApi.getValue()));
+    btnRow.appendChild(meshBtn);
+
+    const meshAllBtn = document.createElement('button');
+    meshAllBtn.className = 'tool-btn';
+    meshAllBtn.textContent = 'Auto Mesh All';
+    meshAllBtn.addEventListener('click', () => autoMeshAll(meshAllBtn, threshApi.getValue()));
+    btnRow.appendChild(meshAllBtn);
+
+    group.appendChild(btnRow);
+    sidebarBody.appendChild(group);
+  }
+
+  // Pen — the per-character editor (was the "Local" sidebar): paint tools,
+  // read-only layer list, per-glyph grid/transform overrides, SVG export and
+  // delete. Glyph name + source image moved to the Properties panel.
+  function renderPenPanel() {
+    if (!selectedCharId) { appendNoSelMsg(); return; }
+
+    // Tools
+    const toolbar = createToolbar((tool) => { currentTool = tool; });
+    sidebarBody.appendChild(toolbar.el);
 
     // Per-layer baseline = the layer's own gridParams in global.defaultLayers
     // (NOT global.gridDefaults, which is the per-grid-type fallback). This is
@@ -1109,9 +1135,99 @@ export function renderIndexPage(app) {
     });
     sidebarBody.appendChild(transformPanel.el);
 
-    // Tools
-    const toolbar = createToolbar((tool) => { currentTool = tool; });
-    sidebarBody.appendChild(toolbar.el);
+    // SVG Export — single button opens a dialog with layer-scope + filename.
+    const svgSection = document.createElement('div');
+    svgSection.className = 'param-group';
+    const svgTitle = document.createElement('h3');
+    svgTitle.textContent = 'Export';
+    svgSection.appendChild(svgTitle);
+
+    const svgBtn = document.createElement('button');
+    svgBtn.className = 'tool-btn';
+    svgBtn.textContent = 'SVG Export';
+    svgBtn.addEventListener('click', async () => {
+      const result = await svgExportDialog({
+        defaultFilename: `${selectedCharId}.svg`,
+        hasActiveLayer: !!localLayers[activeLocalLayerIdx],
+      });
+      if (!result) return;
+      try {
+        let svg;
+        if (result.scope === 'active') {
+          const layer = localLayers[activeLocalLayerIdx];
+          if (!layer) return;
+          svg = exportLayerToSVG(layer, GLYPH_SIZE, GLYPH_SIZE, {
+            transform: localTransform,
+            fontMetrics: global.fontMetrics,
+          });
+        } else {
+          svg = exportAllLayersToSVG(localLayers, GLYPH_SIZE, GLYPH_SIZE, {
+            transform: localTransform,
+            fontMetrics: global.fontMetrics,
+          });
+        }
+        await saveFile(svg, result.filename, 'image/svg+xml');
+      } catch (e) {
+        console.error(e);
+        alert(`SVG export failed: ${e.message}`);
+      }
+    });
+    svgSection.appendChild(svgBtn);
+    sidebarBody.appendChild(svgSection);
+
+    // Danger zone: full-width delete button at the bottom
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'danger-btn';
+    deleteBtn.textContent = 'Delete Glyph';
+    deleteBtn.addEventListener('click', () => deleteSelectedGlyph());
+    sidebarBody.appendChild(deleteBtn);
+  }
+
+  // Properties — per-glyph name plus the source image and its placement
+  // (load, background opacity, offset & scale).
+  function renderPropsPanel() {
+    if (!selectedCharId) { appendNoSelMsg(); return; }
+
+    // Glyph (name)
+    const glyphSection = document.createElement('div');
+    glyphSection.className = 'param-group';
+    const glyphTitle = document.createElement('h3');
+    glyphTitle.textContent = 'Glyph';
+    glyphSection.appendChild(glyphTitle);
+
+    // Capture charId at render time so blur after a glyph switch doesn't
+    // try to rename the newly-selected glyph.
+    const editingCharId = selectedCharId;
+    const nameRow = document.createElement('div');
+    nameRow.className = 'param-row';
+    const nameLabel = document.createElement('label');
+    nameLabel.textContent = 'Name';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'glyph-name-input';
+    nameInput.value = editingCharId;
+    function commitName() {
+      if (selectedCharId !== editingCharId) return;
+      const v = nameInput.value.trim();
+      if (!v) { nameInput.value = editingCharId; return; }
+      if (v === editingCharId) return;
+      const result = renameSelectedGlyph(v);
+      if (!result.ok) {
+        if (result.reason === 'conflict') alert(`A glyph named "${v}" already exists.`);
+        else if (result.reason === 'empty') alert('Name cannot be empty.');
+        nameInput.value = editingCharId;
+      }
+    }
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+      else if (e.key === 'Escape') { nameInput.value = editingCharId; nameInput.blur(); }
+    });
+    nameInput.addEventListener('blur', commitName);
+    nameRow.appendChild(nameLabel);
+    nameRow.appendChild(nameInput);
+    glyphSection.appendChild(nameRow);
+    sidebarBody.appendChild(glyphSection);
 
     // Source image
     const imgSection = document.createElement('div');
@@ -1126,30 +1242,9 @@ export function renderIndexPage(app) {
     imgBtn.addEventListener('click', loadLocalImage);
     imgSection.appendChild(imgBtn);
 
-    const meshBtn = document.createElement('button');
-    meshBtn.className = 'tool-btn';
-    meshBtn.textContent = 'Auto Mesh';
-    meshBtn.style.marginLeft = '4px';
-    meshBtn.addEventListener('click', () => doAutoMesh(threshApi.getValue()));
-    imgSection.appendChild(meshBtn);
-
-    const threshRow = document.createElement('div');
-    threshRow.className = 'param-row';
-    threshRow.style.marginTop = '8px';
-    const threshLabel = document.createElement('label');
-    threshLabel.textContent = 'Threshold';
-    const threshApi = createSliderInput({
-      min: 0, max: 1, step: 0.05,
-      value: 0.5,
-      hardMin: 0, hardMax: 1,
-    });
-    threshRow.appendChild(threshLabel);
-    threshRow.appendChild(threshApi.slider);
-    threshRow.appendChild(threshApi.valueInput);
-    imgSection.appendChild(threshRow);
-
     const bgOpRow = document.createElement('div');
     bgOpRow.className = 'param-row';
+    bgOpRow.style.marginTop = '8px';
     const bgOpLabel = document.createElement('label');
     bgOpLabel.textContent = 'BG Opacity';
     const bgOpApi = createSliderInput({
@@ -1244,54 +1339,6 @@ export function renderIndexPage(app) {
     }
 
     sidebarBody.appendChild(imgSection);
-
-    // SVG Export — single button opens a dialog with layer-scope + filename.
-    const svgSection = document.createElement('div');
-    svgSection.className = 'param-group';
-    const svgTitle = document.createElement('h3');
-    svgTitle.textContent = 'Export';
-    svgSection.appendChild(svgTitle);
-
-    const svgBtn = document.createElement('button');
-    svgBtn.className = 'tool-btn';
-    svgBtn.textContent = 'SVG Export';
-    svgBtn.addEventListener('click', async () => {
-      const result = await svgExportDialog({
-        defaultFilename: `${selectedCharId}.svg`,
-        hasActiveLayer: !!localLayers[activeLocalLayerIdx],
-      });
-      if (!result) return;
-      try {
-        let svg;
-        if (result.scope === 'active') {
-          const layer = localLayers[activeLocalLayerIdx];
-          if (!layer) return;
-          svg = exportLayerToSVG(layer, GLYPH_SIZE, GLYPH_SIZE, {
-            transform: localTransform,
-            fontMetrics: global.fontMetrics,
-          });
-        } else {
-          svg = exportAllLayersToSVG(localLayers, GLYPH_SIZE, GLYPH_SIZE, {
-            transform: localTransform,
-            fontMetrics: global.fontMetrics,
-          });
-        }
-        await saveFile(svg, result.filename, 'image/svg+xml');
-      } catch (e) {
-        console.error(e);
-        alert(`SVG export failed: ${e.message}`);
-      }
-    });
-    svgSection.appendChild(svgBtn);
-    sidebarBody.appendChild(svgSection);
-
-    // Danger zone: full-width delete button at the bottom
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'danger-btn';
-    deleteBtn.textContent = 'Delete Glyph';
-    deleteBtn.addEventListener('click', () => deleteSelectedGlyph());
-    sidebarBody.appendChild(deleteBtn);
   }
 
   function loadLocalImage() {
@@ -1497,7 +1544,9 @@ export function renderIndexPage(app) {
     previewSplit.style.display = '';
     rebuildLocalState();
     loadBackgroundImage();
-    if (mode === 'local') renderSidebarBody();
+    // Per-character panels show the selected glyph's state, so re-render them
+    // on selection change.
+    if (isLocalContext()) renderSidebarBody();
     redraw();
   }
 
@@ -1519,7 +1568,7 @@ export function renderIndexPage(app) {
   }
 
   // === Auto Mesh All ===
-  async function autoMeshAll(btn) {
+  async function autoMeshAll(btn, threshold = 0.5) {
     btn.disabled = true;
     btn.textContent = 'Meshing...';
     progressWrap.style.display = '';
@@ -1554,7 +1603,7 @@ export function renderIndexPage(app) {
         imageScale: cd?.imageScale ?? 1,
       });
       const layers = buildRuntimeLayers(global, cd, GLYPH_SIZE);
-      for (const layer of layers) await autoMeshAsync(offCtx, layer.cells, 0.5);
+      for (const layer of layers) await autoMeshAsync(offCtx, layer.cells, threshold);
       cd.layerOverrides = serializeLayerOverrides(layers, global);
       done++;
       progressBar.style.width = Math.round((done / total) * 100) + '%';
@@ -1562,7 +1611,7 @@ export function renderIndexPage(app) {
       await new Promise(r => requestAnimationFrame(r));
     }
     saveProject(project);
-    if (mode === 'local') rebuildLocalState();
+    if (isLocalContext()) rebuildLocalState();
     refreshAllThumbnails();
     redraw();
     progressWrap.style.display = 'none';
@@ -1584,7 +1633,7 @@ export function renderIndexPage(app) {
   // full redraw and the per-pane updates so the (potentially costly) layer build
   // happens once per render pass, not once per pane.
   function currentRender() {
-    if (mode === 'local') {
+    if (isLocalContext()) {
       return { layers: localLayers, transform: localTransform };
     }
     const cd = project.characters[selectedCharId];
@@ -1662,8 +1711,9 @@ export function renderIndexPage(app) {
       layers: rc.layers, transform: leftTransform, preview: false, showBackground: true, scale: scaleL,
       // Active-layer highlight: red grid outline (+ red fill overlay in the
       // per-character / local editor) so it's clear which layer is being painted.
-      activeLayerIndex: mode === 'local' ? activeLocalLayerIdx : activeGlobalLayerIdx,
-      overlayActiveFill: mode === 'local',
+      activeLayerIndex: isLocalContext() ? activeLocalLayerIdx : activeGlobalLayerIdx,
+      // Only the Pen panel paints, so reserve the red fill overlay for it.
+      overlayActiveFill: panel === 'pen',
     });
   }
 

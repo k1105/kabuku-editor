@@ -603,37 +603,47 @@ body {
   margin-top: 0;
 }
 
-.mode-bar {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 12px;
-  padding: 4px;
+/* === Left icon rail === */
+.icon-rail {
+  flex-shrink: 0;
+  width: 52px;
   background: var(--bg);
-  border-radius: 6px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
 }
 
-.mode-tab {
-  flex: 1;
+.rail-btn {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--text-dim);
-  padding: 6px 12px;
-  border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  /* iconify-icon sizes to 1em, so font-size sets the icon size. */
+  font-size: 21px;
 }
 
-.mode-tab:hover {
+.rail-btn iconify-icon {
+  display: block;
+}
+
+.rail-btn:hover {
   color: var(--text);
+  background: var(--surface);
 }
 
-.mode-tab.active {
+.rail-btn.active {
+  color: var(--accent);
   background: var(--surface);
   border-color: var(--border);
-  color: var(--accent);
 }
 
 .sidebar-body {
