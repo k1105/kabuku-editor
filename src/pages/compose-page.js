@@ -1,4 +1,5 @@
-import { loadProject, getGlobal, resolveTransform, currentFontProjectId, currentFontProjectName } from '../core/project.js';
+import { loadProject, getGlobal, resolveTransform, saveCharacter, serializeLayerOverrides, currentFontProjectId, currentFontProjectName } from '../core/project.js';
+import { commit as historyCommit } from '../core/history.js';
 import { layoutText } from '../compose/text-layout.js';
 import { computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
@@ -64,6 +65,15 @@ export function renderComposePage(app) {
   let baseGap = global.baseGap ?? 0;
   let gapDirectionWeight = global.gapDirectionWeight ?? 0;
   let metaballRadius = global.metaballRadius ?? 8;
+
+  // Inline glyph editing (Glyphs-style focus editor): double-click a glyph in
+  // the composition to paint its cells in place; the composition stays visible
+  // (dimmed) behind a focus panel as context. ESC / backdrop click returns.
+  let editingCharId = null;
+  let editLayers = [];
+  let lastLayout = null;   // most recent computeLayout(), for dblclick hit-testing
+  let isPainting = false;
+  let paintValue = null;   // true=fill, false=erase, fixed at mousedown for drag
 
   function getTransform() {
     return {
@@ -382,6 +392,7 @@ export function renderComposePage(app) {
   function redraw() {
     canvas.style.transform = '';
     const layout = computeLayout();
+    lastLayout = layout;
     prepareCanvas(layout);
     const { positions, offX, offY, drawSize, drawOffset } = layout;
 
@@ -409,6 +420,7 @@ export function renderComposePage(app) {
   /** Lightweight preview: source images with stretch transform, same layout as redraw */
   function redrawFast() {
     const layout = computeLayout();
+    lastLayout = layout;
     prepareCanvas(layout);
     const { positions, offX, offY } = layout;
 
@@ -460,6 +472,198 @@ export function renderComposePage(app) {
     stretchedGlyphCache.clear();
     redraw();
   }
+
+  // === Inline glyph editing (Glyphs-style focus editor) ===
+  // The edit canvas works in glyph space (0..RENDER_SIZE), un-stretched, so the
+  // painted cells line up exactly with the hit-test paths.
+  const RENDER = RENDER_SIZE;
+  let editOverlay = null;
+  let editCanvas = null;
+  let editCtx = null;
+
+  function buildEditOverlay() {
+    editOverlay = document.createElement('div');
+    editOverlay.className = 'glyph-edit-overlay';
+
+    const panel = document.createElement('div');
+    panel.className = 'glyph-edit-panel';
+
+    const bar = document.createElement('div');
+    bar.className = 'glyph-edit-bar';
+    const label = document.createElement('span');
+    label.className = 'glyph-edit-label';
+    const hint = document.createElement('span');
+    hint.className = 'glyph-edit-hint';
+    hint.textContent = 'クリック/ドラッグでセルを塗る・消す ・ ESC で戻る';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'tool-btn';
+    closeBtn.textContent = '閉じる';
+    closeBtn.addEventListener('click', closeEditor);
+    bar.appendChild(label);
+    bar.appendChild(hint);
+    bar.appendChild(closeBtn);
+
+    editCanvas = document.createElement('canvas');
+    editCanvas.width = RENDER;
+    editCanvas.height = RENDER;
+    editCanvas.className = 'glyph-edit-canvas';
+    editCtx = editCanvas.getContext('2d');
+
+    panel.appendChild(bar);
+    panel.appendChild(editCanvas);
+    editOverlay.appendChild(panel);
+
+    // Backdrop click (outside the panel) closes the editor.
+    editOverlay.addEventListener('mousedown', (e) => {
+      if (e.target === editOverlay) closeEditor();
+    });
+
+    editCanvas.addEventListener('mousedown', onEditDown);
+    editCanvas.addEventListener('mousemove', onEditMove);
+    window.addEventListener('mouseup', onEditUp);
+
+    editOverlay._label = label;
+  }
+
+  function editPoint(e) {
+    const rect = editCanvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width * RENDER,
+      y: (e.clientY - rect.top) / rect.height * RENDER,
+    };
+  }
+
+  // Topmost visible cell under the point, across all layers.
+  function hitCell(p) {
+    for (let i = editLayers.length - 1; i >= 0; i--) {
+      const layer = editLayers[i];
+      if (!layer.visible) continue;
+      for (const cell of layer.cells) {
+        if (editCtx.isPointInPath(cell.path, p.x, p.y)) return cell;
+      }
+    }
+    return null;
+  }
+
+  function onEditDown(e) {
+    if (!editingCharId) return;
+    isPainting = true;
+    const cell = hitCell(editPoint(e));
+    if (cell) {
+      paintValue = !cell.filled;   // first cell decides paint-vs-erase for the drag
+      cell.filled = paintValue;
+      cell.manualOverride = true;
+      renderEditGlyph();
+    } else {
+      paintValue = null;
+    }
+  }
+
+  function onEditMove(e) {
+    if (!isPainting || paintValue === null) return;
+    const cell = hitCell(editPoint(e));
+    if (cell && cell.filled !== paintValue) {
+      cell.filled = paintValue;
+      cell.manualOverride = true;
+      renderEditGlyph();
+    }
+  }
+
+  function onEditUp() {
+    if (!isPainting) return;
+    isPainting = false;
+    if (paintValue !== null) {
+      saveEditingChar();
+      historyCommit('compose-paint');
+    }
+    paintValue = null;
+  }
+
+  function renderEditGlyph() {
+    editCtx.fillStyle = '#fff';
+    editCtx.fillRect(0, 0, RENDER, RENDER);
+    renderCanvas(editCtx, editLayers, {
+      transform: {},            // un-stretched: cells align with hit-test paths
+      glyphSize: RENDER,
+      preview: false,           // draw cell outlines + glyph boundary as guides
+      fontMetrics: global.fontMetrics,
+    });
+  }
+
+  // Mirror of index-page's saveLocalChar so the composition + character editor
+  // read back the same serialized overrides.
+  function saveEditingChar() {
+    const cd = project.characters[editingCharId] || {};
+    const tOv = cd.transformOverrides && Object.keys(cd.transformOverrides).length > 0
+      ? cd.transformOverrides : undefined;
+    const next = {
+      imagePath: cd.imagePath || '',
+      layerOverrides: serializeLayerOverrides(editLayers, global),
+      transformOverrides: tOv,
+    };
+    if (cd.imageOffsetX !== undefined) next.imageOffsetX = cd.imageOffsetX;
+    if (cd.imageOffsetY !== undefined) next.imageOffsetY = cd.imageOffsetY;
+    if (cd.imageScale !== undefined) next.imageScale = cd.imageScale;
+    if (cd.fontSource) next.fontSource = cd.fontSource;
+    saveCharacter(editingCharId, next);
+    project.characters[editingCharId] = { ...cd, ...next };
+    // Invalidate the baked bitmap so the composition reflects the edit on return.
+    stretchedGlyphCache.delete(editingCharId);
+  }
+
+  function onEditKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closeEditor(); }
+  }
+
+  function openEditor(charId) {
+    const charData = project.characters[charId];
+    if (!charData) return;
+    editLayers = buildRuntimeLayers(global, charData, RENDER);
+    if (editLayers.length === 0) return;
+    editingCharId = charId;
+    if (!editOverlay) buildEditOverlay();
+    editOverlay._label.textContent = `編集中: ${charId}`;
+    mainArea.appendChild(editOverlay);
+    mainArea.style.overflow = 'hidden';
+    document.addEventListener('keydown', onEditKey);
+    renderEditGlyph();
+  }
+
+  function closeEditor() {
+    if (!editingCharId) return;
+    editingCharId = null;
+    editLayers = [];
+    isPainting = false;
+    paintValue = null;
+    document.removeEventListener('keydown', onEditKey);
+    if (editOverlay && editOverlay.parentNode) editOverlay.parentNode.removeChild(editOverlay);
+    mainArea.style.overflow = '';
+    redraw();   // refresh the composition with the edited glyph
+  }
+
+  // Double-click a composed glyph → edit it in place.
+  canvas.addEventListener('dblclick', (e) => {
+    if (!lastLayout) return;
+    const rect = canvas.getBoundingClientRect();
+    const sx = canvas.width / rect.width;
+    const sy = canvas.height / rect.height;
+    const px = (e.clientX - rect.left) * sx;
+    const py = (e.clientY - rect.top) * sy;
+    const { positions, offX, offY } = lastLayout;
+    for (const pos of positions) {
+      if (pos.missing || !project.characters[pos.charId]) continue;
+      const gx = offX + pos.x;
+      const gy = offY + pos.y;
+      if (px >= gx && px <= gx + fontSize && py >= gy && py <= gy + fontSize) {
+        openEditor(pos.charId);
+        return;
+      }
+    }
+  });
+
+  // Editing the text or navigating away exits the in-place editor.
+  textarea.addEventListener('input', () => { if (editingCharId) closeEditor(); });
+  window.addEventListener('hashchange', () => { if (editingCharId) closeEditor(); });
 
   // Initial render
   requestAnimationFrame(() => redraw());
