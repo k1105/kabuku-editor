@@ -1467,6 +1467,26 @@ select {
   z-index: 2;
 }
 
+/* Bezier handle endpoints for the selected keyframe (expanded rows). The
+   connecting line is drawn on the curve canvas; these are the draggable
+   grips. `.broken` marks a keyframe whose in/out handles move independently. */
+.anim-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: #ffcc00;
+  border: 1px solid #1a1a1a;
+  cursor: crosshair;
+  z-index: 3;
+}
+
+.anim-handle.broken {
+  background: #ff6b6b;
+}
+
 .anim-timeline-playhead {
   position: absolute;
   top: 0;

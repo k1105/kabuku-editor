@@ -1,6 +1,6 @@
 import { ANIMATED_PARAM_KEYS } from '../core/project.js';
-import { EASING_NAMES, sampleTrack } from './interpolation.js';
-import { removeKeyframe, setKeyframeTime, findKeyframeAt } from './animation.js';
+import { EASING_NAMES, EASING_TO_BEZIER, sampleBezierSegment } from './interpolation.js';
+import { removeKeyframe, setKeyframeTime, findKeyframeAt, ensureBezierHandles, clampTrackHandles } from './animation.js';
 
 const ROW_HEIGHT = 22;
 const ROW_HEIGHT_EXPANDED = 90;
@@ -8,6 +8,12 @@ const LABEL_WIDTH = 140;
 const KEYFRAME_RADIUS = 5;
 const SELECT_EPSILON = 1e-4;
 const CURVE_VERT_PAD = 10;
+// Bezier segments are flattened into this many line pieces when drawing.
+const CURVE_SEGMENTS = 24;
+// Double-click window (ms) for toggling a keyframe's handle mode. Detected
+// manually from mousedown timestamps because render() re-creates the dot
+// between clicks, which would defeat the native dblclick event.
+const DBLCLICK_MS = 300;
 
 /**
  * Create timeline UI.
@@ -25,6 +31,10 @@ export function createTimelineUI(animation, callbacks) {
   // Current keyframe selection: { key: string, time: number } or null.
   // Persists across re-renders; matching dot gets `.selected` class.
   let selectedKf = null;
+
+  // Last keyframe mousedown, for manual double-click detection.
+  // { key, time, at }.
+  let lastClick = null;
 
   // Set of param keys whose row is expanded into the curve-graph view.
   // Clicking a label toggles membership.
@@ -73,8 +83,15 @@ export function createTimelineUI(animation, callbacks) {
   function computeValueRange(track, baseValue) {
     let min = Infinity, max = -Infinity;
     for (const kf of track) {
-      if (kf.value < min) min = kf.value;
-      if (kf.value > max) max = kf.value;
+      // Include handle endpoints so bezier overshoot (anticipation, bounce)
+      // and the draggable grips stay on-screen instead of clipping.
+      const vals = [kf.value];
+      if (kf.hIn) vals.push(kf.value + kf.hIn.dv);
+      if (kf.hOut) vals.push(kf.value + kf.hOut.dv);
+      for (const v of vals) {
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
     }
     if (typeof baseValue === 'number') {
       if (baseValue < min) min = baseValue;
@@ -124,20 +141,158 @@ export function createTimelineUI(animation, callbacks) {
 
     if (track.length === 0) return;
 
-    const baseValue = animation.baseValues?.[key] ?? 0;
-    const samples = Math.min(w, 600);
+    // Plot each segment as its own flattened cubic bezier; flat lead-in/out
+    // before the first and after the last keyframe match sampleTrack()'s hold
+    // behaviour. Sampling by bezier parameter (not by time) needs no root
+    // finding and is exact at the control points.
     c.strokeStyle = '#4a9eff';
     c.lineWidth = 1.5;
     c.beginPath();
-    for (let i = 0; i <= samples; i++) {
-      const t = (i / samples) * animation.duration;
-      const v = sampleTrack(track, t, baseValue);
-      const x = (i / samples) * w;
-      const y = valueToY(v, range, h);
-      if (i === 0) c.moveTo(x, y);
-      else c.lineTo(x, y);
+    const first = track[0];
+    const firstY = valueToY(first.value, range, h);
+    c.moveTo(0, firstY);
+    c.lineTo(timeToX(first.time, w), firstY);
+    for (let i = 0; i < track.length - 1; i++) {
+      const a = track[i];
+      const b = track[i + 1];
+      for (let s = 1; s <= CURVE_SEGMENTS; s++) {
+        const pt = sampleBezierSegment(a, b, s / CURVE_SEGMENTS);
+        c.lineTo(timeToX(pt.time, w), valueToY(pt.value, range, h));
+      }
     }
+    const last = track[track.length - 1];
+    c.lineTo(w, valueToY(last.value, range, h));
     c.stroke();
+  }
+
+  /**
+   * Draw the in/out handle lines of the selected keyframe onto the curve
+   * canvas. Reuses the context state left by drawCurve (same CSS-unit
+   * transform). Only handles that affect a real segment are drawn — the first
+   * keyframe has no in-handle segment, the last has no out-handle segment.
+   */
+  function drawHandleLines(canvas, w, h, track, idx, range) {
+    const kf = track[idx];
+    const c = canvas.getContext('2d');
+    const cx = timeToX(kf.time, w);
+    const cy = valueToY(kf.value, range, h);
+    c.strokeStyle = 'rgba(255,204,0,0.7)';
+    c.lineWidth = 1;
+    const line = (handle) => {
+      if (!handle) return;
+      c.beginPath();
+      c.moveTo(cx, cy);
+      c.lineTo(timeToX(kf.time + handle.dt, w), valueToY(kf.value + handle.dv, range, h));
+      c.stroke();
+    };
+    if (idx > 0) line(kf.hIn);
+    if (idx < track.length - 1) line(kf.hOut);
+  }
+
+  /**
+   * Re-align a keyframe's two handles so they are collinear in screen space
+   * (preserving each length) — used when switching back to 'smooth'. Screen
+   * space, not data space, so the handle line looks straight despite the
+   * non-uniform time vs value axes.
+   */
+  function realignSmooth(kf, w, h, range) {
+    if (!kf.hIn || !kf.hOut) return;
+    const usable = h - CURVE_VERT_PAD * 2;
+    const dur = Math.max(0.001, animation.duration);
+    const span = range.max - range.min;
+    const inSx = (kf.hIn.dt / dur) * w, inSy = -(kf.hIn.dv / span) * usable;
+    const outSx = (kf.hOut.dt / dur) * w, outSy = -(kf.hOut.dv / span) * usable;
+    let tx = outSx - inSx, ty = outSy - inSy;
+    const tl = Math.hypot(tx, ty);
+    if (tl < 1e-6) return;
+    tx /= tl; ty /= tl;
+    const inLen = Math.hypot(inSx, inSy);
+    const outLen = Math.hypot(outSx, outSy);
+    kf.hIn.dt = Math.min(0, (-tx * inLen / w) * dur);
+    kf.hIn.dv = -(-ty * inLen / usable) * span;
+    kf.hOut.dt = Math.max(0, (tx * outLen / w) * dur);
+    kf.hOut.dv = -(ty * outLen / usable) * span;
+  }
+
+  /**
+   * Create a draggable handle endpoint for keyframe `idx` (which = 'in' |
+   * 'out') in an expanded row. Dragging edits the handle's length + direction.
+   * The handle's time offset is clamped to the segment span so the curve stays
+   * single-valued (no time reversal). In 'smooth' mode the opposite handle is
+   * mirrored in screen space (preserving its length); Alt-drag breaks the pair
+   * into 'broken' mode and moves only this handle.
+   */
+  function addHandleDot(row, key, track, idx, which, w, h, range) {
+    const kf = track[idx];
+    const handle = which === 'in' ? kf.hIn : kf.hOut;
+    if (!handle) return;
+    const hdot = document.createElement('div');
+    hdot.className = 'anim-handle' + (kf.handleMode === 'broken' ? ' broken' : '');
+    hdot.style.left = timeToX(kf.time + handle.dt, w) + 'px';
+    hdot.style.top = valueToY(kf.value + handle.dv, range, h) + 'px';
+
+    const prevKf = idx > 0 ? track[idx - 1] : null;
+    const nextKf = idx < track.length - 1 ? track[idx + 1] : null;
+    // Clamp a handle's time offset to its segment so X(u) stays monotonic.
+    const clampDt = (w_, dt) => {
+      if (w_ === 'out') {
+        const max = nextKf ? nextKf.time - kf.time : animation.duration - kf.time;
+        return Math.max(0, Math.min(max, dt));
+      }
+      const min = prevKf ? prevKf.time - kf.time : -kf.time;
+      return Math.min(0, Math.max(min, dt));
+    };
+
+    hdot.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button !== 0) return;
+      const rect = row.getBoundingClientRect();
+      const trackWidth = rect.width;
+      const trackHeight = rect.height;
+      const usable = trackHeight - CURVE_VERT_PAD * 2;
+      const dur = Math.max(0.001, animation.duration);
+      const span = range.max - range.min;
+      if (e.altKey) kf.handleMode = 'broken';
+      selectedKf = { key, time: kf.time };
+
+      const onMove = (ev) => {
+        if (trackWidth <= 0) return;
+        const localX = ev.clientX - rect.left;
+        const localY = ev.clientY - rect.top;
+        const me = which === 'in' ? kf.hIn : kf.hOut;
+        me.dt = clampDt(which, xToTime(localX, trackWidth) - kf.time);
+        me.dv = yToValue(localY, range, trackHeight) - kf.value;
+
+        // Smooth: keep the opposite handle collinear in screen space, with its
+        // own length preserved.
+        if (kf.handleMode !== 'broken') {
+          const opp = which === 'in' ? kf.hOut : kf.hIn;
+          const oppWhich = which === 'in' ? 'out' : 'in';
+          if (opp) {
+            const sx = (me.dt / dur) * trackWidth, sy = -(me.dv / span) * usable;
+            const len = Math.hypot(sx, sy);
+            const oppSx = (opp.dt / dur) * trackWidth, oppSy = -(opp.dv / span) * usable;
+            const oppLen = Math.hypot(oppSx, oppSy);
+            if (len > 1e-6 && oppLen > 1e-6) {
+              const nx = -sx / len * oppLen, ny = -sy / len * oppLen;
+              opp.dt = clampDt(oppWhich, (nx / trackWidth) * dur);
+              opp.dv = -(ny / usable) * span;
+            }
+          }
+        }
+        callbacks.onChange?.();
+        render();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      render();
+    });
+
+    row.appendChild(hdot);
   }
 
   function isDotSelected(key, kf) {
@@ -283,8 +438,19 @@ export function createTimelineUI(animation, callbacks) {
       if (kf.easing === name) opt.selected = true;
       easeSel.appendChild(opt);
     }
+    // Choosing a preset reshapes the incoming segment's bezier handles
+    // (prevKf's out-handle + this kf's in-handle) to match — a shortcut to a
+    // known curve that the user can then fine-tune by dragging the handles.
     easeSel.addEventListener('change', () => {
       kf.easing = easeSel.value;
+      if (!isFirst) {
+        ensureBezierHandles(track);
+        const c = EASING_TO_BEZIER[easeSel.value] || EASING_TO_BEZIER.linear;
+        const spanT = kf.time - prevKf.time;
+        const spanV = kf.value - prevKf.value;
+        prevKf.hOut = { dt: c[0] * spanT, dv: c[1] * spanV };
+        kf.hIn = { dt: (c[2] - 1) * spanT, dv: (c[3] - 1) * spanV };
+      }
       callbacks.onChange?.();
       render();
     });
@@ -292,20 +458,38 @@ export function createTimelineUI(animation, callbacks) {
     easingRow.appendChild(easeSel);
     ctxMenu.appendChild(easingRow);
 
+    // Reminder of the manual handle-mode control.
+    const modeHint = document.createElement('div');
+    modeHint.className = 'anim-ctx-hint';
+    modeHint.textContent = `handles: ${kf.handleMode || 'smooth'} — double-click the keyframe to toggle`;
+    ctxMenu.appendChild(modeHint);
+
     const delBtn = document.createElement('button');
     delBtn.textContent = 'Delete Keyframe';
     delBtn.className = 'anim-ctx-del';
     delBtn.addEventListener('click', () => {
       removeKeyframe(track, kfIndex);
+      clampTrackHandles(track);
       callbacks.onChange?.();
       render();
       hideCtxMenu();
     });
     ctxMenu.appendChild(delBtn);
 
-    ctxMenu.style.left = x + 'px';
-    ctxMenu.style.top = y + 'px';
+    // まず表示してサイズを計測してから、画面外にはみ出さないよう位置を補正する
     ctxMenu.style.display = '';
+    const margin = 8;
+    const rect = ctxMenu.getBoundingClientRect();
+    let left = x;
+    let top = y;
+    if (left + rect.width > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - rect.width - margin);
+    }
+    if (top + rect.height > window.innerHeight - margin) {
+      top = Math.max(margin, window.innerHeight - rect.height - margin);
+    }
+    ctxMenu.style.left = left + 'px';
+    ctxMenu.style.top = top + 'px';
   }
 
   function timeToX(time, trackWidth) {
@@ -357,9 +541,13 @@ export function createTimelineUI(animation, callbacks) {
       // is decorative (pointer-events:none in CSS) — drag interaction still
       // goes through the dots themselves.
       let valueRange = null;
+      let curveCanvas = null;
       if (isExpanded) {
+        // Realise bezier handles for this track (idempotent migration) so the
+        // editor has handles to draw and drag.
+        ensureBezierHandles(track);
         valueRange = computeValueRange(track, animation.baseValues?.[key]);
-        const curveCanvas = document.createElement('canvas');
+        curveCanvas = document.createElement('canvas');
         curveCanvas.className = 'anim-curve-canvas';
         row.appendChild(curveCanvas);
         // drawCurve sizes the canvas — must happen after it's in the DOM if
@@ -389,6 +577,26 @@ export function createTimelineUI(animation, callbacks) {
         dot.addEventListener('mousedown', (e) => {
           e.stopPropagation();
           if (e.button !== 0) return;
+          // Double-click on a keyframe toggles its handle mode (smooth ⇄
+          // broken). Detected manually since render() swaps the dot between
+          // clicks. Only meaningful in expanded (curve) rows where handles show.
+          const now = performance.now();
+          const isDouble = lastClick
+            && lastClick.key === key
+            && Math.abs(lastClick.time - kf.time) < SELECT_EPSILON
+            && (now - lastClick.at) < DBLCLICK_MS;
+          if (isDouble) {
+            lastClick = null;
+            if (isExpanded && valueRange) {
+              kf.handleMode = kf.handleMode === 'broken' ? 'smooth' : 'broken';
+              if (kf.handleMode === 'smooth') realignSmooth(kf, w, h, valueRange);
+              selectedKf = { key, time: kf.time };
+              callbacks.onChange?.();
+              render();
+            }
+            return;
+          }
+          lastClick = { key, time: kf.time, at: now };
           // Cache row geometry NOW — render() below detaches `row`, after which
           // row.getBoundingClientRect() returns zeros and would snap the
           // keyframe to garbage coordinates.
@@ -421,6 +629,7 @@ export function createTimelineUI(animation, callbacks) {
             }
             const idx = setKeyframeTime(track, currentIndex, newT);
             currentIndex = idx;
+            clampTrackHandles(track);
             // Vertical: value (expanded rows only). Drag stays anchored to the
             // value-range computed at mousedown — the curve auto-fits as values
             // change, but using the live range would feel like the cursor was
@@ -452,6 +661,16 @@ export function createTimelineUI(animation, callbacks) {
         });
 
         row.appendChild(dot);
+
+        // Bezier handles for the selected keyframe (expanded rows only). Draw
+        // the handle lines on the curve canvas and overlay draggable dots at
+        // the handle endpoints. Endpoints whose handle drives no real segment
+        // (first kf's in-handle, last kf's out-handle) are omitted.
+        if (isExpanded && valueRange && isDotSelected(key, kf)) {
+          drawHandleLines(curveCanvas, w, h, track, j, valueRange);
+          if (j > 0) addHandleDot(row, key, track, j, 'in', w, h, valueRange);
+          if (j < track.length - 1) addHandleDot(row, key, track, j, 'out', w, h, valueRange);
+        }
       }
 
       rowsInner.appendChild(row);
@@ -560,6 +779,7 @@ export function createTimelineUI(animation, callbacks) {
     const dir = e.code === 'ArrowLeft' ? -1 : 1;
     const newT = Math.max(0, Math.min(animation.duration, selectedKf.time + dir * step));
     setKeyframeTime(track, found.index, newT);
+    clampTrackHandles(track);
     selectedKf = { key: selectedKf.key, time: newT };
     callbacks.onChange?.();
     render();
