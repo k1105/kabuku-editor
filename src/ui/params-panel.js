@@ -1,4 +1,4 @@
-import { createSliderInput } from './slider-input.js';
+import { createParamRow } from './param-row.js';
 
 /**
  * Hard clamps for params with a strict mathematical range. Anything not listed
@@ -96,9 +96,6 @@ export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) 
     const activeValues = isGlobal ? globalDefaults : values;
 
     for (const def of paramDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-
       const isOverridden = !isGlobal && globalDefaults && def.key in globalDefaults &&
         values[def.key] !== undefined && values[def.key] !== globalDefaults[def.key];
 
@@ -107,11 +104,7 @@ export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) 
         render();
       });
 
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      if (isOverridden) label.classList.add('overridden');
-
-      const { slider, valueInput } = createSliderInput({
+      const { row } = createParamRow(def.label, {
         min: def.min,
         max: def.max,
         step: def.step,
@@ -125,12 +118,7 @@ export function createParamsPanel(paramDefs, values, globalDefaults, callbacks) 
             callbacks.onLocalChange(def.key, v);
           }
         },
-      });
-
-      row.appendChild(badge);
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(valueInput);
+      }, { badge, overridden: isOverridden });
 
       el.appendChild(row);
     }
@@ -168,13 +156,7 @@ export function createStretchPanel(global, onChange) {
     el.appendChild(title);
 
     for (const def of defs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-
-      const label = document.createElement('label');
-      label.textContent = def.label;
-
-      const { slider, valueInput } = createSliderInput({
+      const { row } = createParamRow(def.label, {
         min: def.min,
         max: def.max,
         step: def.step,
@@ -185,10 +167,6 @@ export function createStretchPanel(global, onChange) {
           onChange(def.key, v);
         },
       });
-
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(valueInput);
       el.appendChild(row);
     }
   }
@@ -236,9 +214,6 @@ export function createTransformPanel(transform, globalValues, callbacks) {
     const isGlobal = mode === 'global';
 
     for (const def of sliderDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-
       const isOverridden = !isGlobal && globalValues && def.key in globalValues &&
         transform[def.key] !== undefined && transform[def.key] !== globalValues[def.key];
 
@@ -247,13 +222,9 @@ export function createTransformPanel(transform, globalValues, callbacks) {
         render();
       });
 
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      if (isOverridden) label.classList.add('overridden');
-
       const initial = isGlobal ? (globalValues[def.key] ?? def.default) : (transform[def.key] ?? def.default);
 
-      const { slider, valueInput } = createSliderInput({
+      const { row } = createParamRow(def.label, {
         min: def.min,
         max: def.max,
         step: def.step,
@@ -267,12 +238,7 @@ export function createTransformPanel(transform, globalValues, callbacks) {
             callbacks.onLocalChange(def.key, v);
           }
         },
-      });
-
-      row.appendChild(badge);
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(valueInput);
+      }, { badge, overridden: isOverridden });
 
       el.appendChild(row);
     }

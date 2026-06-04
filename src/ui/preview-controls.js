@@ -1,5 +1,5 @@
 import { saveGlobal } from '../core/project.js';
-import { createSliderInput } from './slider-input.js';
+import { createParamRow } from './param-row.js';
 
 const STRETCH_DEFS = [
   { key: 'stretchAngle', label: 'Angle', min: 0, max: 180, default: 0, step: 1, hardMin: 0, hardMax: 180 },
@@ -15,12 +15,7 @@ export function createStretchControl({ global, onInput, onRelease }) {
   const rows = [];
   const inputs = {};
   for (const def of STRETCH_DEFS) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const label = document.createElement('label');
-    label.textContent = def.label;
-
-    const api = createSliderInput({
+    const { row, api } = createParamRow(def.label, {
       min: def.min,
       max: def.max,
       step: def.step,
@@ -36,10 +31,6 @@ export function createStretchControl({ global, onInput, onRelease }) {
         onRelease?.(def.key, v);
       },
     });
-
-    row.appendChild(label);
-    row.appendChild(api.slider);
-    row.appendChild(api.valueInput);
     rows.push(row);
     inputs[def.key] = api;
   }

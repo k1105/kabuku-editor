@@ -1,4 +1,5 @@
 import { resolveTransform, saveCharacter, serializeLayerOverrides } from '../core/project.js';
+import { stretchMatrix } from '../core/transform-math.js';
 import { commit as historyCommit } from '../core/history.js';
 import { layoutText } from './text-layout.js';
 import { computeCacheScale, RENDER_SIZE } from './glyph-cache.js';
@@ -12,9 +13,10 @@ import { createLayerPanel } from '../ui/layer-panel.js';
 import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
 import { createStretchControl } from '../ui/preview-controls.js';
-import { createSliderInput } from '../ui/slider-input.js';
-import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
-import { loadImageCached } from '../core/image-cache.js';
+import { createParamRow } from '../ui/param-row.js';
+import { loadGoogleFont, renderCharToContext } from '../render/font/font-import.js';
+import { fileToDataURL, loadImage } from '../utils/file-io.js';
+import { createSourceImageLoader } from './source-image.js';
 
 /**
  * Compose (組版) view, embeddable as a panel inside the glyph editor.
@@ -35,30 +37,11 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   const stretchedGlyphCache = new Map();
   const sourceImageCache = new Map(); // charId -> Image (base images for stretch preview)
 
-  /** Get or load the source image for a character. Image-imported chars use
-   *  their data-URL imagePath; font-imported chars (no imagePath) are
-   *  rasterized via Google Fonts so the stretch-preview underlay shows up. */
-  function getSourceImage(charId) {
-    if (sourceImageCache.has(charId)) return sourceImageCache.get(charId);
-    const cd = project.characters[charId];
-    if (cd?.imagePath) {
-      sourceImageCache.set(charId, null);
-      loadImageCached(cd.imagePath).then(img => {
-        if (!img) return;
-        sourceImageCache.set(charId, img);
-        redraw();
-      });
-      return null;
-    }
-    if (cd?.fontSource) {
-      sourceImageCache.set(charId, null);
-      renderFontSourceToCanvas(cd.fontSource, RENDER_SIZE, global.fontMetrics)
-        .then(cv => { sourceImageCache.set(charId, cv); redraw(); })
-        .catch(() => {});
-      return null;
-    }
-    return null;
-  }
+  const getSourceImage = createSourceImageLoader({
+    cache: sourceImageCache, project, global,
+    renderSize: RENDER_SIZE,
+    onLoad: () => redraw(),
+  });
 
   // Preload all source images
   for (const cid of Object.keys(project.characters)) {
@@ -154,22 +137,15 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   typoGroup.appendChild(typoTitle);
 
   function addSlider(parent, label, value, min, max, step, onInput, onChange, opts = {}) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const lbl = document.createElement('label');
-    lbl.textContent = label;
-    const { slider, valueInput } = createSliderInput({
+    const { row, api } = createParamRow(label, {
       min, max, step, value,
       hardMin: opts.hardMin,
       hardMax: opts.hardMax,
       onInput,
       onChange,
     });
-    row.appendChild(lbl);
-    row.appendChild(slider);
-    row.appendChild(valueInput);
     parent.appendChild(row);
-    return slider;
+    return api.slider;
   }
 
   addSlider(typoGroup, 'Font Size', fontSize, 16, 256, 1, (v) => {
@@ -295,13 +271,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     const drawOffset = (drawSize - fontSize) / 2;
     const basePad = 32;
 
-    const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
-    const s = 1 + (global.stretchAmount ?? 0);
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const a = cos * cos * s + sin * sin;
-    const b = cos * sin * (s - 1);
-    const d = sin * sin * s + cos * cos;
+    const { a, b, d } = stretchMatrix(global.stretchAngle, global.stretchAmount);
     const baselineRatio = global?.fontMetrics?.baseline ?? 0.5;
     const above = fontSize * baselineRatio;          // glyph extent above baseline
     const below = fontSize * (1 - baselineRatio);    // glyph extent below baseline
@@ -453,13 +423,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     const { positions, offX, offY } = layout;
 
     // Stretch matrix: rotate(angle) * scaleX(1+amount) * rotate(-angle)
-    const rad = ((global.stretchAngle ?? 0) * Math.PI) / 180;
-    const s = 1 + (global.stretchAmount ?? 0);
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const a = cos * cos * s + sin * sin;
-    const b = cos * sin * (s - 1);
-    const d = sin * sin * s + cos * cos;
+    const { a, b, d } = stretchMatrix(global.stretchAngle, global.stretchAmount);
 
     // Image stretch pivots on glyph center, not on baseline — font metrics
     // are reference guides only and editing them must not shift the underlay.
@@ -949,28 +913,16 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     meshBtn.addEventListener('click', () => doEditAutoMesh(threshApi.getValue()));
     imgSection.appendChild(meshBtn);
 
-    const threshRow = document.createElement('div');
-    threshRow.className = 'param-row';
+    const { row: threshRow, api: threshApi } = createParamRow('Threshold', {
+      min: 0, max: 1, step: 0.05, value: 0.5, hardMin: 0, hardMax: 1,
+    });
     threshRow.style.marginTop = '8px';
-    const threshLabel = document.createElement('label');
-    threshLabel.textContent = 'Threshold';
-    const threshApi = createSliderInput({ min: 0, max: 1, step: 0.05, value: 0.5, hardMin: 0, hardMax: 1 });
-    threshRow.appendChild(threshLabel);
-    threshRow.appendChild(threshApi.slider);
-    threshRow.appendChild(threshApi.valueInput);
     imgSection.appendChild(threshRow);
 
-    const bgOpRow = document.createElement('div');
-    bgOpRow.className = 'param-row';
-    const bgOpLabel = document.createElement('label');
-    bgOpLabel.textContent = 'BG Opacity';
-    const bgOpApi = createSliderInput({
+    const { row: bgOpRow } = createParamRow('BG Opacity', {
       min: 0, max: 1, step: 0.05, value: editBgOpacity, hardMin: 0, hardMax: 1,
       onInput: (v) => { editBgOpacity = v; redraw(); },
     });
-    bgOpRow.appendChild(bgOpLabel);
-    bgOpRow.appendChild(bgOpApi.slider);
-    bgOpRow.appendChild(bgOpApi.valueInput);
     imgSection.appendChild(bgOpRow);
 
     // Image transform (per-glyph offset & scale to align the reference image)
@@ -980,14 +932,10 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
       { key: 'imageScale',   label: 'Image Scale', min: 0.1, max: 3, default: 1, step: 0.01 },
     ];
     for (const def of imgTransformDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
       const badge = document.createElement('button');
       badge.type = 'button';
       badge.className = 'override-badge';
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      const api = createSliderInput({
+      const { row, api, label } = createParamRow(def.label, {
         min: def.min, max: def.max, step: def.step,
         value: cd[def.key] ?? def.default,
         formatter: (v) => def.step < 0.1 ? v.toFixed(2) : (Number.isInteger(v) ? String(v) : v.toFixed(2)),
@@ -1000,7 +948,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
           redraw();
         },
         onChange: () => { saveEditingChar(); },
-      });
+      }, { badge });
       function syncOverrideUI() {
         const c = project.characters[editingCharId] || {};
         const overridden = (c[def.key] ?? def.default) !== def.default;
@@ -1019,10 +967,6 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
         redraw();
         saveEditingChar();
       });
-      row.appendChild(badge);
-      row.appendChild(label);
-      row.appendChild(api.slider);
-      row.appendChild(api.valueInput);
       imgSection.appendChild(row);
       syncOverrideUI();
     }
@@ -1154,22 +1098,4 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     isEditing: () => !!editingCharId,
     destroy,
   };
-}
-
-function fileToDataURL(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.readAsDataURL(file);
-  });
-}
-
-function loadImage(src) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    // crossOrigin before src so HTTPS Storage URLs draw into a canvas untainted.
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.src = src;
-  });
 }

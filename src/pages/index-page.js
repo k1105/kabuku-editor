@@ -15,14 +15,16 @@ import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } f
 import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, saveFile } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
 import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
-import { iconButton, iconEl } from '../ui/icons.js';
+import { iconButton } from '../ui/icons.js';
 import { createLangToggle, t } from '../ui/i18n.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
-import { createSliderInput } from '../ui/slider-input.js';
+import { createParamRow } from '../ui/param-row.js';
 import { createStretchControl } from '../ui/preview-controls.js';
+import { fileToDataURL, loadImage, saveBlobWithPicker } from '../utils/file-io.js';
+import { createSettingsModal, settingsToolBtn } from '../ui/settings-modal.js';
 import { createComposeView } from '../compose/compose-view.js';
 
 const GLYPH_SIZE = 1024;
@@ -97,62 +99,15 @@ export function renderIndexPage(app) {
   const progressText = progressEl.text;
 
   // === Settings modal (shared style with the animation editor) ===
-  const settingsBackdrop = document.createElement('div');
-  settingsBackdrop.className = 'settings-modal-backdrop';
-  settingsBackdrop.style.display = 'none';
-
-  const settingsModal = document.createElement('div');
-  settingsModal.className = 'settings-modal';
-  settingsBackdrop.appendChild(settingsModal);
-
-  const settingsHead = document.createElement('div');
-  settingsHead.className = 'settings-modal-head';
-  const settingsTitle = document.createElement('h2');
-  settingsTitle.textContent = 'Settings';
-  const settingsCloseBtn = iconButton('close', 'Close', { title: 'Close' });
-  settingsCloseBtn.addEventListener('click', () => closeSettings());
-  settingsHead.appendChild(settingsTitle);
-  settingsHead.appendChild(settingsCloseBtn);
-  settingsModal.appendChild(settingsHead);
-
-  const settingsBody = document.createElement('div');
-  settingsBody.className = 'settings-modal-body';
-  settingsModal.appendChild(settingsBody);
-
-  function openSettings() { settingsBackdrop.style.display = 'flex'; }
-  function closeSettings() { settingsBackdrop.style.display = 'none'; }
-  settingsBackdrop.addEventListener('click', (e) => {
-    if (e.target === settingsBackdrop) closeSettings();
-  });
-  function onSettingsKeyDown(e) {
-    if (e.key === 'Escape' && settingsBackdrop.style.display !== 'none') closeSettings();
-  }
-  document.addEventListener('keydown', onSettingsKeyDown);
-  // Detach on hashchange so the listener doesn't leak across page navigations.
+  const settings = createSettingsModal({ title: 'Settings', closeOnEscape: true });
+  const settingsBackdrop = settings.el;
+  const openSettings = settings.open;
+  const makeSettingsGroup = settings.addGroup;
+  // Detach the Escape listener on hashchange so it doesn't leak across pages.
   window.addEventListener('hashchange', function detachSettings() {
-    document.removeEventListener('keydown', onSettingsKeyDown);
+    settings.destroy();
     window.removeEventListener('hashchange', detachSettings);
   });
-
-  function makeSettingsGroup(title) {
-    const g = document.createElement('div');
-    g.className = 'param-group';
-    const h = document.createElement('h3');
-    h.textContent = title;
-    g.appendChild(h);
-    settingsBody.appendChild(g);
-    return g;
-  }
-  function settingsToolBtn(icon, label, onClick) {
-    const btn = document.createElement('button');
-    btn.className = 'tool-btn';
-    btn.appendChild(iconEl(icon));
-    const span = document.createElement('span');
-    span.textContent = label;
-    btn.appendChild(span);
-    btn.addEventListener('click', onClick);
-    return btn;
-  }
 
   // --- Project (JSON import / export) ---
   const projectGroup = makeSettingsGroup('Project');
@@ -355,20 +310,13 @@ export function renderIndexPage(app) {
   // (expensive) offscreen render — so `apply` re-blits the existing buffer
   // rather than re-rendering.
   function createScaleRow(get, set, apply) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const label = document.createElement('label');
-    label.textContent = 'Scale';
-    const { slider, valueInput } = createSliderInput({
+    const { row } = createParamRow('Scale', {
       min: 0.25,
       max: 3,
       step: 0.05,
       value: get(),
       onInput: (v) => { set(v); apply(); },
     });
-    row.appendChild(label);
-    row.appendChild(slider);
-    row.appendChild(valueInput);
     return row;
   }
 
@@ -861,11 +809,7 @@ export function renderIndexPage(app) {
       h.textContent = 'Grid Parameters';
       gridParamGroup.appendChild(h);
       for (const def of layer.gridPlugin.getParamDefs()) {
-        const row = document.createElement('div');
-        row.className = 'param-row';
-        const label = document.createElement('label');
-        label.textContent = def.label;
-        const { slider, valueInput } = createSliderInput({
+        const { row } = createParamRow(def.label, {
           min: def.min, max: def.max, step: def.step,
           value: layer.gridParams[def.key] ?? def.default,
           onInput: (v) => {
@@ -875,9 +819,6 @@ export function renderIndexPage(app) {
           },
           onChange: () => refreshAllThumbnails(),
         });
-        row.appendChild(label);
-        row.appendChild(slider);
-        row.appendChild(valueInput);
         gridParamGroup.appendChild(row);
       }
     }
@@ -895,11 +836,7 @@ export function renderIndexPage(app) {
     transformTitle.textContent = 'Transform';
     transformGroup.appendChild(transformTitle);
     for (const def of transformDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      const { slider, valueInput } = createSliderInput({
+      const { row } = createParamRow(def.label, {
         min: def.min, max: def.max, step: def.step,
         value: global[def.key] ?? def.default,
         hardMin: def.hardMin, hardMax: def.hardMax,
@@ -910,9 +847,6 @@ export function renderIndexPage(app) {
         },
         onChange: () => refreshAllThumbnails(),
       });
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(valueInput);
       transformGroup.appendChild(row);
     }
     sidebarBody.appendChild(transformGroup);
@@ -934,11 +868,7 @@ export function renderIndexPage(app) {
     metricsGroup.appendChild(metricsTitle);
     if (!global.fontMetrics) global.fontMetrics = {};
     for (const def of metricsDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-      const label = document.createElement('label');
-      label.textContent = def.label;
-      const { slider, valueInput } = createSliderInput({
+      const { row } = createParamRow(def.label, {
         min: 0, max: 1, step: 0.005,
         value: global.fontMetrics[def.key] ?? def.default,
         hardMin: 0, hardMax: 1,
@@ -949,9 +879,6 @@ export function renderIndexPage(app) {
           redraw();
         },
       });
-      row.appendChild(label);
-      row.appendChild(slider);
-      row.appendChild(valueInput);
       metricsGroup.appendChild(row);
     }
     sidebarBody.appendChild(metricsGroup);
@@ -966,18 +893,11 @@ export function renderIndexPage(app) {
     title.textContent = 'Auto Mesh';
     group.appendChild(title);
 
-    const threshRow = document.createElement('div');
-    threshRow.className = 'param-row';
-    const threshLabel = document.createElement('label');
-    threshLabel.textContent = 'Threshold';
-    const threshApi = createSliderInput({
+    const { row: threshRow, api: threshApi } = createParamRow('Threshold', {
       min: 0, max: 1, step: 0.05,
       value: 0.5,
       hardMin: 0, hardMax: 1,
     });
-    threshRow.appendChild(threshLabel);
-    threshRow.appendChild(threshApi.slider);
-    threshRow.appendChild(threshApi.valueInput);
     group.appendChild(threshRow);
 
     const btnRow = document.createElement('div');
@@ -1201,12 +1121,7 @@ export function renderIndexPage(app) {
     imgBtn.addEventListener('click', loadLocalImage);
     imgSection.appendChild(imgBtn);
 
-    const bgOpRow = document.createElement('div');
-    bgOpRow.className = 'param-row';
-    bgOpRow.style.marginTop = '8px';
-    const bgOpLabel = document.createElement('label');
-    bgOpLabel.textContent = 'BG Opacity';
-    const bgOpApi = createSliderInput({
+    const { row: bgOpRow } = createParamRow('BG Opacity', {
       min: 0, max: 1, step: 0.05,
       value: bgOpacity,
       hardMin: 0, hardMax: 1,
@@ -1215,9 +1130,7 @@ export function renderIndexPage(app) {
         redraw();
       },
     });
-    bgOpRow.appendChild(bgOpLabel);
-    bgOpRow.appendChild(bgOpApi.slider);
-    bgOpRow.appendChild(bgOpApi.valueInput);
+    bgOpRow.style.marginTop = '8px';
     imgSection.appendChild(bgOpRow);
 
     // Image transform (per-character offset & scale to align glyph to metrics)
@@ -1227,17 +1140,11 @@ export function renderIndexPage(app) {
       { key: 'imageScale',   label: 'Image Scale', min: 0.1, max: 3, default: 1, step: 0.01 },
     ];
     for (const def of imgTransformDefs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-
       const badge = document.createElement('button');
       badge.type = 'button';
       badge.className = 'override-badge';
 
-      const label = document.createElement('label');
-      label.textContent = def.label;
-
-      const api = createSliderInput({
+      const { row, api, label } = createParamRow(def.label, {
         min: def.min, max: def.max, step: def.step,
         value: def.default,
         formatter: (v) => def.step < 0.1
@@ -1255,7 +1162,7 @@ export function renderIndexPage(app) {
           saveLocalChar();
           refreshSelectedThumbnail();
         },
-      });
+      }, { badge });
 
       function syncFromState() {
         const cd = project.characters[selectedCharId] || {};
@@ -1289,10 +1196,6 @@ export function renderIndexPage(app) {
         resetThis();
       });
 
-      row.appendChild(badge);
-      row.appendChild(label);
-      row.appendChild(api.slider);
-      row.appendChild(api.valueInput);
       imgSection.appendChild(row);
       syncFromState();
     }
@@ -2032,50 +1935,3 @@ async function importFromFont(project, family, chars, ui) {
   if (ui.onDone) ui.onDone();
 }
 
-function fileToDataURL(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.readAsDataURL(file);
-  });
-}
-
-function loadImage(src) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    // Set crossOrigin before src so HTTPS Storage URLs can be drawn into a
-    // canvas without tainting it (data: URLs ignore the attribute).
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.src = src;
-  });
-}
-
-/**
- * Save a Blob through the OS save dialog (Chrome/Edge) so the user picks the
- * filename and folder. Falls back to anchor-download on Safari/Firefox.
- * Silently no-ops if the user cancels the picker.
- */
-async function saveBlobWithPicker(blob, suggestedName, { description = '', accept } = {}) {
-  if (typeof window.showSaveFilePicker === 'function') {
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName,
-        types: accept ? [{ description, accept }] : undefined,
-      });
-      const writable = await handle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-      return;
-    } catch (e) {
-      if (e?.name === 'AbortError') return;
-      console.warn('Save picker failed, falling back to download:', e);
-    }
-  }
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = suggestedName;
-  a.click();
-  URL.revokeObjectURL(url);
-}

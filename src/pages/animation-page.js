@@ -14,10 +14,11 @@ import { renderFrames, computeFrameCacheShape, createFrameRenderer, computeLayou
 import { exportPngSequence, exportGif } from '../animation/export.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { iconEl, iconSvg, iconButton } from '../ui/icons.js';
+import { createSettingsModal, settingsToolBtn } from '../ui/settings-modal.js';
 import { commit as historyCommit } from '../core/animation-history.js';
-import { renderFontSourceToCanvas } from '../render/font/font-import.js';
-import { loadImageCached } from '../core/image-cache.js';
-import { createSliderInput } from '../ui/slider-input.js';
+import { stretchMatrix } from '../core/transform-math.js';
+import { createSourceImageLoader } from '../compose/source-image.js';
+import { createParamRow } from '../ui/param-row.js';
 import { createLangToggle, t } from '../ui/i18n.js';
 import { getGrid } from '../grids/grid-plugin.js';
 
@@ -145,30 +146,13 @@ export function renderAnimationPage(app) {
     timeline?.updateFrameCacheIndicator?.(null);
   }
 
-  // Preload source images. Image-imported chars use their data-URL imagePath;
-  // font-imported chars (fontSource only, no imagePath) get rasterized via
-  // Google Fonts so the underlay tracks them too.
-  function getSourceImage(charId) {
-    if (sourceImageCache.has(charId)) return sourceImageCache.get(charId);
-    const cd = project.characters[charId];
-    if (cd?.imagePath) {
-      sourceImageCache.set(charId, null);
-      loadImageCached(cd.imagePath).then(img => {
-        if (!img) return;
-        sourceImageCache.set(charId, img);
-        redrawPreview();
-      });
-      return null;
-    }
-    if (cd?.fontSource) {
-      sourceImageCache.set(charId, null);
-      renderFontSourceToCanvas(cd.fontSource, RENDER_SIZE, global.fontMetrics)
-        .then(cv => { sourceImageCache.set(charId, cv); redrawPreview(); })
-        .catch(() => {});
-      return null;
-    }
-    return null;
-  }
+  // Preload source images so the underlay tracks both image- and font-imported
+  // chars (see createSourceImageLoader).
+  const getSourceImage = createSourceImageLoader({
+    cache: sourceImageCache, project, global,
+    renderSize: RENDER_SIZE,
+    onLoad: () => redrawPreview(),
+  });
   for (const cid of Object.keys(project.characters)) getSourceImage(cid);
 
   // === Header ===
@@ -189,34 +173,11 @@ export function renderAnimationPage(app) {
   // Holds the less-frequently-touched setup: typeface loading, canvas size,
   // and movie duration/fps. Controls apply live (each persists on change), so
   // there's no confirm/cancel — just open and close.
-  const settingsBackdrop = document.createElement('div');
-  settingsBackdrop.className = 'settings-modal-backdrop';
-  settingsBackdrop.style.display = 'none';
-  const settingsModal = document.createElement('div');
-  settingsModal.className = 'settings-modal';
-  settingsBackdrop.appendChild(settingsModal);
-  const settingsHead = document.createElement('div');
-  settingsHead.className = 'settings-modal-head';
-  const settingsTitle = document.createElement('h2');
-  settingsTitle.textContent = 'Settings';
-  const settingsCloseBtn = iconButton('close', 'Close', { title: 'Close' });
-  settingsCloseBtn.addEventListener('click', () => closeSettings());
-  settingsHead.appendChild(settingsTitle);
-  settingsHead.appendChild(settingsCloseBtn);
-  settingsModal.appendChild(settingsHead);
-  const settingsBody = document.createElement('div');
-  settingsBody.className = 'settings-modal-body';
-  settingsModal.appendChild(settingsBody);
+  const settings = createSettingsModal({ title: 'Settings' });
+  const settingsBackdrop = settings.el;
+  const openSettings = settings.open;
+  const makeSettingsGroup = settings.addGroup;
 
-  function makeSettingsGroup(title) {
-    const g = document.createElement('div');
-    g.className = 'param-group';
-    const h = document.createElement('h3');
-    h.textContent = title;
-    g.appendChild(h);
-    settingsBody.appendChild(g);
-    return g;
-  }
   // Created up-front so child controls land in a fixed visual order regardless
   // of when they're built below.
   const sfTypeface = makeSettingsGroup('Typeface');
@@ -230,29 +191,9 @@ export function renderAnimationPage(app) {
   // the Export panel stays focused on rendered output (PNG / GIF).
   const jsonRow = document.createElement('div');
   jsonRow.className = 'anim-button-row';
-  const jsonExport = document.createElement('button');
-  jsonExport.className = 'tool-btn';
-  jsonExport.appendChild(iconEl('download'));
-  const jsonExportLabel = document.createElement('span');
-  jsonExportLabel.textContent = 'Export JSON';
-  jsonExport.appendChild(jsonExportLabel);
-  jsonExport.addEventListener('click', () => doJsonExport());
-  const jsonImport = document.createElement('button');
-  jsonImport.className = 'tool-btn';
-  jsonImport.appendChild(iconEl('upload'));
-  const jsonImportLabel = document.createElement('span');
-  jsonImportLabel.textContent = 'Import JSON';
-  jsonImport.appendChild(jsonImportLabel);
-  jsonImport.addEventListener('click', () => doJsonImport());
-  jsonRow.appendChild(jsonExport);
-  jsonRow.appendChild(jsonImport);
+  jsonRow.appendChild(settingsToolBtn('download', 'Export JSON', () => doJsonExport()));
+  jsonRow.appendChild(settingsToolBtn('upload', 'Import JSON', () => doJsonImport()));
   sfProject.appendChild(jsonRow);
-
-  function openSettings() { settingsBackdrop.style.display = 'flex'; }
-  function closeSettings() { settingsBackdrop.style.display = 'none'; }
-  settingsBackdrop.addEventListener('click', (e) => {
-    if (e.target === settingsBackdrop) closeSettings();
-  });
 
   const settingsBtn = iconButton('settings', 'Settings', { title: 'Settings' });
   settingsBtn.addEventListener('click', () => openSettings());
@@ -476,13 +417,9 @@ export function renderAnimationPage(app) {
 
   function addAnimatedSliders(parent, defs) {
     for (const def of defs) {
-      const row = document.createElement('div');
-      row.className = 'param-row';
-      const label = document.createElement('label');
-      label.textContent = def.label;
       const initial = sampleAnimation(animation, currentTime)[def.key];
 
-      const api = createSliderInput({
+      const { row, api } = createParamRow(def.label, {
         min: def.min, max: def.max, step: def.step,
         value: initial,
         hardMin: def.hardMin, hardMax: def.hardMax,
@@ -500,10 +437,6 @@ export function renderAnimationPage(app) {
           redrawPreview();
         },
       });
-
-      row.appendChild(label);
-      row.appendChild(api.slider);
-      row.appendChild(api.valueInput);
       parent.appendChild(row);
 
       sliderInputs[def.key] = { api, def };
@@ -968,13 +901,7 @@ export function renderAnimationPage(app) {
     prepareCanvas(cacheW, cacheH);
     const dx = Math.floor((cacheW - layout.cw) / 2);
     const dy = Math.floor((cacheH - layout.ch) / 2);
-    const rad = (p.stretchAngle * Math.PI) / 180;
-    const s = 1 + p.stretchAmount;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const a = cos * cos * s + sin * sin;
-    const b = cos * sin * (s - 1);
-    const d = sin * sin * s + cos * cos;
+    const { a, b, d } = stretchMatrix(p.stretchAngle, p.stretchAmount);
     // Image stretch pivots on glyph center, not on baseline — font metrics
     // are reference guides only and editing them must not shift the underlay.
     ctx.save();
@@ -1114,7 +1041,7 @@ export function renderAnimationPage(app) {
     const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable;
 
     if (e.code === 'Escape' && settingsBackdrop.style.display !== 'none') {
-      closeSettings();
+      settings.close();
       return;
     }
     if (e.code === 'Escape' && exportBackdrop.style.display !== 'none') {
