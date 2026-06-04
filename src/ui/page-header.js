@@ -1,4 +1,4 @@
-import { iconEl, iconButton } from './icons.js';
+import { iconButton } from './icons.js';
 import * as fontHistory from '../core/history.js';
 import * as animHistory from '../core/animation-history.js';
 import { createUserBadge } from './auth-gate.js';
@@ -7,10 +7,10 @@ import { createUserBadge } from './auth-gate.js';
  * Shared top header used by font-project editing pages and the animation
  * page.
  *
- *   activePage:    'glyphs' | 'compose' | 'animation'
- *   fontProjectId: when set, render the Glyphs/Compose tabs that route into
- *                  the font project. Pass null for the animation page (no
- *                  tabs; just back-to-list and user badge).
+ *   activePage:    'glyphs' | 'animation' (no longer drives any tab UI; kept
+ *                  for callers / potential future use).
+ *   fontProjectId: when set, the header drives the font undo/redo stack by
+ *                  default. Pass null for the animation page.
  *   title:         page title text (default 'KABUKU Editor').
  *   historyMode:   'font' | 'animation' | null. Picks which undo/redo stack
  *                  to drive from the header buttons. Defaults to 'font' when
@@ -51,27 +51,9 @@ export function createPageHeader({
   progressWrap.appendChild(progressText);
   header.appendChild(progressWrap);
 
-  // Tabs (only inside a font project context)
-  if (fontProjectId) {
-    const tabs = document.createElement('nav');
-    tabs.className = 'header-tabs';
-    const TABS = [
-      { id: 'glyphs',  label: 'Glyphs',  icon: 'layers',  hash: `#/font/${fontProjectId}` },
-      { id: 'compose', label: 'Compose', icon: 'preview', hash: `#/font/${fontProjectId}/compose` },
-    ];
-    for (const t of TABS) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'header-tab' + (t.id === activePage ? ' active' : '');
-      btn.appendChild(iconEl(t.icon));
-      const lbl = document.createElement('span');
-      lbl.textContent = t.label;
-      btn.appendChild(lbl);
-      btn.addEventListener('click', () => { location.hash = t.hash; });
-      tabs.appendChild(btn);
-    }
-    header.appendChild(tabs);
-  }
+  // (Former Glyphs/Compose tabs removed: Compose is now a panel inside the
+  // glyph editor, leaving a single destination — so the header tab group is
+  // gone.)
 
   const headerNav = document.createElement('div');
   headerNav.className = 'header-nav';

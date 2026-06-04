@@ -1,6 +1,5 @@
 import 'iconify-icon';
 import { renderIndexPage } from './pages/index-page.js';
-import { renderComposePage } from './pages/compose-page.js';
 import { renderAnimationPage } from './pages/animation-page.js';
 import { renderProjectListPage } from './pages/project-list-page.js';
 import { startAutoTranslate, createLangToggle } from './ui/i18n.js';
@@ -27,18 +26,18 @@ import { acquireEditLock, releaseEditLock, checkEditLock } from './core/edit-loc
 /**
  * Route shape:
  *   #/                     → project list
- *   #/font/{id}            → font edit page (a.k.a. index-page)
- *   #/font/{id}/compose    → compose page (uses the font as its typeset)
+ *   #/font/{id}            → font edit page (a.k.a. index-page; Compose lives
+ *                            inside it as a sidebar panel)
  *   #/animation/{id}       → animation page
  *
- * Older routes (#/compose, #/animation without id) are rewritten to the
- * project list so stale bookmarks don't error out.
+ * The old #/font/{id}/compose route is rewritten to the font edit page so
+ * stale bookmarks still resolve (Compose was merged into the editor).
  */
 function getRoute() {
   const hash = location.hash || '#/';
   let m;
   if ((m = hash.match(/^#\/font\/([^/]+)\/compose\/?$/))) {
-    return { page: 'compose', fontProjectId: decodeURIComponent(m[1]) };
+    return { page: 'font', fontProjectId: decodeURIComponent(m[1]) };
   }
   if ((m = hash.match(/^#\/font\/([^/]+)\/?$/))) {
     return { page: 'font', fontProjectId: decodeURIComponent(m[1]) };
@@ -101,11 +100,10 @@ let _activeRoute = null;
 let _activePageRefresh = null;
 
 function renderActivePage(app, route) {
-  if (route.page !== 'font' && route.page !== 'compose' && route.page !== 'animation') return;
+  if (route.page !== 'font' && route.page !== 'animation') return;
   app.innerHTML = '';
   let result;
   if (route.page === 'font') result = renderIndexPage(app);
-  else if (route.page === 'compose') result = renderComposePage(app);
   else if (route.page === 'animation') result = renderAnimationPage(app);
   injectLangToggle(app);
   _activePageRefresh = result?.refresh || null;
@@ -142,7 +140,7 @@ async function render() {
     return;
   }
 
-  if (route.page === 'font' || route.page === 'compose') {
+  if (route.page === 'font') {
     showLoading(app, 'Loading typeset...');
     try {
       const ok = await maybeWarnLock('fontProjects', route.fontProjectId);

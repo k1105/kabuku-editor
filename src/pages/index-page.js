@@ -22,6 +22,7 @@ import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
 import { createSliderInput } from '../ui/slider-input.js';
+import { createComposeView } from '../compose/compose-view.js';
 
 const GLYPH_SIZE = 1024;
 const PANEL_KEY = 'kabuku.editPanel';
@@ -39,7 +40,7 @@ export function renderIndexPage(app) {
     : (Object.keys(project.characters)[0] ?? null);
 
   // Active sidebar panel, chosen from the left icon rail.
-  const PANELS = ['layers', 'pen', 'automesh', 'metrics', 'props'];
+  const PANELS = ['layers', 'pen', 'automesh', 'metrics', 'props', 'compose'];
   let panel = PANELS.includes(sessionStorage.getItem(PANEL_KEY))
     ? sessionStorage.getItem(PANEL_KEY)
     : 'layers';
@@ -54,48 +55,13 @@ export function renderIndexPage(app) {
   let backgroundImage = null;
   let bgOpacity = 0.3;
 
-  // Left (guides) pane zoom, persisted across page renders.
+  // Guides-view zoom, persisted across page renders.
   const SCALE_L_KEY = 'kabuku.previewScaleL';
   const loadScale = (key) => {
     const v = parseFloat(sessionStorage.getItem(key));
     return Number.isFinite(v) && v > 0 ? v : 1;
   };
   let scaleL = loadScale(SCALE_L_KEY);
-
-  // Preview panes: 1..3 independent preview views, each with its own zoom +
-  // stretch overlay. Persisted (settings only; DOM/canvas refs are attached at
-  // build time, not stored).
-  const MAX_PREVIEWS = 3;
-  const PANES_KEY = 'kabuku.previewPanes';
-  let previewPanes = loadPreviewPanes();
-
-  function loadPreviewPanes() {
-    try {
-      const raw = JSON.parse(sessionStorage.getItem(PANES_KEY));
-      if (Array.isArray(raw) && raw.length >= 1) {
-        return raw.slice(0, MAX_PREVIEWS).map(p => ({
-          scale: Number.isFinite(p.scale) && p.scale > 0 ? p.scale : 1,
-          stretchAngle: Number.isFinite(p.stretchAngle) ? p.stretchAngle : 0,
-          stretchAmount: Number.isFinite(p.stretchAmount) ? p.stretchAmount : 0,
-        }));
-      }
-    } catch { /* fall through to default */ }
-    return [{ scale: 1, stretchAngle: global.stretchAngle || 0, stretchAmount: global.stretchAmount || 0 }];
-  }
-
-  function savePreviewPanes() {
-    sessionStorage.setItem(PANES_KEY, JSON.stringify(previewPanes.map(p => ({
-      scale: p.scale, stretchAngle: p.stretchAngle, stretchAmount: p.stretchAmount,
-    }))));
-    // Keep global stretch in sync with the primary preview so font-export
-    // dialogs still default to a sensible stretch.
-    const p0 = previewPanes[0];
-    if (p0) {
-      global.stretchAngle = p0.stretchAngle;
-      global.stretchAmount = p0.stretchAmount;
-      saveGlobal(global);
-    }
-  }
 
   // Font-wide (global) layer state
   let globalLayers = [];
@@ -334,6 +300,7 @@ export function renderIndexPage(app) {
     { id: 'automesh', icon: 'lucide:grid-3x3',           title: 'Auto Mesh' },
     { id: 'metrics',  icon: 'lucide:ruler',              title: 'Font Metrics' },
     { id: 'props',    icon: 'lucide:sliders-horizontal', title: 'Properties' },
+    { id: 'compose',  icon: 'lucide:type',               title: 'Compose' },
   ];
   const railButtons = {};
   for (const item of RAIL_ITEMS) {
@@ -367,10 +334,9 @@ export function renderIndexPage(app) {
   const previewSection = document.createElement('div');
   previewSection.className = 'index-preview';
 
-  // Split viewport: left pane = no stretch + all guides (the paintable editing
-  // reference), right pane = full transform + no guides (clean preview). The two
-  // are shown side-by-side so the un-transformed grid and the final result are
-  // visible at once.
+  // Center viewport: the Guides pane — the selected glyph drawn with no stretch
+  // and all guides, as the paintable editing reference. (The standalone
+  // single-glyph Preview was removed; the composed result lives in Compose.)
   const previewSplit = document.createElement('div');
   previewSplit.className = 'index-preview-split';
 
@@ -418,120 +384,6 @@ export function renderIndexPage(app) {
 
   previewSplit.appendChild(leftPane);
 
-  // Right column: preview panes stack vertically (top→bottom) within it.
-  const previewRight = document.createElement('div');
-  previewRight.className = 'index-preview-right';
-  previewSplit.appendChild(previewRight);
-
-  // Build a stretch slider row (Angle / Amount) bound to a preview pane.
-  const PANE_STRETCH_DEFS = [
-    { key: 'stretchAngle', label: 'Angle', min: 0, max: 180, step: 1, hardMin: 0, hardMax: 180 },
-    { key: 'stretchAmount', label: 'Stretch', min: 0, max: 2, step: 0.05 },
-  ];
-  function createPaneStretchRow(pane, def) {
-    const row = document.createElement('div');
-    row.className = 'param-row';
-    const label = document.createElement('label');
-    label.textContent = def.label;
-    const { slider, valueInput } = createSliderInput({
-      min: def.min, max: def.max, step: def.step,
-      value: pane[def.key] ?? 0,
-      hardMin: def.hardMin, hardMax: def.hardMax,
-      // Stretch changes this pane's offscreen only — re-render just this pane,
-      // leaving the guides pane and the other previews untouched.
-      onInput: (v) => { pane[def.key] = v; savePreviewPanes(); renderOnePane(pane); },
-    });
-    row.appendChild(label);
-    row.appendChild(slider);
-    row.appendChild(valueInput);
-    return row;
-  }
-
-  // (Re)build the preview pane DOM from `previewPanes`. Each pane owns its
-  // canvas, offscreen buffer, and bottom control bar (zoom + stretch + the
-  // duplicate / remove actions).
-  function buildPreviewPanes() {
-    // Clear the whole container (not just panes still in `previewPanes`) so a
-    // pane removed via splice doesn't leave an orphaned element behind.
-    previewRight.replaceChildren();
-    const multi = previewPanes.length > 1;
-    previewPanes.forEach((pane, idx) => {
-      const el = document.createElement('div');
-      el.className = 'index-preview-pane';
-
-      const canvas = document.createElement('canvas');
-      canvas.className = 'index-preview-canvas index-preview-canvas-readonly';
-      const ctx = canvas.getContext('2d');
-
-      const tag = document.createElement('span');
-      tag.className = 'index-preview-tag';
-      tag.textContent = multi ? `Preview ${idx + 1}` : 'Preview';
-
-      const bar = document.createElement('div');
-      bar.className = 'index-pane-controls index-pane-controls-bottom';
-      bar.appendChild(createScaleRow(
-        () => pane.scale,
-        (v) => { pane.scale = v; savePreviewPanes(); },
-        () => blit(pane.canvas, pane.ctx, pane.offCanvas, pane.scale),
-      ));
-      for (const def of PANE_STRETCH_DEFS) bar.appendChild(createPaneStretchRow(pane, def));
-
-      const actions = document.createElement('div');
-      actions.className = 'index-pane-actions';
-      const dupBtn = iconButton('plus', 'Duplicate preview', {
-        onClick: () => addPreviewPane(idx),
-      });
-      dupBtn.disabled = previewPanes.length >= MAX_PREVIEWS;
-      actions.appendChild(dupBtn);
-      if (multi) {
-        const delBtn = iconButton('close', 'Remove preview', {
-          onClick: () => removePreviewPane(idx),
-        });
-        actions.appendChild(delBtn);
-      }
-      bar.appendChild(actions);
-
-      const offCanvas = document.createElement('canvas');
-      offCanvas.width = GLYPH_SIZE;
-      offCanvas.height = GLYPH_SIZE;
-
-      pane.el = el;
-      pane.canvas = canvas;
-      pane.ctx = ctx;
-      pane.offCanvas = offCanvas;
-      pane.offCtx = offCanvas.getContext('2d');
-
-      el.appendChild(canvas);
-      el.appendChild(tag);
-      el.appendChild(bar);
-      previewRight.appendChild(el);
-    });
-  }
-
-  function addPreviewPane(srcIdx) {
-    if (previewPanes.length >= MAX_PREVIEWS) return;
-    const src = previewPanes[srcIdx] || previewPanes[previewPanes.length - 1];
-    previewPanes.splice(srcIdx + 1, 0, {
-      scale: src.scale, stretchAngle: src.stretchAngle, stretchAmount: src.stretchAmount,
-    });
-    savePreviewPanes();
-    buildPreviewPanes();
-    observeCanvases();
-    sizeCanvases();
-    redraw();
-  }
-
-  function removePreviewPane(idx) {
-    if (previewPanes.length <= 1) return;
-    previewPanes.splice(idx, 1);
-    savePreviewPanes();
-    buildPreviewPanes();
-    observeCanvases();
-    sizeCanvases();
-    redraw();
-  }
-
-  buildPreviewPanes();
   previewSection.appendChild(previewSplit);
 
   const emptyState = document.createElement('div');
@@ -543,6 +395,23 @@ export function renderIndexPage(app) {
     previewSplit.style.display = 'none';
   }
   previewSection.appendChild(emptyState);
+
+  // === Compose (組版) view ===
+  // The compose editor is mounted as a third center view (alongside Guides and
+  // Preview) plus a sidebar control column. It shares this page's live project /
+  // global so edits flow both ways; a glyph painted in-place here refreshes its
+  // strip thumbnail via onCharEdited.
+  const composeView = createComposeView({
+    project,
+    global,
+    onCharEdited: (charId) => {
+      const card = cardElements[charId];
+      const canvas = card?.querySelector('canvas');
+      if (canvas) renderThumbnail(canvas, project.characters[charId]);
+    },
+  });
+  composeView.centerEl.style.display = 'none';
+  previewSection.appendChild(composeView.centerEl);
 
   mainArea.appendChild(previewSection);
 
@@ -584,35 +453,23 @@ export function renderIndexPage(app) {
   // Canvas fills the preview area; internal pixels match display size × DPR so
   // CSS scaling doesn't distort the aspect ratio (was clamped to GLYPH_SIZE
   // which broke aspect when the preview area was smaller than the glyph).
-  // Match each canvas's pixel buffer to its display size × DPR. Returns whether
-  // any canvas actually changed size (so callers can decide to redraw).
+  // Match the guides canvas pixel buffer to its display size × DPR. Returns
+  // whether it actually changed size (so callers can decide to redraw).
   function sizeCanvases() {
     const dpr = window.devicePixelRatio || 1;
-    let changed = false;
-    for (const cv of [previewCanvasL, ...previewPanes.map(p => p.canvas)]) {
-      const rect = cv.getBoundingClientRect();
-      const w = Math.max(1, Math.floor(rect.width * dpr));
-      const h = Math.max(1, Math.floor(rect.height * dpr));
-      if (cv.width === w && cv.height === h) continue;
-      cv.width = w;
-      cv.height = h;
-      changed = true;
-    }
-    return changed;
+    const rect = previewCanvasL.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(rect.width * dpr));
+    const h = Math.max(1, Math.floor(rect.height * dpr));
+    if (previewCanvasL.width === w && previewCanvasL.height === h) return false;
+    previewCanvasL.width = w;
+    previewCanvasL.height = h;
+    return true;
   }
   function resizeCanvas() {
     if (sizeCanvases()) redraw();
   }
   const resizeObserver = new ResizeObserver(() => resizeCanvas());
-  // Observe each canvas (not just the section) so a change in the split ratio —
-  // which leaves the section size unchanged — still re-sizes the pixel buffers
-  // and avoids CSS-stretching a stale buffer (aspect distortion).
-  function observeCanvases() {
-    resizeObserver.disconnect();
-    resizeObserver.observe(previewCanvasL);
-    for (const p of previewPanes) resizeObserver.observe(p.canvas);
-  }
-  observeCanvases();
+  resizeObserver.observe(previewCanvasL);
   requestAnimationFrame(() => resizeCanvas());
 
   // Painting happens on the left (un-stretched, guide) pane only — its cell
@@ -674,7 +531,9 @@ export function renderIndexPage(app) {
   // === Init ===
   rebuildLocalState();
   loadBackgroundImage();
+  syncCenterView();
   renderSidebarBody();
+  if (panel === 'compose') composeView.redraw();
 
   // ============ Functions ============
   function setPanel(newPanel) {
@@ -683,8 +542,43 @@ export function renderIndexPage(app) {
     sessionStorage.setItem(PANEL_KEY, panel);
     syncRailButtons();
     if (isLocalContext()) rebuildLocalState();
+    syncCenterView();
     renderSidebarBody();
+    // The view we just un-hid was sized to ~0 while display:none; re-measure its
+    // pixel buffer before drawing so the first frame isn't a stretched 1px blit.
+    sizeCanvases();
     redraw();
+    // The compose view manages its own canvas sizing; refresh it on entry so it
+    // picks up any glyph edits made in the other panels.
+    if (panel === 'compose') { composeView.invalidate(); composeView.redraw(); }
+  }
+
+  // The center viewport shows ONE view at a time: the Compose canvas, or the
+  // Guides pane (the paintable editing reference) for every other panel. They
+  // occupy the same space. This is the single authority for center visibility
+  // (incl. the no-glyph empty state).
+  // Display-only: callers redraw (init does so via the rAF resize below), and
+  // redraw() touches offscreen buffers declared later in this function, so this
+  // must not draw while the page is still being built.
+  function syncCenterView() {
+    const showCompose = panel === 'compose';
+    composeView.centerEl.style.display = showCompose ? '' : 'none';
+    // The glyph strip is for picking the edited glyph — irrelevant in Compose,
+    // which addresses glyphs by the typed text, so hide it there.
+    charStripWrap.style.display = showCompose ? 'none' : '';
+    if (showCompose) {
+      // Compose works without a selected glyph and fills the whole area.
+      previewSplit.style.display = 'none';
+      emptyState.style.display = 'none';
+      return;
+    }
+    if (!selectedCharId) {
+      previewSplit.style.display = 'none';
+      emptyState.style.display = '';
+      return;
+    }
+    emptyState.style.display = 'none';
+    previewSplit.style.display = '';
   }
 
   function rebuildGlobalLayers() {
@@ -801,6 +695,7 @@ export function renderIndexPage(app) {
       case 'automesh': renderAutoMeshPanel(); break;
       case 'metrics':  renderMetricsPanel(); break;
       case 'props':    renderPropsPanel(); break;
+      case 'compose':  sidebarBody.appendChild(composeView.sidebarEl); break;
     }
   }
 
@@ -1417,9 +1312,7 @@ export function renderIndexPage(app) {
     const card = createCharCard(newId, project.characters[newId], (id) => selectChar(id), (id) => deleteGlyph(id));
     cardElements[newId] = card;
     charStrip.appendChild(card);
-    emptyState.style.display = 'none';
-    previewSplit.style.display = '';
-    selectChar(newId);
+    selectChar(newId);   // selectChar → syncCenterView restores the center view
     historyCommit('add-glyph');
   }
 
@@ -1470,10 +1363,7 @@ export function renderIndexPage(app) {
       if (selectedCharId && cardElements[selectedCharId]) {
         cardElements[selectedCharId].classList.add('selected');
       }
-      if (!selectedCharId) {
-        previewSplit.style.display = 'none';
-        emptyState.style.display = '';
-      }
+      syncCenterView();
       rebuildLocalState();
       loadBackgroundImage();
       renderSidebarBody();
@@ -1540,8 +1430,7 @@ export function renderIndexPage(app) {
     if (charId) sessionStorage.setItem(SEL_CHAR_KEY, charId);
     else sessionStorage.removeItem(SEL_CHAR_KEY);
     if (cardElements[charId]) cardElements[charId].classList.add('selected');
-    emptyState.style.display = 'none';
-    previewSplit.style.display = '';
+    syncCenterView();
     rebuildLocalState();
     loadBackgroundImage();
     // Per-character panels show the selected glyph's state, so re-render them
@@ -1620,18 +1509,15 @@ export function renderIndexPage(app) {
     historyCommit('auto-mesh-all');
   }
 
-  // === Render preview ===
-  // Left (guides) pane offscreen buffer. offCtxL doubles as the hit-test
-  // context in handlePaint. Each preview pane carries its own offscreen buffer
-  // (pane.offCanvas / pane.offCtx), built in buildPreviewPanes().
+  // === Render ===
+  // Guides-view offscreen buffer. offCtxL doubles as the hit-test context in
+  // handlePaint.
   const offCanvasL = document.createElement('canvas');
   offCanvasL.width = GLYPH_SIZE;
   offCanvasL.height = GLYPH_SIZE;
   const offCtxL = offCanvasL.getContext('2d');
 
-  // Resolve the layers + base transform for the selected glyph. Shared by the
-  // full redraw and the per-pane updates so the (potentially costly) layer build
-  // happens once per render pass, not once per pane.
+  // Resolve the layers + base transform for the selected glyph.
   function currentRender() {
     if (isLocalContext()) {
       return { layers: localLayers, transform: localTransform };
@@ -1703,8 +1589,8 @@ export function renderIndexPage(app) {
     blit(canvas, ctx, offCanvas, scale);
   }
 
-  // Left (guides) pane: drop stretch only (gap/blur kept), show every guide +
-  // the source image — the paintable reference.
+  // Guides view: drop stretch only (gap/blur kept), show every guide + the
+  // source image — the paintable reference.
   function renderLeft(rc = currentRender()) {
     const leftTransform = { ...rc.transform, stretchAmount: 0, stretchAngle: 0 };
     renderTarget(previewCanvasL, previewCtxL, offCanvasL, offCtxL, {
@@ -1717,24 +1603,12 @@ export function renderIndexPage(app) {
     });
   }
 
-  // One preview pane: full transform with this pane's stretch overlay, no
-  // guides, no underlay — an independent clean preview.
-  function renderOnePane(pane, rc = currentRender()) {
-    const paneTransform = { ...rc.transform, stretchAngle: pane.stretchAngle, stretchAmount: pane.stretchAmount };
-    renderTarget(pane.canvas, pane.ctx, pane.offCanvas, pane.offCtx, {
-      layers: rc.layers, transform: paneTransform, preview: true, showBackground: false, scale: pane.scale,
-    });
-  }
-
   function redraw() {
     if (!selectedCharId) {
       clearDisplay(previewCanvasL, previewCtxL);
-      for (const pane of previewPanes) clearDisplay(pane.canvas, pane.ctx);
       return;
     }
-    const rc = currentRender();
-    renderLeft(rc);
-    for (const pane of previewPanes) renderOnePane(pane, rc);
+    renderLeft();
   }
 
   /**
@@ -1753,7 +1627,15 @@ export function renderIndexPage(app) {
     // project is a const reference held by panels & callbacks — assign
     // properties onto it rather than rebinding.
     Object.assign(project, next);
-    global = getGlobal();
+    // global is likewise captured by long-lived closures (sidebar panels and
+    // the compose view's stretch control), so update it in place rather than
+    // rebinding — otherwise those closures would read/write a stale object
+    // after undo/redo (which swaps _fp.global for a fresh snapshot object).
+    const nextGlobal = getGlobal();
+    if (nextGlobal !== global) {
+      for (const k of Object.keys(global)) delete global[k];
+      Object.assign(global, nextGlobal);
+    }
     project.global = global;
 
     // Validate selection: undo may have deleted the active glyph.
@@ -1785,13 +1667,7 @@ export function renderIndexPage(app) {
       cardElements[cid].classList.toggle('selected', cid === selectedCharId);
     }
 
-    if (!selectedCharId) {
-      emptyState.style.display = '';
-      previewSplit.style.display = 'none';
-    } else {
-      emptyState.style.display = 'none';
-      previewSplit.style.display = '';
-    }
+    syncCenterView();
 
     // Thumbnails are the heavy part — each does a 1024² buildRuntimeLayers
     // + metaball renderCanvas + downscale. Skip the ones we know haven't
@@ -1817,6 +1693,9 @@ export function renderIndexPage(app) {
     if (sidebarStale) renderSidebarBody();
     loadBackgroundImage();
     redraw();
+    // Keep the compose composition in sync with undone/redone glyph state.
+    composeView.invalidate();
+    if (panel === 'compose') composeView.redraw();
   }
 
   return { refresh };

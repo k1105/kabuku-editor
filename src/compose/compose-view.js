@@ -1,13 +1,12 @@
-import { loadProject, getGlobal, resolveTransform, saveCharacter, serializeLayerOverrides, currentFontProjectId, currentFontProjectName } from '../core/project.js';
+import { resolveTransform, saveCharacter, serializeLayerOverrides } from '../core/project.js';
 import { commit as historyCommit } from '../core/history.js';
-import { layoutText } from '../compose/text-layout.js';
-import { computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
+import { layoutText } from './text-layout.js';
+import { computeCacheScale, RENDER_SIZE } from './glyph-cache.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { regenerateCells } from '../core/layer.js';
 import { autoMesh } from '../core/mesh.js';
 import { uploadCharacterImage } from '../core/storage.js';
 import { renderCanvas, drawSourceImage } from '../render/canvas-renderer.js';
-import { createPageHeader } from '../ui/page-header.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
 import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
@@ -16,10 +15,18 @@ import { createSliderInput } from '../ui/slider-input.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
 
-export function renderComposePage(app) {
-  const project = loadProject();
-  const global = getGlobal();
-  const charIds = new Set(Object.keys(project.characters));
+/**
+ * Compose (組版) view, embeddable as a panel inside the glyph editor.
+ *
+ * Returns the center canvas area and the sidebar control column as detached DOM
+ * nodes plus a `redraw()` so the host can mount them and refresh on demand. It
+ * shares the host's live `project` / `global` objects so paint edits made here
+ * show up in the glyph strip (via `onCharEdited`) and vice versa.
+ *
+ *   createComposeView({ project, global, onCharEdited })
+ *     → { centerEl, sidebarEl, redraw, invalidate, isEditing, destroy }
+ */
+export function createComposeView({ project, global, onCharEdited } = {}) {
   // Per-charId stretched-glyph cache, invalidated on transform release.
   // We bake stretch into the rasterized bitmap (per-cell repositioning) rather
   // than applying a draw-time image affine, so cells keep their round shape
@@ -106,20 +113,9 @@ export function renderComposePage(app) {
     return stretchFactor + (computeCacheScale(transform) - 1);
   }
 
-  // === Header ===
-  const { el: header } = createPageHeader({
-    activePage: 'compose',
-    fontProjectId: currentFontProjectId(),
-    title: currentFontProjectName() || 'KABUKU Editor',
-  });
-
-  // === Page layout ===
-  const page = document.createElement('div');
-  page.className = 'edit-page';
-
-  // --- Sidebar ---
-  const sidebar = document.createElement('div');
-  sidebar.className = 'sidebar';
+  // --- Sidebar (detached column the host mounts into its sidebar body) ---
+  const sidebarEl = document.createElement('div');
+  sidebarEl.className = 'compose-sidebar-body';
 
   // Text input
   const textGroup = document.createElement('div');
@@ -134,16 +130,9 @@ export function renderComposePage(app) {
     inputText = textarea.value;
     redraw();
   });
-  const charListLabel = document.createElement('div');
-  charListLabel.className = 'compose-char-list';
-  charListLabel.textContent = charIdList.length > 0
-    ? `Available: ${charIdList.join(' ')}`
-    : 'No characters available. Import images first.';
-
   textGroup.appendChild(textTitle);
   textGroup.appendChild(textarea);
-  textGroup.appendChild(charListLabel);
-  sidebar.appendChild(textGroup);
+  sidebarEl.appendChild(textGroup);
 
   // Typography controls
   const typoGroup = document.createElement('div');
@@ -219,7 +208,7 @@ export function renderComposePage(app) {
   modeRow.appendChild(modeWrap);
   typoGroup.appendChild(modeRow);
 
-  sidebar.appendChild(typoGroup);
+  sidebarEl.appendChild(typoGroup);
 
   // Stretch controls — shared with the index page via `global`.
   const stretchGroup = document.createElement('div');
@@ -235,7 +224,7 @@ export function renderComposePage(app) {
   });
   for (const row of stretchControl.rows) stretchGroup.appendChild(row);
 
-  sidebar.appendChild(stretchGroup);
+  sidebarEl.appendChild(stretchGroup);
 
   // Transform controls
   const transformGroup = document.createElement('div');
@@ -258,28 +247,22 @@ export function renderComposePage(app) {
     (v) => { metaballRadius = v; onTransformRelease(); }
   );
 
-  sidebar.appendChild(transformGroup);
+  sidebarEl.appendChild(transformGroup);
 
   // Per-glyph layer/grid editing panel — populated only while a glyph is
   // focused (in-place editing). Sits at the top of the sidebar so the active
   // glyph's controls are front and centre when you double-click in.
   const editPanel = document.createElement('div');
   editPanel.className = 'compose-edit-panel';
-  sidebar.insertBefore(editPanel, sidebar.firstChild);
+  sidebarEl.insertBefore(editPanel, sidebarEl.firstChild);
 
-  // --- Main area ---
-  const mainArea = document.createElement('div');
-  mainArea.className = 'compose-canvas-area';
+  // --- Center area (the scrollable canvas viewport the host mounts) ---
+  const centerEl = document.createElement('div');
+  centerEl.className = 'compose-canvas-area index-compose-area';
 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  mainArea.appendChild(canvas);
-
-  page.appendChild(sidebar);
-  page.appendChild(mainArea);
-
-  app.appendChild(header);
-  app.appendChild(page);
+  centerEl.appendChild(canvas);
 
   // === Rendering (shared layout) ===
 
@@ -291,6 +274,7 @@ export function renderComposePage(app) {
    *  flexbox-centered canvas keeps the baseline at a stable viewport Y as
    *  stretchAmount changes. */
   function computeLayout() {
+    const charIds = new Set(Object.keys(project.characters));
     const positions = layoutText(inputText, charIds, {
       fontSize, textBoxWidth, kerning, lineHeight, writingMode,
     });
@@ -652,6 +636,7 @@ export function renderComposePage(app) {
     project.characters[editingCharId] = { ...cd, ...next };
     // Invalidate the baked bitmap so other instances of this glyph update.
     stretchedGlyphCache.delete(editingCharId);
+    onCharEdited?.(editingCharId);
   }
 
   function centerScrollOnFocus() {
@@ -659,12 +644,12 @@ export function renderComposePage(app) {
     if (!pos) return;
     const cx = (lastLayout.offX + pos.x + fontSize / 2) * editZoom;
     const cy = (lastLayout.offY + pos.y + fontSize / 2) * editZoom;
-    mainArea.scrollLeft = cx - mainArea.clientWidth / 2;
-    mainArea.scrollTop = cy - mainArea.clientHeight / 2;
+    centerEl.scrollLeft = cx - centerEl.clientWidth / 2;
+    centerEl.scrollTop = cy - centerEl.clientHeight / 2;
   }
 
   function computeEditZoom(layout) {
-    const area = mainArea.getBoundingClientRect();
+    const area = centerEl.getBoundingClientRect();
     const target = Math.min(area.width, area.height) * 0.5;  // focus ≈ half the viewport
     let z = target / fontSize;
     const maxDim = 8192;                                     // canvas-size guard
@@ -1036,12 +1021,40 @@ export function renderComposePage(app) {
     }
   });
 
-  // Editing the text or navigating away exits the in-place editor.
+  // Editing the text exits the in-place editor.
   textarea.addEventListener('input', () => { if (editingCharId) closeEditor(); });
-  window.addEventListener('hashchange', () => { if (editingCharId) closeEditor(); });
 
-  // Initial render
-  requestAnimationFrame(() => redraw());
+  // Tear down document/window listeners when the host page is replaced.
+  function destroy() {
+    document.removeEventListener('keydown', onEditKey);
+    window.removeEventListener('mouseup', onPaintUp);
+  }
+  window.addEventListener('hashchange', function onHashChange() {
+    if (editingCharId) closeEditor();
+    window.removeEventListener('hashchange', onHashChange);
+    destroy();
+  });
+
+  // Re-pull glyphs that appeared since the view was built and drop baked
+  // bitmaps so host-side edits (paint, overrides) show on the next draw. Also
+  // re-sync the stretch sliders, since the host (preview panel, undo/redo) can
+  // change global stretch out from under this view.
+  function invalidate() {
+    stretchedGlyphCache.clear();
+    stretchControl.syncFromGlobal();
+    for (const cid of Object.keys(project.characters)) {
+      if (!sourceImageCache.has(cid)) getSourceImage(cid);
+    }
+  }
+
+  return {
+    centerEl,
+    sidebarEl,
+    redraw,
+    invalidate,
+    isEditing: () => !!editingCharId,
+    destroy,
+  };
 }
 
 function fileToDataURL(file) {

@@ -67,6 +67,8 @@ const TRANSLATIONS = {
   Prev: "前へ",
   Next: "次へ",
   Preview: "プレビュー",
+  Duplicate: "複製",
+  Remove: "削除",
   Paint: "塗る",
   Erase: "消す",
   "Local Edit": "個別編集",

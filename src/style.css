@@ -71,40 +71,6 @@ body {
 }
 
 /* Tabs (Compose / Animation): center of header, look like tabs not buttons */
-.header-tabs {
-  display: flex;
-  gap: 2px;
-  align-items: stretch;
-  margin: 0 24px;
-  height: 100%;
-}
-
-.header-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-dim);
-  padding: 0 14px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 100%;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.header-tab:hover { color: var(--text); }
-
-.header-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-
-.header-tab .icon { width: 16px; height: 16px; }
-
 /* Icon-only / icon+text buttons (used in headers, toolbars, panels) */
 .icon-btn {
   display: inline-flex;
@@ -242,34 +208,13 @@ body {
   height: 100%;
 }
 
-/* Guides (left) : Preview (right) split is 6:4. */
+/* The guides pane fills the center viewport. */
 .index-preview-pane {
   position: relative;
-  flex: 6 1 0;
+  flex: 1 1 0;
   min-width: 0;
   height: 100%;
   overflow: hidden;
-}
-
-/* Right column: preview panes stacked vertically (top→bottom). */
-.index-preview-right {
-  flex: 4 1 0;
-  min-width: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border);
-}
-
-.index-preview-right .index-preview-pane {
-  flex: 1 1 0;
-  min-height: 0;
-  width: 100%;
-  height: auto;
-}
-
-.index-preview-right .index-preview-pane + .index-preview-pane {
-  border-top: 1px solid var(--border);
 }
 
 .index-preview-tag {
@@ -296,10 +241,6 @@ body {
   cursor: crosshair;
 }
 
-.index-preview-canvas-readonly {
-  cursor: default;
-}
-
 /* Per-pane controls docked at the bottom of each viewport pane. */
 .index-pane-controls {
   position: absolute;
@@ -317,22 +258,6 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 10px;
-}
-
-/* Variant: a toolbar stuck flush to the bottom edge of the pane, sliders in a
-   single horizontal row. */
-.index-pane-controls-bottom {
-  left: 0;
-  right: 0;
-  bottom: 0;
-  transform: none;
-  width: 100%;
-  max-width: none;
-  flex-wrap: nowrap;
-  border: none;
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  overflow-x: auto;
 }
 
 .index-pane-controls .param-row {
@@ -357,44 +282,6 @@ body {
   flex: 0 0 40px;
   font-size: 11px;
   text-align: right;
-}
-
-/* In the docked bottom bar (narrow preview panes), let each row + its slider
-   flex to share the available width so labels never overlap. */
-.index-pane-controls-bottom .param-row {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.index-pane-controls-bottom .param-row label {
-  white-space: nowrap;
-}
-
-.index-pane-controls-bottom .param-row input[type="range"] {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
-}
-
-.index-pane-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-}
-
-.index-pane-actions .icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-}
-
-.index-pane-actions .icon-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 .index-char-strip-wrap {
@@ -921,12 +808,11 @@ input[type="range"]:active::-moz-range-thumb { background: var(--accent); transf
   background: #fff;
 }
 
-.compose-char-list {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 6px;
-  line-height: 1.6;
-  word-break: break-all;
+/* Compose mounted as a center view inside the glyph editor: fill the preview
+   section (position:relative) rather than flexing in page flow. */
+.index-compose-area {
+  position: absolute;
+  inset: 0;
 }
 
 .writing-mode-toggle {
