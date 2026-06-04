@@ -3,7 +3,8 @@ import { commit as historyCommit } from '../core/history.js';
 import { layoutText } from './text-layout.js';
 import { computeCacheScale, RENDER_SIZE } from './glyph-cache.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
-import { regenerateCells } from '../core/layer.js';
+import { createLayer, regenerateCells } from '../core/layer.js';
+import { getGrid } from '../grids/grid-plugin.js';
 import { autoMesh } from '../core/mesh.js';
 import { uploadCharacterImage } from '../core/storage.js';
 import { renderCanvas, drawSourceImage } from '../render/canvas-renderer.js';
@@ -12,7 +13,7 @@ import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
 import { createStretchControl } from '../ui/preview-controls.js';
 import { createSliderInput } from '../ui/slider-input.js';
-import { renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { loadImageCached } from '../core/image-cache.js';
 
 /**
@@ -26,7 +27,7 @@ import { loadImageCached } from '../core/image-cache.js';
  *   createComposeView({ project, global, onCharEdited })
  *     → { centerEl, sidebarEl, redraw, invalidate, isEditing, destroy }
  */
-export function createComposeView({ project, global, onCharEdited } = {}) {
+export function createComposeView({ project, global, onCharEdited, onCharsAdded } = {}) {
   // Per-charId stretched-glyph cache, invalidated on transform release.
   // We bake stretch into the rasterized bitmap (per-cell repositioning) rather
   // than applying a draw-time image affine, so cells keep their round shape
@@ -132,6 +133,17 @@ export function createComposeView({ project, global, onCharEdited } = {}) {
   });
   textGroup.appendChild(textTitle);
   textGroup.appendChild(textarea);
+
+  // Batch-create any glyphs referenced by the composition text that don't yet
+  // exist in the project, rasterizing each from a Google Font and auto-meshing
+  // it — same pipeline as the index page's font import.
+  const missingBtn = document.createElement('button');
+  missingBtn.className = 'tool-btn';
+  missingBtn.textContent = '欠損文字を作成';
+  missingBtn.style.marginTop = '8px';
+  missingBtn.addEventListener('click', createMissingChars);
+  textGroup.appendChild(missingBtn);
+
   sidebarEl.appendChild(textGroup);
 
   // Typography controls
@@ -637,6 +649,93 @@ export function createComposeView({ project, global, onCharEdited } = {}) {
     // Invalidate the baked bitmap so other instances of this glyph update.
     stretchedGlyphCache.delete(editingCharId);
     onCharEdited?.(editingCharId);
+  }
+
+  // Pick the base font for newly created glyphs by reusing whatever family
+  // existing font-imported characters were made with (most common wins), so
+  // generated glyphs match the rest of the set. Falls back to the project's
+  // default add-glyph family.
+  function detectFontFamily() {
+    const counts = new Map();
+    for (const cd of Object.values(project.characters)) {
+      const fam = cd?.fontSource?.family;
+      if (!fam) continue;
+      counts.set(fam, (counts.get(fam) || 0) + 1);
+    }
+    let best = null, bestN = 0;
+    for (const [fam, n] of counts) {
+      if (n > bestN) { best = fam; bestN = n; }
+    }
+    return best || 'Noto Sans JP';
+  }
+
+  // Batch-create every glyph referenced by the composition text that isn't yet
+  // in the project: rasterize it from the detected font family and auto-mesh it
+  // against the default layers — the same pipeline as the index page's
+  // importFromFont, just driven from the compose textarea.
+  async function createMissingChars() {
+    const WHITESPACE = new Set([' ', '　', '\t', '\n', '\r']);
+    const existing = new Set(Object.keys(project.characters));
+    const missing = [];
+    for (const ch of inputText) {
+      if (WHITESPACE.has(ch) || existing.has(ch) || missing.includes(ch)) continue;
+      missing.push(ch);
+    }
+    if (missing.length === 0) {
+      alert('欠損文字はありません。');
+      return;
+    }
+
+    const family = detectFontFamily();
+    const origLabel = missingBtn.textContent;
+    missingBtn.disabled = true;
+    try {
+      await loadGoogleFont(family, missing.join(''));
+    } catch (e) {
+      console.error(e);
+      alert(`フォント「${family}」の読み込みに失敗しました: ${e.message || e}`);
+      missingBtn.disabled = false;
+      missingBtn.textContent = origLabel;
+      return;
+    }
+
+    const off = document.createElement('canvas');
+    off.width = RENDER;
+    off.height = RENDER;
+    const offCtx = off.getContext('2d');
+
+    const created = [];
+    for (let i = 0; i < missing.length; i++) {
+      const ch = missing[i];
+      missingBtn.textContent = `作成中… ${i + 1}/${missing.length}`;
+      const layers = [];
+      for (const gl of global.defaultLayers || []) {
+        const gridPlugin = getGrid(gl.gridName);
+        if (!gridPlugin) continue;
+        const layer = createLayer(gridPlugin, { ...(gl.gridParams || {}) });
+        layer.name = gl.name || gl.gridName;
+        regenerateCells(layer, RENDER, RENDER);
+        layers.push(layer);
+      }
+      renderCharToContext(offCtx, ch, family, RENDER);
+      for (const layer of layers) autoMesh(offCtx, layer.cells, 0.5);
+      const charData = {
+        layerOverrides: serializeLayerOverrides(layers, global),
+        fontSource: { family, char: ch },
+      };
+      project.characters[ch] = charData;
+      saveCharacter(ch, charData);
+      getSourceImage(ch);   // warm the stretch-preview underlay
+      created.push(ch);
+      // Yield so the progress label paints between glyphs.
+      await new Promise(r => requestAnimationFrame(r));
+    }
+
+    onCharsAdded?.(created);
+    historyCommit('compose-create-missing');
+    missingBtn.disabled = false;
+    missingBtn.textContent = origLabel;
+    redraw();
   }
 
   function centerScrollOnFocus() {

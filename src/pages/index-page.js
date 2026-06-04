@@ -409,6 +409,16 @@ export function renderIndexPage(app) {
       const canvas = card?.querySelector('canvas');
       if (canvas) renderThumbnail(canvas, project.characters[charId]);
     },
+    onCharsAdded: (charIds) => {
+      const empty = document.querySelector('.empty-state');
+      if (empty) empty.style.display = 'none';
+      for (const charId of charIds) {
+        if (cardElements[charId]) continue;
+        const card = createCharCard(charId, project.characters[charId], (id) => selectChar(id), (id) => deleteGlyph(id));
+        cardElements[charId] = card;
+        charStrip.appendChild(card);
+      }
+    },
   });
   composeView.centerEl.style.display = 'none';
   previewSection.appendChild(composeView.centerEl);
