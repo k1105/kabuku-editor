@@ -171,6 +171,39 @@ export function stripUndefined(value) {
   return value;
 }
 
+/**
+ * Whether a string is usable as a Firestore document id. Firestore rejects
+ * empty ids, "." / "..", and any id containing "/" (a path separator).
+ */
+export function isValidDocId(id) {
+  return typeof id === 'string' && id.length > 0 && id !== '.' && id !== '..' && !id.includes('/');
+}
+
+// Glyph ids are the literal characters ('A', 'あ', '/', '.', …) — fonts must be
+// able to hold punctuation glyphs, so we can't drop ids that Firestore won't
+// accept as a document id. Instead we encode the unsafe ones (empty, '.', '..',
+// anything containing '/', or anything that already looks encoded) as
+// `enc__<utf8-hex>`, and store doc-safe ids verbatim so existing projects (and
+// the Firestore console) stay readable. The in-memory key is always the real
+// character, so font export — which maps charId → codepoint — is unaffected.
+const DOC_ID_ENC_PREFIX = 'enc__';
+
+export function charIdToDocId(charId) {
+  if (isValidDocId(charId) && !charId.startsWith(DOC_ID_ENC_PREFIX)) return charId;
+  const bytes = new TextEncoder().encode(charId);
+  let hex = '';
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+  return DOC_ID_ENC_PREFIX + hex;
+}
+
+export function docIdToCharId(docId) {
+  if (typeof docId !== 'string' || !docId.startsWith(DOC_ID_ENC_PREFIX)) return docId;
+  const hex = docId.slice(DOC_ID_ENC_PREFIX.length);
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return new TextDecoder().decode(bytes);
+}
+
 // =========================================================================
 // In-memory state for the active FontProject
 // =========================================================================
@@ -190,6 +223,11 @@ function notifyChange() {
 export function subscribeProject(fn) {
   _changeSubs.add(fn);
   return () => _changeSubs.delete(fn);
+}
+
+/** True when there are edits not yet committed to Firestore. */
+export function hasUnsavedChanges() {
+  return _metaDirty || _dirtyChars.size > 0 || _deletedChars.size > 0;
 }
 
 /** Reset the in-memory state (used when signing out / switching). */
@@ -213,7 +251,7 @@ export async function bootFontProject(projectId) {
   const meta = metaSnap.data();
   const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
   const characters = {};
-  for (const d of charsSnap.docs) characters[d.id] = d.data();
+  for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
   _fp = {
     id: projectId,
     name: meta.name || 'Untitled',
@@ -265,16 +303,21 @@ export async function flushNow() {
   for (const cid of _dirtyChars) {
     const cd = _fp.characters[cid];
     if (!cd) continue;
+    // An empty id is not a real glyph (e.g. an image whose filename had no
+    // stem); skip it. Every other id — including punctuation like '/' or '.' —
+    // is encoded into a valid Firestore doc id.
+    if (cid === '') continue;
     ops.push({
       kind: 'set',
-      ref: doc(db, 'fontProjects', _fpId, 'characters', cid),
+      ref: doc(db, 'fontProjects', _fpId, 'characters', charIdToDocId(cid)),
       data: stripUndefined(cd),
     });
   }
   for (const cid of _deletedChars) {
+    if (cid === '') continue;
     ops.push({
       kind: 'delete',
-      ref: doc(db, 'fontProjects', _fpId, 'characters', cid),
+      ref: doc(db, 'fontProjects', _fpId, 'characters', charIdToDocId(cid)),
     });
   }
   _metaDirty = false;
@@ -298,6 +341,8 @@ export async function flushNow() {
   } catch (e) {
     console.error('Failed to flush font project:', e);
   }
+  // Dirty flags were cleared above; tell unsaved-indicator UIs to refresh.
+  notifyChange();
 }
 
 // Flush on tab close so debounced writes don't get dropped.
@@ -552,7 +597,7 @@ export async function fetchFontProjectSnapshot(projectId) {
   const meta = metaSnap.data();
   const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
   const characters = {};
-  for (const d of charsSnap.docs) characters[d.id] = d.data();
+  for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
   return {
     id: projectId,
     name: meta.name || 'Untitled',

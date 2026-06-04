@@ -115,6 +115,13 @@ body {
 
 .icon-btn:has(.icon-btn-label) { width: auto; padding: 0 10px; }
 
+/* Save button: highlighted while there are unsaved changes, dimmed (via the
+ * shared :disabled rule) once everything is flushed. */
+.save-btn.is-dirty {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* Generic icon container (sized by parent, defaults to 16px) */
 .icon {
   display: inline-flex;
@@ -250,9 +257,9 @@ body {
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   max-width: calc(100% - 24px);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: center;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -265,23 +272,65 @@ body {
   align-items: center;
   gap: 6px;
   margin-bottom: 0;
+  flex: 0 1 auto;
 }
 
 .index-pane-controls .param-row label {
   flex: 0 0 auto;
   min-width: auto;
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .index-pane-controls .param-row input[type="range"] {
-  flex: 0 0 100px;
-  width: 100px;
+  flex: 0 1 76px;
+  width: 76px;
 }
 
 .index-pane-controls .param-row .value {
   flex: 0 0 40px;
   font-size: 11px;
   text-align: right;
+}
+
+/* Preview toggle, pinned to the right end of the controls bar. */
+.pane-preview-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pane-preview-btn:hover {
+  border-color: var(--text-dim);
+}
+
+.pane-preview-btn.active {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: #fff;
+}
+
+/* Stretch sliders shown only while preview is active. The wrapper itself
+ * collapses (display:contents) so its rows sit inline in the controls bar,
+ * flowing next to Scale / Preview instead of wrapping as a separate block. */
+.pane-stretch {
+  display: contents;
+}
+
+/* Preview locks every parameter; only glyph selection + stretch stay live. */
+.sidebar.preview-locked .sidebar-body {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.index-preview-canvas.preview-active {
+  cursor: default;
 }
 
 .index-char-strip-wrap {

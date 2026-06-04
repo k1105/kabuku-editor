@@ -23,6 +23,7 @@ export function createPageHeader({
   fontProjectId = null,
   title = 'KABUKU Editor',
   historyMode,
+  save = null,
 } = {}) {
   const header = document.createElement('div');
   header.className = 'header';
@@ -79,6 +80,45 @@ export function createPageHeader({
       undoBtn.disabled = !canUndo;
       redoBtn.disabled = !canRedo;
     });
+  }
+
+  // Explicit Save button. Writes are normally debounced; this flushes them
+  // immediately and the label reflects whether anything is still pending.
+  if (save && typeof save.flush === 'function') {
+    const saveBtn = iconButton('save', 'Save', { className: 'save-btn', title: 'Save now', withText: true });
+    const labelEl = saveBtn.querySelector('.icon-btn-label');
+    let saving = false;
+
+    function sync() {
+      if (saving) return;
+      const dirty = save.isDirty ? !!save.isDirty() : true;
+      saveBtn.disabled = !dirty;
+      saveBtn.classList.toggle('is-dirty', dirty);
+      if (labelEl) labelEl.textContent = dirty ? 'Save' : 'Saved';
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      if (saving) return;
+      saving = true;
+      saveBtn.disabled = true;
+      if (labelEl) labelEl.textContent = 'Saving…';
+      try {
+        await save.flush();
+      } finally {
+        saving = false;
+        sync();
+      }
+    });
+
+    headerNav.appendChild(saveBtn);
+
+    if (save.subscribe) {
+      const unsub = save.subscribe(() => {
+        if (!header.isConnected) { unsub?.(); return; }
+        sync();
+      });
+    }
+    sync();
   }
 
   headerNav.appendChild(createUserBadge());

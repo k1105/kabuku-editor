@@ -1,4 +1,4 @@
-import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter, currentFontProjectId, currentFontProjectName, flushNow as flushProjectNow } from '../core/project.js';
+import { loadProject, saveProject, saveCharacter, getGlobal, saveGlobal, serializeLayerOverrides, resolveTransform, deleteCharacter, renameCharacter, generateUniqueCharId, createEmptyCharacter, currentFontProjectId, currentFontProjectName, flushNow as flushProjectNow, subscribeProject, hasUnsavedChanges as fontHasUnsavedChanges } from '../core/project.js';
 import { loadImageCached } from '../core/image-cache.js';
 import { uploadCharacterImage } from '../core/storage.js';
 import { getAllGrids, getGrid } from '../grids/grid-plugin.js';
@@ -22,6 +22,7 @@ import { commit as historyCommit } from '../core/history.js';
 import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
 import { createSliderInput } from '../ui/slider-input.js';
+import { createStretchControl } from '../ui/preview-controls.js';
 import { createComposeView } from '../compose/compose-view.js';
 
 const GLYPH_SIZE = 1024;
@@ -55,6 +56,11 @@ export function renderIndexPage(app) {
   let backgroundImage = null;
   let bgOpacity = 0.3;
 
+  // Preview mode (outside Compose): hides grid + background and locks every
+  // parameter, leaving only glyph selection and the stretch controls (which
+  // exist only while preview is active). Never on in the Compose panel.
+  let previewMode = false;
+
   // Guides-view zoom, persisted across page renders.
   const SCALE_L_KEY = 'kabuku.previewScaleL';
   const loadScale = (key) => {
@@ -80,6 +86,11 @@ export function renderIndexPage(app) {
     activePage: 'glyphs',
     fontProjectId: currentFontProjectId(),
     title: projectName,
+    save: {
+      flush: () => flushProjectNow(),
+      subscribe: subscribeProject,
+      isDirty: fontHasUnsavedChanges,
+    },
   });
   const progressWrap = progressEl.wrap;
   const progressBar = progressEl.bar;
@@ -378,6 +389,27 @@ export function renderIndexPage(app) {
     (v) => { scaleL = v; sessionStorage.setItem(SCALE_L_KEY, String(v)); },
     () => blit(previewCanvasL, previewCtxL, offCanvasL, scaleL),
   ));
+
+  // Stretch sliders (伸縮 / 伸縮の角度) — present only while preview is active.
+  const stretchControl = createStretchControl({
+    global,
+    onInput: () => renderLeft(),
+  });
+  const stretchWrap = document.createElement('div');
+  stretchWrap.className = 'pane-stretch';
+  stretchWrap.style.display = 'none';
+  for (const row of stretchControl.rows) stretchWrap.appendChild(row);
+  leftBar.appendChild(stretchWrap);
+
+  // Preview toggle, pinned to the right end of the bar (margin-left:auto in CSS).
+  // Hidden in the Compose panel (syncCenterView hides the whole pane there).
+  const previewToggleBtn = document.createElement('button');
+  previewToggleBtn.type = 'button';
+  previewToggleBtn.className = 'pane-preview-btn';
+  previewToggleBtn.textContent = 'Preview';
+  previewToggleBtn.addEventListener('click', () => setPreviewMode(!previewMode));
+  leftBar.appendChild(previewToggleBtn);
+
   leftPane.appendChild(previewCanvasL);
   leftPane.appendChild(leftTag);
   leftPane.appendChild(leftBar);
@@ -485,7 +517,7 @@ export function renderIndexPage(app) {
   // Painting happens on the left (un-stretched, guide) pane only — its cell
   // geometry matches the hit-test paths.
   previewCanvasL.addEventListener('mousedown', (e) => {
-    if (panel !== 'pen') return;
+    if (previewMode || panel !== 'pen') return;
     isPainting = true;
     handlePaint(e);
   });
@@ -546,8 +578,30 @@ export function renderIndexPage(app) {
   if (panel === 'compose') composeView.redraw();
 
   // ============ Functions ============
+
+  // Enter/leave preview mode. On exit the stretch values are cleared (the
+  // controls disappear, so there'd be no way to undo a leftover stretch) and
+  // the guides view returns. Locking the sidebar params is done via a class.
+  function setPreviewMode(on) {
+    if (previewMode === on) return;
+    previewMode = on;
+    if (!on) {
+      global.stretchAmount = 0;
+      global.stretchAngle = 0;
+      saveGlobal(global);
+      stretchControl.syncFromGlobal();
+    }
+    stretchWrap.style.display = on ? '' : 'none';
+    previewToggleBtn.classList.toggle('active', on);
+    sidebar.classList.toggle('preview-locked', on);
+    previewCanvasL.classList.toggle('preview-active', on);
+    redraw();
+  }
+
   function setPanel(newPanel) {
     if (panel === newPanel) return;
+    // The stretch controls and parameter lock only make sense outside Compose.
+    if (newPanel === 'compose') setPreviewMode(false);
     panel = newPanel;
     sessionStorage.setItem(PANEL_KEY, panel);
     syncRailButtons();
@@ -1602,6 +1656,22 @@ export function renderIndexPage(app) {
   // Guides view: drop stretch only (gap/blur kept), show every guide + the
   // source image — the paintable reference.
   function renderLeft(rc = currentRender()) {
+    // Preview mode: hide grid/guides + background image and apply the live
+    // stretch so the user sees the finished glyph alone.
+    if (previewMode) {
+      // rc.transform may be a cached (local-context) resolve, so pull the live
+      // stretch off `global` — the stretch sliders only ever write there.
+      const transform = {
+        ...rc.transform,
+        stretchAngle: global.stretchAngle ?? 0,
+        stretchAmount: global.stretchAmount ?? 0,
+      };
+      renderTarget(previewCanvasL, previewCtxL, offCanvasL, offCtxL, {
+        layers: rc.layers, transform, preview: true, showBackground: false, scale: scaleL,
+        activeLayerIndex: null, overlayActiveFill: false,
+      });
+      return;
+    }
     const leftTransform = { ...rc.transform, stretchAmount: 0, stretchAngle: 0 };
     renderTarget(previewCanvasL, previewCtxL, offCanvasL, offCtxL, {
       layers: rc.layers, transform: leftTransform, preview: false, showBackground: true, scale: scaleL,
@@ -1702,6 +1772,9 @@ export function renderIndexPage(app) {
       || (selectedCharId && changes.changedCharIds.has(selectedCharId));
     if (sidebarStale) renderSidebarBody();
     loadBackgroundImage();
+    // global may have been swapped by undo/redo; keep the preview stretch
+    // sliders in step with it.
+    stretchControl.syncFromGlobal();
     redraw();
     // Keep the compose composition in sync with undone/redone glyph state.
     composeView.invalidate();
@@ -1822,6 +1895,17 @@ function importImages(project, ui) {
     const strip = ui.getStrip();
     for (const file of files) {
       const charId = file.name.replace(/\.[^.]+$/, '');
+      // A file with no name stem (e.g. ".png") yields an empty id — not a real
+      // glyph — so skip it. Punctuation ids like '.' or '/' are fine; they're
+      // encoded when persisted.
+      if (!charId) {
+        console.warn(`Skipping import for "${file.name}" — empty glyph id`);
+        done++;
+        ui.progressBar.style.width = Math.round((done / total) * 100) + '%';
+        ui.progressText.textContent = `${done} / ${total}`;
+        await new Promise(r => requestAnimationFrame(r));
+        continue;
+      }
       if (!project.characters[charId]) {
         const g = getGlobal();
         const importLayers = [];

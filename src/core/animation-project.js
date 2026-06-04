@@ -14,7 +14,7 @@ import {
 } from 'firebase/firestore';
 import { getDb } from './firebase.js';
 import { userInfo } from './auth.js';
-import { fetchFontProjectSnapshot, createDefaultAnimation, ANIMATED_PARAM_KEYS, stripUndefined } from './project.js';
+import { fetchFontProjectSnapshot, createDefaultAnimation, ANIMATED_PARAM_KEYS, stripUndefined, charIdToDocId, docIdToCharId } from './project.js';
 
 const WRITE_DEBOUNCE_MS = 1500;
 
@@ -26,6 +26,22 @@ let _apId = null;
 let _animDirty = false;
 let _metaDirty = false;
 let _writeTimer = null;
+const _changeSubs = new Set();
+
+function notifyChange() {
+  for (const fn of _changeSubs) fn();
+}
+
+/** Subscribe to in-memory state changes (e.g. for unsaved-indicator UI). */
+export function subscribeAnimationProject(fn) {
+  _changeSubs.add(fn);
+  return () => _changeSubs.delete(fn);
+}
+
+/** True when there are edits not yet committed to Firestore. */
+export function hasUnsavedChanges() {
+  return _animDirty || _metaDirty;
+}
 
 export function currentAnimationProjectId() { return _apId; }
 export function currentAnimationProjectName() { return _ap?.name || null; }
@@ -101,7 +117,7 @@ export async function bootAnimationProject(projectId) {
   const meta = metaSnap.data();
   const charsSnap = await getDocs(collection(db, 'animationProjects', projectId, 'characters'));
   const characters = {};
-  for (const d of charsSnap.docs) characters[d.id] = d.data();
+  for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
   _ap = {
     id: projectId,
     name: meta.name || 'Untitled',
@@ -121,6 +137,7 @@ export async function bootAnimationProject(projectId) {
 function scheduleWrite() {
   if (_writeTimer) clearTimeout(_writeTimer);
   _writeTimer = setTimeout(() => { flushNow(); }, WRITE_DEBOUNCE_MS);
+  notifyChange();
 }
 
 export async function flushNow() {
@@ -146,6 +163,8 @@ export async function flushNow() {
   } catch (e) {
     console.error('Failed to flush animation project:', e);
   }
+  // Tell unsaved-indicator UIs to refresh now that the dirty flags changed.
+  notifyChange();
 }
 
 if (typeof window !== 'undefined') {
@@ -199,7 +218,8 @@ async function writeCharactersInBatches(animationProjectId, characters) {
     const chunk = entries.splice(0, 450);
     const batch = writeBatch(db);
     for (const [cid, cd] of chunk) {
-      batch.set(doc(db, 'animationProjects', animationProjectId, 'characters', cid), stripUndefined(cd));
+      if (cid === '') continue;
+      batch.set(doc(db, 'animationProjects', animationProjectId, 'characters', charIdToDocId(cid)), stripUndefined(cd));
     }
     await batch.commit();
   }

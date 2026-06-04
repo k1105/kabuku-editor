@@ -5,6 +5,7 @@ import {
   getOriginFontProjectId, getOriginFontProjectName,
   setLinkedFontProject,
   flushNow as flushAnimationNow,
+  subscribeAnimationProject, hasUnsavedChanges as animHasUnsavedChanges,
 } from '../core/animation-project.js';
 import { RENDER_SIZE } from '../compose/glyph-cache.js';
 import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime } from '../animation/animation.js';
@@ -177,6 +178,11 @@ export function renderAnimationPage(app) {
     fontProjectId: null,
     title: animName,
     historyMode: 'animation',
+    save: {
+      flush: () => flushAnimationNow(),
+      subscribe: subscribeAnimationProject,
+      isDirty: animHasUnsavedChanges,
+    },
   });
 
   // === Settings popup (opened via the gear icon in the nav) ===
