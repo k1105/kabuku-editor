@@ -414,10 +414,11 @@ export function glyphAddDialog({
   return openModal('Add Glyph', (body, okBtn) => {
     // ── Tab strip ─────────────────────────────────────────────────────────
     const tabs = [
-      { id: 'image',   label: 'Image',   okLabel: 'Choose Files' },
-      { id: 'font',    label: 'Font',    okLabel: 'Generate' },
-      { id: 'kanjivg', label: 'KanjiVG', okLabel: 'Generate' },
-      { id: 'empty',   label: 'Empty',   okLabel: 'Add' },
+      { id: 'image',    label: 'Image',     okLabel: 'Choose Files' },
+      { id: 'font',     label: 'Font',      okLabel: 'Generate' },
+      { id: 'fontfile', label: 'Font File', okLabel: 'Generate' },
+      { id: 'kanjivg',  label: 'KanjiVG',   okLabel: 'Generate' },
+      { id: 'empty',    label: 'Empty',     okLabel: 'Add' },
     ];
     let activeTab = 'image';
 
@@ -531,6 +532,75 @@ export function glyphAddDialog({
     fontPane.appendChild(fNote);
     body.appendChild(fontPane);
 
+    // Font File pane (import an arbitrary TTF/OTF from disk)
+    const ffPane = document.createElement('div');
+    ffPane.className = 'tab-pane';
+
+    const ffFileRow = document.createElement('div');
+    ffFileRow.className = 'row';
+    const ffFileLabel = document.createElement('label');
+    ffFileLabel.textContent = 'File';
+    const ffFileInput = document.createElement('input');
+    ffFileInput.type = 'file';
+    ffFileInput.accept = '.ttf,.otf,font/ttf,font/otf,font/sfnt';
+    ffFileInput.style.flex = '1';
+    ffFileRow.appendChild(ffFileLabel);
+    ffFileRow.appendChild(ffFileInput);
+    ffPane.appendChild(ffFileRow);
+
+    const ffRangeRow = document.createElement('div');
+    ffRangeRow.className = 'row';
+    const ffRangeLabel = document.createElement('label');
+    ffRangeLabel.textContent = 'Ranges';
+    ffRangeLabel.style.alignSelf = 'flex-start';
+    ffRangeLabel.style.paddingTop = '4px';
+    const ffChecks = document.createElement('div');
+    ffChecks.style.display = 'flex';
+    ffChecks.style.flexDirection = 'column';
+    ffChecks.style.gap = '4px';
+    ffChecks.style.flex = '1';
+    const ffCbMap = {};
+    for (const p of presets) {
+      const lab = document.createElement('label');
+      lab.style.display = 'flex';
+      lab.style.alignItems = 'center';
+      lab.style.gap = '6px';
+      lab.style.fontSize = '12px';
+      lab.style.color = 'var(--text)';
+      lab.style.flex = 'unset';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = defaultPresetIds.includes(p.id);
+      ffCbMap[p.id] = cb;
+      const span = document.createElement('span');
+      span.textContent = p.label;
+      lab.appendChild(cb);
+      lab.appendChild(span);
+      ffChecks.appendChild(lab);
+    }
+    ffRangeRow.appendChild(ffRangeLabel);
+    ffRangeRow.appendChild(ffChecks);
+    ffPane.appendChild(ffRangeRow);
+
+    const ffCustomRow = document.createElement('div');
+    ffCustomRow.className = 'row';
+    const ffCustomLabel = document.createElement('label');
+    ffCustomLabel.textContent = 'Custom';
+    const ffCustomInput = document.createElement('input');
+    ffCustomInput.type = 'text';
+    ffCustomInput.placeholder = 'extra characters (optional)';
+    ffCustomRow.appendChild(ffCustomLabel);
+    ffCustomRow.appendChild(ffCustomInput);
+    ffPane.appendChild(ffCustomRow);
+
+    const ffNote = document.createElement('div');
+    ffNote.className = 'note';
+    ffNote.textContent =
+      '手元の TTF / OTF ファイルを読み込み、各文字をレンダリングしてローカルでメッシュ化します。' +
+      'フォントはこのブラウザ内（IndexedDB）にのみ保存されます。';
+    ffPane.appendChild(ffNote);
+    body.appendChild(ffPane);
+
     // KanjiVG pane
     const kvgPane = document.createElement('div');
     kvgPane.className = 'tab-pane';
@@ -628,10 +698,11 @@ export function glyphAddDialog({
       for (const t of tabs) {
         tabBtns[t.id].classList.toggle('active', t.id === id);
       }
-      imagePane.style.display = id === 'image'   ? '' : 'none';
-      fontPane.style.display  = id === 'font'    ? '' : 'none';
-      kvgPane.style.display   = id === 'kanjivg' ? '' : 'none';
-      emptyPane.style.display = id === 'empty'   ? '' : 'none';
+      imagePane.style.display = id === 'image'    ? '' : 'none';
+      fontPane.style.display  = id === 'font'     ? '' : 'none';
+      ffPane.style.display    = id === 'fontfile' ? '' : 'none';
+      kvgPane.style.display   = id === 'kanjivg'  ? '' : 'none';
+      emptyPane.style.display = id === 'empty'    ? '' : 'none';
       okBtn.textContent = tabs.find(t => t.id === id).okLabel;
     }
     setActive('image');
@@ -639,6 +710,14 @@ export function glyphAddDialog({
     return () => {
       if (activeTab === 'image') return { mode: 'image' };
       if (activeTab === 'empty') return { mode: 'empty' };
+      if (activeTab === 'fontfile') {
+        const file = ffFileInput.files && ffFileInput.files[0];
+        if (!file) { ffFileInput.focus(); return null; }
+        const presetIds = Object.keys(ffCbMap).filter(id => ffCbMap[id].checked);
+        const customText = ffCustomInput.value || '';
+        if (presetIds.length === 0 && customText.length === 0) return null;
+        return { mode: 'fontfile', file, presetIds, customText };
+      }
       if (activeTab === 'kanjivg') {
         const presetIds = Object.keys(kCbMap).filter(id => kCbMap[id].checked);
         const customText = kCustomInput.value || '';

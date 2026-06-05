@@ -8,8 +8,24 @@
  * instead of an uploaded PNG.
  */
 
+import { isLocalFont, ensureLocalFontRegistered } from './local-font.js';
+
 const GOOGLE_CSS_BASE = 'https://fonts.googleapis.com/css2';
 const linkCache = new Map(); // family -> <link> element
+
+/**
+ * Ensure `family` is rasterizable, routing to the right source: a
+ * locally-imported font file (FontFace from IndexedDB) or a Google Fonts
+ * family (CSS API). All glyph-generation/render call sites should use this
+ * instead of loadGoogleFont so imported fonts work everywhere.
+ */
+export async function ensureFontLoaded(family, sampleText = '') {
+  if (await isLocalFont(family)) {
+    await ensureLocalFontRegistered(family, sampleText);
+  } else {
+    await loadGoogleFont(family, sampleText);
+  }
+}
 
 /**
  * Inject (once per family) a Google Fonts CSS link and resolve when the
@@ -103,7 +119,7 @@ export function renderCharToContext(ctx, char, family, glyphSize) {
  */
 export async function renderFontSourceToCanvas(fontSource, glyphSize, _fontMetrics) {
   const { family, char } = fontSource;
-  await loadGoogleFont(family, char);
+  await ensureFontLoaded(family, char);
   const cv = document.createElement('canvas');
   cv.width = glyphSize;
   cv.height = glyphSize;

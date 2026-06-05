@@ -14,7 +14,7 @@ import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
 import { createStretchControl } from '../ui/preview-controls.js';
 import { createParamRow } from '../ui/param-row.js';
-import { loadGoogleFont, renderCharToContext } from '../render/font/font-import.js';
+import { ensureFontLoaded, renderCharToContext } from '../render/font/font-import.js';
 import { fileToDataURL, loadImage } from '../utils/file-io.js';
 import { createSourceImageLoader } from './source-image.js';
 
@@ -655,7 +655,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     const origLabel = missingBtn.textContent;
     missingBtn.disabled = true;
     try {
-      await loadGoogleFont(family, missing.join(''));
+      await ensureFontLoaded(family, missing.join(''));
     } catch (e) {
       console.error(e);
       alert(`フォント「${family}」の読み込みに失敗しました: ${e.message || e}`);

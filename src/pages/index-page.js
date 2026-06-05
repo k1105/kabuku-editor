@@ -14,7 +14,8 @@ import { buildFontBytes } from '../render/font-exporter.js';
 import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../render/font/vf-builder.js';
 import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, saveFile } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
-import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { ensureFontLoaded, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { importLocalFontFile } from '../render/font/local-font.js';
 import { loadKanjiVGPaths, renderKanjiVGToContext, renderKanjiVGSourceToCanvas, renderEditedKanjiVGToCanvas, KVG_VIEWBOX } from '../render/font/kanjivg-import.js';
 import { parsePaths, serializePaths, moveHandle, moveAnchor } from '../render/font/kanjivg-path-edit.js';
 import { iconButton } from '../ui/icons.js';
@@ -1708,6 +1709,17 @@ export function renderIndexPage(app) {
       const chars = buildCharSet(result.presetIds, result.customText);
       if (chars.length === 0) return;
       await importFromFont(project, result.family, chars, makeImportHooks('import-from-font'));
+    } else if (result.mode === 'fontfile') {
+      let family;
+      try {
+        ({ family } = await importLocalFontFile(result.file));
+      } catch (e) {
+        alert(e.message || 'Font import failed');
+        return;
+      }
+      const chars = buildCharSet(result.presetIds, result.customText);
+      if (chars.length === 0) return;
+      await importFromFont(project, family, chars, makeImportHooks('import-from-font-file'));
     } else if (result.mode === 'kanjivg') {
       const chars = buildCharSet(result.presetIds, result.customText);
       if (chars.length === 0) return;
@@ -2230,7 +2242,7 @@ async function importFromFont(project, family, chars, ui) {
   ui.progressText.textContent = `Loading font...`;
 
   try {
-    await loadGoogleFont(family, chars.join(''));
+    await ensureFontLoaded(family, chars.join(''));
   } catch (e) {
     ui.progressWrap.style.display = 'none';
     alert(e.message || 'Font load failed');
