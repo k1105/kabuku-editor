@@ -293,6 +293,34 @@ body {
   text-align: right;
 }
 
+/* Glyph name editor, docked at the top-center of the viewport (mirrors the
+   bottom-docked .index-pane-controls). */
+.index-pane-name {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  max-width: calc(100% - 24px);
+}
+
+.index-pane-name .glyph-name-input {
+  width: 180px;
+  max-width: 100%;
+  font-size: 13px;
+  text-align: center;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.index-pane-name .glyph-name-input:focus {
+  outline: none;
+  border-color: var(--accent, #4a90d9);
+}
+
 /* Preview toggle, pinned to the right end of the controls bar. */
 .pane-preview-btn {
   flex: 0 0 auto;

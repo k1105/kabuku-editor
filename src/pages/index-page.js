@@ -45,14 +45,14 @@ export function renderIndexPage(app) {
     : (Object.keys(project.characters)[0] ?? null);
 
   // Active sidebar panel, chosen from the left icon rail.
-  const PANELS = ['layers', 'pen', 'automesh', 'metrics', 'props', 'compose'];
+  const PANELS = ['layers', 'pen', 'automesh', 'metrics', 'compose'];
   let panel = PANELS.includes(sessionStorage.getItem(PANEL_KEY))
     ? sessionStorage.getItem(PANEL_KEY)
     : 'layers';
   // Panels that edit the selected glyph's per-character state (live paint
   // edits, image placement, meshing) need the in-memory local layers; the
   // others render straight from the global config.
-  const isLocalContext = () => panel === 'pen' || panel === 'props' || panel === 'automesh';
+  const isLocalContext = () => panel === 'pen' || panel === 'automesh';
 
   // Paint state
   let currentTool = 'paint';
@@ -277,7 +277,6 @@ export function renderIndexPage(app) {
     { id: 'pen',      icon: 'lucide:pen-tool',           title: 'Pen' },
     { id: 'automesh', icon: 'lucide:grid-3x3',           title: 'Auto Mesh' },
     { id: 'metrics',  icon: 'lucide:ruler',              title: 'Font Metrics' },
-    { id: 'props',    icon: 'lucide:sliders-horizontal', title: 'Properties' },
     { id: 'compose',  icon: 'lucide:type',               title: 'Compose' },
   ];
   const railButtons = {};
@@ -340,6 +339,41 @@ export function renderIndexPage(app) {
   const leftTag = document.createElement('span');
   leftTag.className = 'index-preview-tag';
   leftTag.textContent = 'Guides';
+
+  // Glyph name editor, docked at the top-center of the viewport (same overlay
+  // idea as the Scale slider at the bottom). Replaces the former Properties
+  // panel, which held only this one field.
+  const nameOverlay = document.createElement('div');
+  nameOverlay.className = 'index-pane-name';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'glyph-name-input';
+  nameInput.setAttribute('aria-label', 'Glyph name');
+  nameOverlay.appendChild(nameInput);
+  function syncGlyphNameInput() {
+    // Hidden whenever the Guides pane is (no selection, or Compose panel).
+    const show = !!selectedCharId && panel !== 'compose';
+    nameOverlay.style.display = show ? '' : 'none';
+    if (show && document.activeElement !== nameInput) nameInput.value = selectedCharId;
+  }
+  function commitGlyphName() {
+    const editingCharId = selectedCharId;
+    if (!editingCharId) return;
+    const v = nameInput.value.trim();
+    if (!v || v === editingCharId) { nameInput.value = editingCharId; return; }
+    const result = renameSelectedGlyph(v);
+    if (!result.ok) {
+      if (result.reason === 'conflict') alert(`A glyph named "${v}" already exists.`);
+      else if (result.reason === 'empty') alert('Name cannot be empty.');
+      nameInput.value = editingCharId;
+    }
+  }
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+    else if (e.key === 'Escape') { nameInput.value = selectedCharId || ''; nameInput.blur(); }
+  });
+  nameInput.addEventListener('blur', commitGlyphName);
+
   // Left pane controls (docked at bottom): zoom only — stretch never affects
   // this pane.
   const leftBar = document.createElement('div');
@@ -372,6 +406,7 @@ export function renderIndexPage(app) {
 
   leftPane.appendChild(previewCanvasL);
   leftPane.appendChild(leftTag);
+  leftPane.appendChild(nameOverlay);
   leftPane.appendChild(leftBar);
 
   previewSplit.appendChild(leftPane);
@@ -762,6 +797,7 @@ export function renderIndexPage(app) {
   // redraw() touches offscreen buffers declared later in this function, so this
   // must not draw while the page is still being built.
   function syncCenterView() {
+    syncGlyphNameInput();
     const showCompose = panel === 'compose';
     composeView.centerEl.style.display = showCompose ? '' : 'none';
     // The glyph strip is for picking the edited glyph — irrelevant in Compose,
@@ -905,7 +941,6 @@ export function renderIndexPage(app) {
       case 'pen':      renderPenPanel(); break;
       case 'automesh': renderAutoMeshPanel(); break;
       case 'metrics':  renderMetricsPanel(); break;
-      case 'props':    renderPropsPanel(); break;
       case 'compose':  sidebarBody.appendChild(composeView.sidebarEl); break;
     }
   }
@@ -1124,7 +1159,7 @@ export function renderIndexPage(app) {
   // read-only layer list (incl. the base-image "下地" layer), per-glyph
   // grid/transform overrides, SVG export and delete. Selecting the base layer
   // swaps the detail area to the source-image placement params; the glyph name
-  // stays in the Properties panel.
+  // is edited via the overlay at the top of the viewport.
   function renderPenPanel() {
     if (!selectedCharId) { appendNoSelMsg(); return; }
 
@@ -1300,53 +1335,6 @@ export function renderIndexPage(app) {
     deleteBtn.textContent = 'Delete Glyph';
     deleteBtn.addEventListener('click', () => deleteSelectedGlyph());
     sidebarBody.appendChild(deleteBtn);
-  }
-
-  // Properties — per-glyph name. The source image and its placement (load,
-  // background opacity, offset & scale) live on the base layer in the Pen
-  // panel's layer list (see renderSourceImageSection).
-  function renderPropsPanel() {
-    if (!selectedCharId) { appendNoSelMsg(); return; }
-
-    // Glyph (name)
-    const glyphSection = document.createElement('div');
-    glyphSection.className = 'param-group';
-    const glyphTitle = document.createElement('h3');
-    glyphTitle.textContent = 'Glyph';
-    glyphSection.appendChild(glyphTitle);
-
-    // Capture charId at render time so blur after a glyph switch doesn't
-    // try to rename the newly-selected glyph.
-    const editingCharId = selectedCharId;
-    const nameRow = document.createElement('div');
-    nameRow.className = 'param-row';
-    const nameLabel = document.createElement('label');
-    nameLabel.textContent = 'Name';
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'glyph-name-input';
-    nameInput.value = editingCharId;
-    function commitName() {
-      if (selectedCharId !== editingCharId) return;
-      const v = nameInput.value.trim();
-      if (!v) { nameInput.value = editingCharId; return; }
-      if (v === editingCharId) return;
-      const result = renameSelectedGlyph(v);
-      if (!result.ok) {
-        if (result.reason === 'conflict') alert(`A glyph named "${v}" already exists.`);
-        else if (result.reason === 'empty') alert('Name cannot be empty.');
-        nameInput.value = editingCharId;
-      }
-    }
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
-      else if (e.key === 'Escape') { nameInput.value = editingCharId; nameInput.blur(); }
-    });
-    nameInput.addEventListener('blur', commitName);
-    nameRow.appendChild(nameLabel);
-    nameRow.appendChild(nameInput);
-    glyphSection.appendChild(nameRow);
-    sidebarBody.appendChild(glyphSection);
   }
 
   // Source image + placement params for the active glyph's base layer (下地):
@@ -1640,6 +1628,7 @@ export function renderIndexPage(app) {
     }
     selectedCharId = trimmed;
     sessionStorage.setItem(SEL_CHAR_KEY, trimmed);
+    syncGlyphNameInput();
     historyCommit('rename-glyph');
     return { ok: true };
   }
