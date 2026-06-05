@@ -7,6 +7,7 @@ import { autoMesh } from '../core/mesh.js';
 import { loadImageCached } from '../core/image-cache.js';
 import { drawSourceImage } from '../render/canvas-renderer.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
 import { applyStretch } from '../transform/stretch.js';
 import { applyGap } from '../transform/gap.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
@@ -267,6 +268,9 @@ export function createFrameRenderer(animation, ctx) {
         source = await loadImageCached(cd.imagePath);
       } else if (cd?.fontSource) {
         try { source = await renderFontSourceToCanvas(cd.fontSource, RENDER_SIZE, global.fontMetrics); }
+        catch { source = null; }
+      } else if (cd?.kanjivgSource) {
+        try { source = await renderKanjiVGSourceToCanvas(cd.kanjivgSource, RENDER_SIZE, global.kanjivgStrokeWidth); }
         catch { source = null; }
       }
       if (!source) { sourceCtxByChar.set(cid, null); return; }

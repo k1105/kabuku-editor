@@ -15,6 +15,8 @@ import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } f
 import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, saveFile } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
 import { loadGoogleFont, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
+import { loadKanjiVGPaths, renderKanjiVGToContext, renderKanjiVGSourceToCanvas, renderEditedKanjiVGToCanvas, KVG_VIEWBOX } from '../render/font/kanjivg-import.js';
+import { parsePaths, serializePaths, moveHandle, moveAnchor } from '../render/font/kanjivg-path-edit.js';
 import { iconButton } from '../ui/icons.js';
 import { createLangToggle, t } from '../ui/i18n.js';
 import { createPageHeader } from '../ui/page-header.js';
@@ -79,6 +81,16 @@ export function renderIndexPage(app) {
   // Per-character state (rebuilt on char/panel change)
   let localLayers = [];
   let activeLocalLayerIdx = 0;
+  // True while the base-image layer (下地) is the active selection in the Pen
+  // panel. Suppresses the grid red highlight and emphasizes the source image
+  // on the canvas instead.
+  let baseLayerActive = false;
+  // KanjiVG path editor: when the active base is a kanjivg source and the base
+  // layer is selected, `kvgEdit` holds the editable subpaths (109-space) and
+  // the canvas shows draggable anchors/handles. `kvgDrag` tracks an in-progress
+  // drag: { sp, ai, which:'pt'|'cIn'|'cOut' }.
+  let kvgEdit = null;
+  let kvgDrag = null;
   let localTransformOverrides = {};
   let localTransform = resolveTransform(global, {});
 
@@ -335,7 +347,7 @@ export function renderIndexPage(app) {
   leftBar.appendChild(createScaleRow(
     () => scaleL,
     (v) => { scaleL = v; sessionStorage.setItem(SCALE_L_KEY, String(v)); },
-    () => blit(previewCanvasL, previewCtxL, offCanvasL, scaleL),
+    () => { blit(previewCanvasL, previewCtxL, offCanvasL, scaleL); drawKvgOverlay(); },
   ));
 
   // Stretch sliders (伸縮 / 伸縮の角度) — present only while preview is active.
@@ -466,14 +478,31 @@ export function renderIndexPage(app) {
   // geometry matches the hit-test paths.
   previewCanvasL.addEventListener('mousedown', (e) => {
     if (previewMode || panel !== 'pen') return;
+    // While the 下地 layer is active we're editing the base, not painting cells.
+    // For kanjivg bases, drag the path anchors/handles.
+    if (baseLayerActive) {
+      if (kvgEdit) {
+        const hit = kvgHitTest(e);
+        if (hit) kvgDrag = hit;
+      }
+      return;
+    }
     isPainting = true;
     handlePaint(e);
   });
   previewCanvasL.addEventListener('mousemove', (e) => {
+    if (kvgDrag) { kvgDragMove(e); return; }
     if (!isPainting) return;
     handlePaint(e);
   });
   previewCanvasL.addEventListener('mouseup', () => {
+    if (kvgDrag) {
+      kvgDrag = null;
+      saveLocalChar();
+      refreshSelectedThumbnail();
+      historyCommit('kvg-edit');
+      return;
+    }
     if (!isPainting) return;
     isPainting = false;
     saveLocalChar();
@@ -481,11 +510,31 @@ export function renderIndexPage(app) {
     historyCommit('paint');
   });
   previewCanvasL.addEventListener('mouseleave', () => {
+    if (kvgDrag) {
+      kvgDrag = null;
+      saveLocalChar();
+      refreshSelectedThumbnail();
+      historyCommit('kvg-edit');
+      return;
+    }
     if (!isPainting) return;
     isPainting = false;
     saveLocalChar();
     refreshSelectedThumbnail();
     historyCommit('paint');
+  });
+  // Double-click an anchor to toggle smooth/broken handle continuity.
+  previewCanvasL.addEventListener('dblclick', (e) => {
+    if (previewMode || panel !== 'pen' || !kvgEdit) return;
+    const hit = kvgHitTest(e, { anchorsOnly: true });
+    if (!hit) return;
+    const a = kvgEdit[hit.sp].anchors[hit.ai];
+    if (!a.cIn || !a.cOut) return; // endpoints have only one handle
+    a.mode = a.mode === 'smooth' ? 'broken' : 'smooth';
+    if (a.mode === 'smooth') moveHandle(a, 'cOut', a.cOut); // re-align cIn
+    kvgSyncBase();
+    saveLocalChar();
+    historyCommit('kvg-edit');
   });
 
   function handlePaint(e) {
@@ -516,6 +565,146 @@ export function renderIndexPage(app) {
         break;
       }
     }
+  }
+
+  // === KanjiVG base-path editor ===
+
+  // Build the editable subpaths for the active glyph's kanjivg base. Uses the
+  // source's edited paths if present, else the fetched KanjiVG SVG (async — the
+  // overlay appears once it resolves). No-op for non-kanjivg bases.
+  function kvgEnterEdit() {
+    kvgEdit = null;
+    kvgDrag = null;
+    const src = project.characters[selectedCharId]?.kanjivgSource;
+    if (!src) return;
+    const targetId = selectedCharId;
+    const build = (paths) => {
+      if (selectedCharId !== targetId || !baseLayerActive) return;
+      try {
+        kvgEdit = parsePaths(paths);
+      } catch (err) {
+        console.warn('KanjiVG path parse failed; path editing disabled.', err);
+        kvgEdit = null;
+      }
+      redraw();
+    };
+    if (src.editedPaths?.length) build(src.editedPaths);
+    else loadKanjiVGPaths(src.char).then((r) => build(r.paths)).catch(() => {});
+  }
+
+  function kvgExitEdit() {
+    kvgEdit = null;
+    kvgDrag = null;
+  }
+
+  // 109-space (KanjiVG) <-> glyph-space px, honoring the per-char image
+  // offset/scale that positions the base within the glyph box.
+  function kvgToGlyph(p) {
+    const cd = project.characters[selectedCharId] || {};
+    const size = GLYPH_SIZE * (cd.imageScale ?? 1);
+    const base = (GLYPH_SIZE - size) / 2;
+    const f = size / KVG_VIEWBOX;
+    return { x: base + (cd.imageOffsetX ?? 0) + p.x * f, y: base + (cd.imageOffsetY ?? 0) + p.y * f };
+  }
+  function glyphToKvg(g) {
+    const cd = project.characters[selectedCharId] || {};
+    const size = GLYPH_SIZE * (cd.imageScale ?? 1);
+    const base = (GLYPH_SIZE - size) / 2;
+    const f = size / KVG_VIEWBOX;
+    return { x: (g.x - base - (cd.imageOffsetX ?? 0)) / f, y: (g.y - base - (cd.imageOffsetY ?? 0)) / f };
+  }
+  // Pointer event -> glyph-space px (mirrors handlePaint's mapping).
+  function eventToGlyph(e) {
+    const rect = previewCanvasL.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * (previewCanvasL.width / rect.width);
+    const py = (e.clientY - rect.top) * (previewCanvasL.height / rect.height);
+    const s = scaleL;
+    return {
+      x: (px - (previewCanvasL.width - GLYPH_SIZE * s) / 2) / s,
+      y: (py - (previewCanvasL.height - GLYPH_SIZE * s) / 2) / s,
+    };
+  }
+
+  function kvgHitTest(e, { anchorsOnly = false } = {}) {
+    if (!kvgEdit) return null;
+    const rect = previewCanvasL.getBoundingClientRect();
+    const sx = previewCanvasL.width / rect.width; // = DPR
+    const g = eventToGlyph(e);
+    const r = 9 * sx / scaleL;            // ~9 CSS px tolerance in glyph-space
+    const r2 = r * r;
+    const near = (a) => { const dx = g.x - a.x, dy = g.y - a.y; return dx * dx + dy * dy <= r2; };
+    if (!anchorsOnly) {
+      for (let sp = 0; sp < kvgEdit.length; sp++) {
+        const anchors = kvgEdit[sp].anchors;
+        for (let ai = 0; ai < anchors.length; ai++) {
+          const a = anchors[ai];
+          if (a.cIn && near(kvgToGlyph(a.cIn))) return { sp, ai, which: 'cIn' };
+          if (a.cOut && near(kvgToGlyph(a.cOut))) return { sp, ai, which: 'cOut' };
+        }
+      }
+    }
+    for (let sp = 0; sp < kvgEdit.length; sp++) {
+      const anchors = kvgEdit[sp].anchors;
+      for (let ai = 0; ai < anchors.length; ai++) {
+        if (near(kvgToGlyph(anchors[ai].pt))) return { sp, ai, which: 'pt' };
+      }
+    }
+    return null;
+  }
+
+  function kvgDragMove(e) {
+    if (!kvgDrag || !kvgEdit) return;
+    const a = kvgEdit[kvgDrag.sp].anchors[kvgDrag.ai];
+    const k = glyphToKvg(eventToGlyph(e));
+    if (kvgDrag.which === 'pt') moveAnchor(a, k);
+    else moveHandle(a, kvgDrag.which, k);
+    kvgSyncBase();
+  }
+
+  // Serialize the edited subpaths back onto kanjivgSource, re-stroke the base
+  // synchronously, and redraw (overlay included).
+  function kvgSyncBase() {
+    if (!kvgEdit) return;
+    const cd = project.characters[selectedCharId];
+    if (!cd?.kanjivgSource) return;
+    const paths = serializePaths(kvgEdit);
+    cd.kanjivgSource = { ...cd.kanjivgSource, editedPaths: paths };
+    const width = cd.kanjivgSource.strokeWidth ?? global.kanjivgStrokeWidth;
+    backgroundImage = renderEditedKanjiVGToCanvas(paths, GLYPH_SIZE, width);
+    redraw();
+  }
+
+  // Draw anchors + bezier handles over the (already-blitted) base image.
+  function drawKvgOverlay() {
+    if (!kvgEdit || previewMode || panel !== 'pen' || !baseLayerActive) return;
+    const ctx = previewCtxL;
+    const dpr = window.devicePixelRatio || 1;
+    const s = scaleL;
+    const dx = (previewCanvasL.width - GLYPH_SIZE * s) / 2;
+    const dy = (previewCanvasL.height - GLYPH_SIZE * s) / 2;
+    const toScreen = (p) => { const g = kvgToGlyph(p); return { x: dx + g.x * s, y: dy + g.y * s }; };
+    ctx.save();
+    ctx.lineWidth = dpr;
+    for (const sp of kvgEdit) {
+      for (const a of sp.anchors) {
+        const ps = toScreen(a.pt);
+        ctx.strokeStyle = 'rgba(74,158,255,0.8)';
+        ctx.fillStyle = '#4a9eff';
+        for (const h of [a.cIn, a.cOut]) {
+          if (!h) continue;
+          const hs = toScreen(h);
+          ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(hs.x, hs.y); ctx.stroke();
+          ctx.beginPath(); ctx.arc(hs.x, hs.y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+        }
+        const r = 4.5 * dpr;
+        ctx.beginPath(); ctx.rect(ps.x - r, ps.y - r, r * 2, r * 2);
+        ctx.fillStyle = a.mode === 'smooth' ? '#ffcc00' : '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = '#1a1a1a';
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   // === Init ===
@@ -678,6 +867,15 @@ export function renderIndexPage(app) {
       }).catch(() => { redraw(); });
       return;
     }
+    if (cd?.kanjivgSource) {
+      const targetId = selectedCharId;
+      renderKanjiVGSourceToCanvas(cd.kanjivgSource, GLYPH_SIZE, global.kanjivgStrokeWidth).then(cv => {
+        if (selectedCharId !== targetId) return; // selection changed mid-load
+        backgroundImage = cv;
+        redraw();
+      }).catch(() => { redraw(); });
+      return;
+    }
     redraw();
   }
 
@@ -694,6 +892,7 @@ export function renderIndexPage(app) {
     if (cd?.imageOffsetY !== undefined) next.imageOffsetY = cd.imageOffsetY;
     if (cd?.imageScale !== undefined) next.imageScale = cd.imageScale;
     if (cd?.fontSource) next.fontSource = cd.fontSource;
+    if (cd?.kanjivgSource) next.kanjivgSource = cd.kanjivgSource;
     saveCharacter(selectedCharId, next);
     project.characters[selectedCharId] = { ...cd, ...next };
   }
@@ -922,8 +1121,10 @@ export function renderIndexPage(app) {
   }
 
   // Pen — the per-character editor (was the "Local" sidebar): paint tools,
-  // read-only layer list, per-glyph grid/transform overrides, SVG export and
-  // delete. Glyph name + source image moved to the Properties panel.
+  // read-only layer list (incl. the base-image "下地" layer), per-glyph
+  // grid/transform overrides, SVG export and delete. Selecting the base layer
+  // swaps the detail area to the source-image placement params; the glyph name
+  // stays in the Properties panel.
   function renderPenPanel() {
     if (!selectedCharId) { appendNoSelMsg(); return; }
 
@@ -936,14 +1137,40 @@ export function renderIndexPage(app) {
     // what overrides are diffed against, so the override badge is accurate.
     const layerBaseline = (idx) => global.defaultLayers?.[idx]?.gridParams || {};
 
-    // Layer panel (read-only)
+    // Reset the base-layer selection whenever the panel is (re)built (char or
+    // panel change). When true the detail area shows the source-image placement
+    // params instead of grid params + transform, and the canvas emphasizes the
+    // image (see renderLeft).
+    baseLayerActive = false;
+    kvgExitEdit();
+
+    function applyDetailVisibility() {
+      gridDetailEl.style.display = baseLayerActive ? 'none' : '';
+      baseDetailEl.style.display = baseLayerActive ? '' : 'none';
+    }
+
+    // Layer panel (read-only) with the base-image layer pinned to the end.
     const layerPanel = createLayerPanel(localLayers, activeLocalLayerIdx, {
       readOnly: true,
+      baseLayer: { name: '下地', active: false },
       onSelect(idx) {
+        baseLayerActive = false;
+        kvgExitEdit();
         activeLocalLayerIdx = idx;
         const layer = localLayers[idx];
         paramsPanel.update(layer.gridPlugin.getParamDefs(), layer.gridParams, layerBaseline(idx));
-        layerPanel.update(localLayers, activeLocalLayerIdx);
+        layerPanel.update(localLayers, activeLocalLayerIdx, false);
+        applyDetailVisibility();
+        redraw();
+      },
+      onSelectBase() {
+        baseLayerActive = true;
+        // Pass -1 so no normal layer stays highlighted while base is active;
+        // activeLocalLayerIdx is left untouched so grid editing / SVG export
+        // resume on the same layer when the user selects it again.
+        layerPanel.update(localLayers, -1, true);
+        applyDetailVisibility();
+        kvgEnterEdit(); // builds the path overlay for kanjivg bases (async)
         redraw();
       },
       onVisibilityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); historyCommit('local-layer-visibility'); },
@@ -951,6 +1178,11 @@ export function renderIndexPage(app) {
       onOpacityChange() { redraw(); saveLocalChar(); refreshSelectedThumbnail(); },
     });
     sidebarBody.appendChild(layerPanel.el);
+
+    // Grid detail (normal layer) and base detail (下地) live in sibling
+    // containers; applyDetailVisibility() swaps which one is shown.
+    const gridDetailEl = document.createElement('div');
+    const baseDetailEl = document.createElement('div');
 
     // Grid params (local override)
     const activeLayer = localLayers[activeLocalLayerIdx];
@@ -988,7 +1220,7 @@ export function renderIndexPage(app) {
         },
       }
     );
-    sidebarBody.appendChild(paramsPanel.el);
+    gridDetailEl.appendChild(paramsPanel.el);
 
     // Transform (local override)
     const transformPanel = createTransformPanel(localTransform, global, {
@@ -1012,7 +1244,14 @@ export function renderIndexPage(app) {
         saveLocalChar();
       },
     });
-    sidebarBody.appendChild(transformPanel.el);
+    gridDetailEl.appendChild(transformPanel.el);
+
+    // Base layer (下地) detail: source image + placement params.
+    renderSourceImageSection(baseDetailEl);
+
+    sidebarBody.appendChild(gridDetailEl);
+    sidebarBody.appendChild(baseDetailEl);
+    applyDetailVisibility();
 
     // SVG Export — single button opens a dialog with layer-scope + filename.
     const svgSection = document.createElement('div');
@@ -1063,8 +1302,9 @@ export function renderIndexPage(app) {
     sidebarBody.appendChild(deleteBtn);
   }
 
-  // Properties — per-glyph name plus the source image and its placement
-  // (load, background opacity, offset & scale).
+  // Properties — per-glyph name. The source image and its placement (load,
+  // background opacity, offset & scale) live on the base layer in the Pen
+  // panel's layer list (see renderSourceImageSection).
   function renderPropsPanel() {
     if (!selectedCharId) { appendNoSelMsg(); return; }
 
@@ -1107,6 +1347,14 @@ export function renderIndexPage(app) {
     nameRow.appendChild(nameInput);
     glyphSection.appendChild(nameRow);
     sidebarBody.appendChild(glyphSection);
+  }
+
+  // Source image + placement params for the active glyph's base layer (下地):
+  // load image, background opacity, image offset/scale, and (for kanjivg-sourced
+  // glyphs) stroke width. Rendered into `container` — the Pen panel's base-layer
+  // detail area.
+  function renderSourceImageSection(container) {
+    if (!selectedCharId) return;
 
     // Source image
     const imgSection = document.createElement('div');
@@ -1200,7 +1448,94 @@ export function renderIndexPage(app) {
       syncFromState();
     }
 
-    sidebarBody.appendChild(imgSection);
+    // KanjiVG stroke width (per-character override of global.kanjivgStrokeWidth).
+    // Only meaningful for kanjivg-sourced glyphs; re-run Auto Mesh after changing
+    // it to update cell fills, same as Image Scale.
+    if (project.characters[selectedCharId]?.kanjivgSource) {
+      const def = { label: 'Stroke', min: 1, max: 20, step: 0.5, default: global.kanjivgStrokeWidth };
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'override-badge';
+
+      const { row, api, label } = createParamRow(def.label, {
+        min: def.min, max: def.max, step: def.step,
+        value: def.default,
+        formatter: (v) => v.toFixed(1),
+        onInput: (v) => {
+          const c = project.characters[selectedCharId];
+          if (!c?.kanjivgSource) return;
+          if (v === def.default) {
+            const { strokeWidth, ...rest } = c.kanjivgSource;
+            c.kanjivgSource = rest;
+          } else {
+            c.kanjivgSource = { ...c.kanjivgSource, strokeWidth: v };
+          }
+          syncOverrideUI();
+          loadBackgroundImage();
+        },
+        onChange: () => {
+          saveLocalChar();
+          refreshSelectedThumbnail();
+        },
+      }, { badge });
+
+      function syncFromState() {
+        const cd = project.characters[selectedCharId] || {};
+        api.setValue(cd.kanjivgSource?.strokeWidth ?? def.default);
+        syncOverrideUI();
+      }
+
+      function syncOverrideUI() {
+        const cd = project.characters[selectedCharId] || {};
+        const overridden = cd.kanjivgSource?.strokeWidth !== undefined;
+        label.classList.toggle('overridden', overridden);
+        badge.classList.toggle('is-off', !overridden);
+        badge.title = overridden ? 'Click to reset override' : '';
+        badge.tabIndex = overridden ? 0 : -1;
+      }
+
+      badge.addEventListener('click', () => {
+        const c = project.characters[selectedCharId];
+        if (!c?.kanjivgSource || c.kanjivgSource.strokeWidth === undefined) return;
+        const { strokeWidth, ...rest } = c.kanjivgSource;
+        c.kanjivgSource = rest;
+        syncFromState();
+        saveLocalChar();
+        loadBackgroundImage();
+        refreshSelectedThumbnail();
+      });
+
+      imgSection.appendChild(row);
+      syncFromState();
+
+      // Bezier path editing (active while the 下地 layer is selected).
+      const hint = document.createElement('div');
+      hint.className = 'kvg-edit-hint';
+      hint.textContent = 'アンカー/ハンドルをドラッグでパス編集（ダブルクリックで連続⇔独立を切替）';
+      imgSection.appendChild(hint);
+
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'tool-btn';
+      resetBtn.textContent = 'パス編集をリセット';
+      resetBtn.style.marginTop = '6px';
+      resetBtn.disabled = !project.characters[selectedCharId]?.kanjivgSource?.editedPaths?.length;
+      resetBtn.addEventListener('click', () => {
+        const c = project.characters[selectedCharId];
+        if (!c?.kanjivgSource?.editedPaths) return;
+        const { editedPaths, ...rest } = c.kanjivgSource;
+        c.kanjivgSource = rest;
+        saveLocalChar();
+        loadBackgroundImage();
+        refreshSelectedThumbnail();
+        historyCommit('kvg-edit-reset');
+        if (baseLayerActive) kvgEnterEdit(); // rebuild the overlay from fetched paths
+        resetBtn.disabled = true;
+      });
+      imgSection.appendChild(resetBtn);
+    }
+
+    container.appendChild(imgSection);
   }
 
   function loadLocalImage() {
@@ -1375,6 +1710,7 @@ export function renderIndexPage(app) {
       ],
       defaultFamily: 'Noto Sans JP',
       defaultPresetIds: ['hiragana'],
+      defaultStrokeWidth: global.kanjivgStrokeWidth,
     });
     if (!result) return;
     if (result.mode === 'image') {
@@ -1383,6 +1719,14 @@ export function renderIndexPage(app) {
       const chars = buildCharSet(result.presetIds, result.customText);
       if (chars.length === 0) return;
       await importFromFont(project, result.family, chars, makeImportHooks('import-from-font'));
+    } else if (result.mode === 'kanjivg') {
+      const chars = buildCharSet(result.presetIds, result.customText);
+      if (chars.length === 0) return;
+      if (typeof result.strokeWidth === 'number') {
+        global.kanjivgStrokeWidth = result.strokeWidth;
+        saveGlobal(global);
+      }
+      await importFromKanjiVG(project, chars, global.kanjivgStrokeWidth, makeImportHooks('import-from-kanjivg'));
     } else if (result.mode === 'empty') {
       addEmptyGlyph();
     }
@@ -1430,7 +1774,7 @@ export function renderIndexPage(app) {
     progressWrap.style.display = '';
     const targets = Object.keys(project.characters).filter(cid => {
       const cd = project.characters[cid];
-      return cd?.imagePath || cd?.fontSource;
+      return cd?.imagePath || cd?.fontSource || cd?.kanjivgSource;
     });
     const total = targets.length;
     let done = 0;
@@ -1448,6 +1792,10 @@ export function renderIndexPage(app) {
       } else if (cd?.fontSource) {
         try {
           source = await renderFontSourceToCanvas(cd.fontSource, GLYPH_SIZE, global.fontMetrics);
+        } catch { source = null; }
+      } else if (cd?.kanjivgSource) {
+        try {
+          source = await renderKanjiVGSourceToCanvas(cd.kanjivgSource, GLYPH_SIZE, global.kanjivgStrokeWidth);
         } catch { source = null; }
       }
       if (!source) { done++; continue; }
@@ -1525,7 +1873,7 @@ export function renderIndexPage(app) {
   // stretchAmount keeps memory in check (~100 MB worst case at GLYPH_SIZE=1024,
   // stretch=2). Extra margin is added for metrics labels drawn just outside the
   // glyph; preview panes skip guides so they need no margin.
-  function renderTarget(canvas, ctx, offCanvas, offCtx, { layers, transform, preview, showBackground, scale, activeLayerIndex, overlayActiveFill }) {
+  function renderTarget(canvas, ctx, offCanvas, offCtx, { layers, transform, preview, showBackground, scale, activeLayerIndex, overlayActiveFill, emphasizeBackground }) {
     const stretchFactor = 1 + 2 * (transform.stretchAmount || 0);
     const cacheScale = stretchFactor + (computeCacheScale(transform) - 1);
     const baseSize = Math.ceil(GLYPH_SIZE * cacheScale);
@@ -1547,6 +1895,7 @@ export function renderIndexPage(app) {
       fontMetrics: global.fontMetrics,
       activeLayerIndex,
       overlayActiveFill,
+      emphasizeBackground,
       imageTransform: {
         imageOffsetX: cd?.imageOffsetX ?? 0,
         imageOffsetY: cd?.imageOffsetY ?? 0,
@@ -1576,13 +1925,18 @@ export function renderIndexPage(app) {
       return;
     }
     const leftTransform = { ...rc.transform, stretchAmount: 0, stretchAngle: 0 };
+    // When the base-image layer (下地) is active in the Pen panel, drop the grid
+    // red highlight and emphasize the source image instead (bold image + faint
+    // grids) so its placement is easy to adjust.
+    const baseActive = panel === 'pen' && baseLayerActive;
     renderTarget(previewCanvasL, previewCtxL, offCanvasL, offCtxL, {
       layers: rc.layers, transform: leftTransform, preview: false, showBackground: true, scale: scaleL,
       // Active-layer highlight: red grid outline (+ red fill overlay in the
       // per-character / local editor) so it's clear which layer is being painted.
-      activeLayerIndex: isLocalContext() ? activeLocalLayerIdx : activeGlobalLayerIdx,
+      activeLayerIndex: baseActive ? null : (isLocalContext() ? activeLocalLayerIdx : activeGlobalLayerIdx),
       // Only the Pen panel paints, so reserve the red fill overlay for it.
-      overlayActiveFill: panel === 'pen',
+      overlayActiveFill: panel === 'pen' && !baseActive,
+      emphasizeBackground: baseActive,
     });
   }
 
@@ -1592,6 +1946,7 @@ export function renderIndexPage(app) {
       return;
     }
     renderLeft();
+    drawKvgOverlay();
   }
 
   /**
@@ -1760,6 +2115,10 @@ function renderThumbnail(canvas, charData) {
     });
   } else if (charData.fontSource) {
     renderFontSourceToCanvas(charData.fontSource, GLYPH_SIZE, global.fontMetrics)
+      .then(drawWithBackground)
+      .catch(() => drawWithBackground(null));
+  } else if (charData.kanjivgSource) {
+    renderKanjiVGSourceToCanvas(charData.kanjivgSource, GLYPH_SIZE, global.kanjivgStrokeWidth)
       .then(drawWithBackground)
       .catch(() => drawWithBackground(null));
   } else {
@@ -1933,5 +2292,79 @@ async function importFromFont(project, family, chars, ui) {
   saveProject(project);
   ui.progressWrap.style.display = 'none';
   if (ui.onDone) ui.onDone();
+}
+
+/**
+ * Generate glyphs for `chars` from KanjiVG stroke SVGs, stroking each at
+ * `strokeWidth` (KanjiVG 109-unit space) into an offscreen canvas and running
+ * the same autoMesh pipeline as the font import. Characters KanjiVG doesn't
+ * cover (most symbols, fullwidth forms) are skipped and reported.
+ */
+async function importFromKanjiVG(project, chars, strokeWidth, ui) {
+  const empty = document.querySelector('.empty-state');
+  if (empty) empty.style.display = 'none';
+  ui.progressWrap.style.display = '';
+  ui.progressBar.style.width = '0%';
+
+  const total = chars.length;
+  ui.progressText.textContent = `0 / ${total}`;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = GLYPH_SIZE;
+  offscreen.height = GLYPH_SIZE;
+  const offCtx = offscreen.getContext('2d');
+  const strip = ui.getStrip();
+  let done = 0;
+  const skipped = [];
+  for (const ch of chars) {
+    const charId = ch;
+    if (!project.characters[charId]) {
+      let paths = null;
+      try {
+        ({ paths } = await loadKanjiVGPaths(ch));
+      } catch (e) {
+        if (e?.kanjivgNotFound) skipped.push(ch);
+        else console.error(e);
+        done++;
+        ui.progressBar.style.width = Math.round((done / total) * 100) + '%';
+        ui.progressText.textContent = `${done} / ${total}`;
+        await new Promise(r => requestAnimationFrame(r));
+        continue;
+      }
+      const g = getGlobal();
+      const importLayers = [];
+      for (const gl of g.defaultLayers) {
+        const gridPlugin = getGrid(gl.gridName);
+        if (!gridPlugin) continue;
+        const layer = createLayer(gridPlugin, { ...(gl.gridParams || {}) });
+        layer.name = gl.name || gl.gridName;
+        regenerateCells(layer, GLYPH_SIZE, GLYPH_SIZE);
+        importLayers.push(layer);
+      }
+      renderKanjiVGToContext(offCtx, paths, GLYPH_SIZE, strokeWidth);
+      for (const layer of importLayers) await autoMeshAsync(offCtx, layer.cells, 0.5);
+      const charData = {
+        layerOverrides: serializeLayerOverrides(importLayers, g),
+        kanjivgSource: { char: ch },
+      };
+      project.characters[charId] = charData;
+      const card = ui.createCard(charId, charData);
+      const before = ui.insertBefore?.();
+      if (before && before.parentNode === strip) {
+        strip.insertBefore(card, before);
+      } else {
+        strip.appendChild(card);
+      }
+    }
+    done++;
+    ui.progressBar.style.width = Math.round((done / total) * 100) + '%';
+    ui.progressText.textContent = `${done} / ${total}`;
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  saveProject(project);
+  ui.progressWrap.style.display = 'none';
+  if (ui.onDone) ui.onDone();
+  if (skipped.length > 0) {
+    alert(`KanjiVG に未収録の ${skipped.length} 文字をスキップしました: ${skipped.join('')}`);
+  }
 }
 

@@ -986,6 +986,37 @@ select {
   background: var(--bg);
 }
 
+/* Base layer (下地): pinned to the end, separated from grid layers. */
+.base-layer-item {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  color: var(--text-dim);
+}
+
+.base-layer-item.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+.kvg-edit-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.base-layer-item .base-layer-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--text-dim);
+}
+
+.base-layer-item.active .base-layer-icon { color: var(--accent); }
+
 .layer-item .visibility {
   display: inline-flex;
   align-items: center;

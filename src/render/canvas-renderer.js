@@ -25,6 +25,11 @@ export function renderCanvas(ctx, layers, opts = {}) {
   const overlayActiveFill = !!opts.overlayActiveFill;
   const ACTIVE_GRID_COLOR = '#ff0000';
 
+  // Base-layer (下地) emphasis: when the source-image layer is the active
+  // selection, draw the image bold (opaque, normal blend) and let the grids
+  // recede to faint outlines so the user can focus on image placement.
+  const emphasizeBackground = !!opts.emphasizeBackground;
+
   // Glyph origin within ctx.canvas. Defaults to auto-center; callers that
   // place the glyph at a specific position (e.g. animation direct render)
   // can override.
@@ -74,11 +79,24 @@ export function renderCanvas(ctx, layers, opts = {}) {
     applyMetaballFilter(ctx, t.metaballRadius, 100);
   }
 
-  // ── 2. Source image — multiply blend (middle) ──
+  // Emphasized: the base image is drawn at full opacity, which would otherwise
+  // bury the cell fills. Snapshot the fill mask and clear it so the image draws
+  // on a clean canvas; the fills are re-drawn faintly ON TOP afterwards so they
+  // stay visible as a light guide.
+  let savedFills = null;
+  if (emphasizeBackground) {
+    savedFills = new OffscreenCanvas(width, height);
+    savedFills.getContext('2d').drawImage(ctx.canvas, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+  }
+
+  // ── 2. Source image — blended (middle) ──
   if (!preview && opts.backgroundImage) {
     ctx.save();
-    ctx.globalAlpha = opts.backgroundOpacity ?? 0.3;
-    ctx.globalCompositeOperation = 'multiply';
+    // Emphasized: show the base image at full opacity with normal blend so it
+    // dominates. Normal: a faint multiply underlay tinting the cell fills.
+    ctx.globalAlpha = emphasizeBackground ? 1 : (opts.backgroundOpacity ?? 0.3);
+    ctx.globalCompositeOperation = emphasizeBackground ? 'source-over' : 'multiply';
 
     // Image stretch pivots on baseline (matching the cells) so the underlay
     // and glyph stay aligned as stretch increases. Pivoting at glyph center
@@ -99,6 +117,15 @@ export function renderCanvas(ctx, layers, opts = {}) {
     ctx.restore();
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
+  }
+
+  // Emphasized: re-draw the snapshotted fill mask faintly over the base image so
+  // the cell fills remain visible as a light guide.
+  if (savedFills) {
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.drawImage(savedFills, 0, 0);
+    ctx.restore();
   }
 
   // ── 3. Cell outlines + glyph boundary (front-most) ──

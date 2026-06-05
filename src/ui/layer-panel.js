@@ -70,6 +70,27 @@ export function createLayerPanel(layers, activeLayerIdx, callbacks) {
       list.appendChild(li);
     });
 
+    // Base layer (下地) — a special item pinned to the end of the list that
+    // represents the source image / kanjivg backdrop rather than a grid layer.
+    // It has no visibility/opacity/delete controls; clicking it surfaces the
+    // image placement params instead of grid params.
+    if (callbacks.baseLayer) {
+      const li = document.createElement('li');
+      li.className = `layer-item base-layer-item${callbacks.baseLayer.active ? ' active' : ''}`;
+
+      const icon = iconEl('imagePlus');
+      icon.classList.add('base-layer-icon');
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = callbacks.baseLayer.name;
+
+      li.addEventListener('click', () => callbacks.onSelectBase && callbacks.onSelectBase());
+      li.appendChild(icon);
+      li.appendChild(name);
+      list.appendChild(li);
+    }
+
     el.appendChild(list);
 
     if (!readOnly) {
@@ -89,9 +110,12 @@ export function createLayerPanel(layers, activeLayerIdx, callbacks) {
 
   return {
     el,
-    update(newLayers, newActiveIdx) {
+    update(newLayers, newActiveIdx, baseActive) {
       layers = newLayers;
       activeLayerIdx = newActiveIdx;
+      if (callbacks.baseLayer && baseActive !== undefined) {
+        callbacks.baseLayer.active = baseActive;
+      }
       render();
     },
   };

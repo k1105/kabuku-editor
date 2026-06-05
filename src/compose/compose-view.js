@@ -608,6 +608,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     if (cd.imageOffsetY !== undefined) next.imageOffsetY = cd.imageOffsetY;
     if (cd.imageScale !== undefined) next.imageScale = cd.imageScale;
     if (cd.fontSource) next.fontSource = cd.fontSource;
+    if (cd.kanjivgSource) next.kanjivgSource = cd.kanjivgSource;
     saveCharacter(editingCharId, next);
     project.characters[editingCharId] = { ...cd, ...next };
     // Invalidate the baked bitmap so other instances of this glyph update.
@@ -965,6 +966,54 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
         api.setValue(def.default);
         syncOverrideUI();
         redraw();
+        saveEditingChar();
+      });
+      imgSection.appendChild(row);
+      syncOverrideUI();
+    }
+
+    // KanjiVG stroke width (per-character override of global.kanjivgStrokeWidth).
+    // Re-run Auto Mesh after changing it to update cell fills.
+    if (cd.kanjivgSource) {
+      const def = { label: 'Stroke', min: 1, max: 20, step: 0.5, default: global.kanjivgStrokeWidth };
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'override-badge';
+      const reRenderUnderlay = () => { sourceImageCache.delete(editingCharId); getSourceImage(editingCharId); };
+      const { row, api, label } = createParamRow(def.label, {
+        min: def.min, max: def.max, step: def.step,
+        value: cd.kanjivgSource.strokeWidth ?? def.default,
+        formatter: (v) => v.toFixed(1),
+        onInput: (v) => {
+          const c = project.characters[editingCharId];
+          if (!c?.kanjivgSource) return;
+          if (v === def.default) {
+            const { strokeWidth, ...rest } = c.kanjivgSource;
+            c.kanjivgSource = rest;
+          } else {
+            c.kanjivgSource = { ...c.kanjivgSource, strokeWidth: v };
+          }
+          syncOverrideUI();
+          reRenderUnderlay();
+        },
+        onChange: () => { saveEditingChar(); },
+      }, { badge });
+      function syncOverrideUI() {
+        const c = project.characters[editingCharId] || {};
+        const overridden = c.kanjivgSource?.strokeWidth !== undefined;
+        label.classList.toggle('overridden', overridden);
+        badge.classList.toggle('is-off', !overridden);
+        badge.title = overridden ? 'Click to reset override' : '';
+        badge.tabIndex = overridden ? 0 : -1;
+      }
+      badge.addEventListener('click', () => {
+        const c = project.characters[editingCharId];
+        if (!c?.kanjivgSource || c.kanjivgSource.strokeWidth === undefined) return;
+        const { strokeWidth, ...rest } = c.kanjivgSource;
+        c.kanjivgSource = rest;
+        api.setValue(def.default);
+        syncOverrideUI();
+        reRenderUnderlay();
         saveEditingChar();
       });
       imgSection.appendChild(row);

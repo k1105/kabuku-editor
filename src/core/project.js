@@ -42,6 +42,9 @@ const DEFAULT_GLOBAL = {
   metaballStrength: 1,
   metaballRadius: 8,
   gridDefaults: {},
+  // Default stroke width (KanjiVG 109-unit space) for kanjivg-sourced glyphs;
+  // per-character overrides live on charData.kanjivgSource.strokeWidth.
+  kanjivgStrokeWidth: 5.5,
   defaultLayers: [
     { gridName: 'FibonacciGrid', gridParams: { count: 1000, scale: 20, dotRadius: 14, rotation: 228 }, name: 'FibonacciGrid' },
   ],
@@ -142,6 +145,7 @@ function ensureGlobalDefaults(g) {
   if (!g.defaultLayers || g.defaultLayers.length === 0) g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
   if (!g.fontMetrics) g.fontMetrics = { ...DEFAULT_FONT_METRICS };
   if (!g.fontInfo) g.fontInfo = { ...DEFAULT_FONT_INFO };
+  if (g.kanjivgStrokeWidth === undefined) g.kanjivgStrokeWidth = DEFAULT_GLOBAL.kanjivgStrokeWidth;
   return g;
 }
 

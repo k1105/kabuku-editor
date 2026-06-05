@@ -409,13 +409,15 @@ export function glyphAddDialog({
   familySuggestions = [],
   defaultFamily = '',
   defaultPresetIds = [],
+  defaultStrokeWidth = 5.5,
 }) {
   return openModal('Add Glyph', (body, okBtn) => {
     // ── Tab strip ─────────────────────────────────────────────────────────
     const tabs = [
-      { id: 'image', label: 'Image', okLabel: 'Choose Files' },
-      { id: 'font',  label: 'Font',  okLabel: 'Generate' },
-      { id: 'empty', label: 'Empty', okLabel: 'Add' },
+      { id: 'image',   label: 'Image',   okLabel: 'Choose Files' },
+      { id: 'font',    label: 'Font',    okLabel: 'Generate' },
+      { id: 'kanjivg', label: 'KanjiVG', okLabel: 'Generate' },
+      { id: 'empty',   label: 'Empty',   okLabel: 'Add' },
     ];
     let activeTab = 'image';
 
@@ -529,6 +531,87 @@ export function glyphAddDialog({
     fontPane.appendChild(fNote);
     body.appendChild(fontPane);
 
+    // KanjiVG pane
+    const kvgPane = document.createElement('div');
+    kvgPane.className = 'tab-pane';
+
+    const kRangeRow = document.createElement('div');
+    kRangeRow.className = 'row';
+    const kRangeLabel = document.createElement('label');
+    kRangeLabel.textContent = 'Ranges';
+    kRangeLabel.style.alignSelf = 'flex-start';
+    kRangeLabel.style.paddingTop = '4px';
+    const kChecks = document.createElement('div');
+    kChecks.style.display = 'flex';
+    kChecks.style.flexDirection = 'column';
+    kChecks.style.gap = '4px';
+    kChecks.style.flex = '1';
+    const kCbMap = {};
+    for (const p of presets) {
+      const lab = document.createElement('label');
+      lab.style.display = 'flex';
+      lab.style.alignItems = 'center';
+      lab.style.gap = '6px';
+      lab.style.fontSize = '12px';
+      lab.style.color = 'var(--text)';
+      lab.style.flex = 'unset';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = defaultPresetIds.includes(p.id);
+      kCbMap[p.id] = cb;
+      const span = document.createElement('span');
+      span.textContent = p.label;
+      lab.appendChild(cb);
+      lab.appendChild(span);
+      kChecks.appendChild(lab);
+    }
+    kRangeRow.appendChild(kRangeLabel);
+    kRangeRow.appendChild(kChecks);
+    kvgPane.appendChild(kRangeRow);
+
+    const kCustomRow = document.createElement('div');
+    kCustomRow.className = 'row';
+    const kCustomLabel = document.createElement('label');
+    kCustomLabel.textContent = 'Custom';
+    const kCustomInput = document.createElement('input');
+    kCustomInput.type = 'text';
+    kCustomInput.placeholder = 'extra characters (optional)';
+    kCustomRow.appendChild(kCustomLabel);
+    kCustomRow.appendChild(kCustomInput);
+    kvgPane.appendChild(kCustomRow);
+
+    const kStrokeRow = document.createElement('div');
+    kStrokeRow.className = 'row';
+    const kStrokeLabel = document.createElement('label');
+    kStrokeLabel.textContent = 'Stroke';
+    const kStrokeInput = document.createElement('input');
+    kStrokeInput.type = 'range';
+    kStrokeInput.min = '1';
+    kStrokeInput.max = '20';
+    kStrokeInput.step = '0.5';
+    kStrokeInput.value = String(defaultStrokeWidth);
+    kStrokeInput.style.flex = '1';
+    const kStrokeVal = document.createElement('span');
+    kStrokeVal.style.minWidth = '36px';
+    kStrokeVal.style.textAlign = 'right';
+    kStrokeVal.style.fontSize = '12px';
+    kStrokeVal.textContent = Number(defaultStrokeWidth).toFixed(1);
+    kStrokeInput.addEventListener('input', () => {
+      kStrokeVal.textContent = Number(kStrokeInput.value).toFixed(1);
+    });
+    kStrokeRow.appendChild(kStrokeLabel);
+    kStrokeRow.appendChild(kStrokeInput);
+    kStrokeRow.appendChild(kStrokeVal);
+    kvgPane.appendChild(kStrokeRow);
+
+    const kNote = document.createElement('div');
+    kNote.className = 'note';
+    kNote.textContent =
+      'KanjiVG のストロークSVGを指定した線幅で描画し、ローカルでメッシュ化します。' +
+      '漢字・かな・半角英数に対応（多くの記号・全角は未収録のためスキップされます）。';
+    kvgPane.appendChild(kNote);
+    body.appendChild(kvgPane);
+
     // Empty pane
     const emptyPane = document.createElement('div');
     emptyPane.className = 'tab-pane';
@@ -545,9 +628,10 @@ export function glyphAddDialog({
       for (const t of tabs) {
         tabBtns[t.id].classList.toggle('active', t.id === id);
       }
-      imagePane.style.display = id === 'image' ? '' : 'none';
-      fontPane.style.display  = id === 'font'  ? '' : 'none';
-      emptyPane.style.display = id === 'empty' ? '' : 'none';
+      imagePane.style.display = id === 'image'   ? '' : 'none';
+      fontPane.style.display  = id === 'font'    ? '' : 'none';
+      kvgPane.style.display   = id === 'kanjivg' ? '' : 'none';
+      emptyPane.style.display = id === 'empty'   ? '' : 'none';
       okBtn.textContent = tabs.find(t => t.id === id).okLabel;
     }
     setActive('image');
@@ -555,6 +639,12 @@ export function glyphAddDialog({
     return () => {
       if (activeTab === 'image') return { mode: 'image' };
       if (activeTab === 'empty') return { mode: 'empty' };
+      if (activeTab === 'kanjivg') {
+        const presetIds = Object.keys(kCbMap).filter(id => kCbMap[id].checked);
+        const customText = kCustomInput.value || '';
+        if (presetIds.length === 0 && customText.length === 0) return null;
+        return { mode: 'kanjivg', presetIds, customText, strokeWidth: Number(kStrokeInput.value) };
+      }
       const family = fInput.value.trim();
       if (!family) { fInput.focus(); return null; }
       const presetIds = Object.keys(cbMap).filter(id => cbMap[id].checked);
