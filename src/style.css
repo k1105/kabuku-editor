@@ -1526,6 +1526,16 @@ select {
   z-index: 2;
 }
 
+/* Rubber-band marquee drawn while dragging over the empty track area to
+   box-select keyframes. */
+.anim-select-box {
+  position: absolute;
+  background: rgba(255, 204, 0, 0.12);
+  border: 1px solid rgba(255, 204, 0, 0.7);
+  pointer-events: none;
+  z-index: 4;
+}
+
 /* Bezier handle endpoints for the selected keyframe (expanded rows). The
    connecting line is drawn on the curve canvas; these are the draggable
    grips. `.broken` marks a keyframe whose in/out handles move independently. */

@@ -28,9 +28,17 @@ export function createTimelineUI(animation, callbacks) {
   // Falls back to the raw track key.
   const labelFor = callbacks.labelFor || ((key) => key);
 
-  // Current keyframe selection: { key: string, time: number } or null.
-  // Persists across re-renders; matching dot gets `.selected` class.
-  let selectedKf = null;
+  // Current keyframe selection: array of { key: string, time: number }.
+  // Persists across re-renders; each matching dot gets `.selected` class.
+  // A single-element selection enables the per-keyframe affordances (bezier
+  // handles, value drag); a multi-element selection (built by rubber-band) only
+  // supports group time-shift and delete.
+  let selectedKfs = [];
+
+  // The lone selection when exactly one keyframe is selected, else null.
+  function singleSelection() {
+    return selectedKfs.length === 1 ? selectedKfs[0] : null;
+  }
 
   // Last keyframe mousedown, for manual double-click detection.
   // { key, time, at }.
@@ -253,7 +261,7 @@ export function createTimelineUI(animation, callbacks) {
       const dur = Math.max(0.001, animation.duration);
       const span = range.max - range.min;
       if (e.altKey) kf.handleMode = 'broken';
-      selectedKf = { key, time: kf.time };
+      selectedKfs = [{ key, time: kf.time }];
 
       const onMove = (ev) => {
         if (trackWidth <= 0) return;
@@ -296,15 +304,74 @@ export function createTimelineUI(animation, callbacks) {
   }
 
   function isDotSelected(key, kf) {
-    return selectedKf
-      && selectedKf.key === key
-      && Math.abs(selectedKf.time - kf.time) < SELECT_EPSILON;
+    return selectedKfs.some(s =>
+      s.key === key && Math.abs(s.time - kf.time) < SELECT_EPSILON);
   }
 
   function clearSelection() {
-    if (selectedKf === null) return false;
-    selectedKf = null;
+    if (selectedKfs.length === 0) return false;
+    selectedKfs = [];
     return true;
+  }
+
+  /**
+   * Shift every selected keyframe in time by `delta` seconds, clamped so the
+   * whole group stays within [0, duration] (preserving relative spacing).
+   * Used by the arrow-key nudge; group drag uses an absolute-from-start variant.
+   */
+  function nudgeSelection(delta) {
+    const items = [];
+    let dMin = -Infinity, dMax = Infinity;
+    for (const s of selectedKfs) {
+      const track = animation.tracks[s.key];
+      if (!track) continue;
+      const found = findKeyframeAt(track, s.time);
+      if (!found) continue;
+      items.push({ key: s.key, track, kf: found.kf });
+      dMin = Math.max(dMin, -found.kf.time);
+      dMax = Math.min(dMax, animation.duration - found.kf.time);
+    }
+    if (items.length === 0) return;
+    const d = Math.max(dMin, Math.min(dMax, delta));
+    const tracks = new Set();
+    for (const it of items) { it.kf.time += d; tracks.add(it.track); }
+    for (const track of tracks) {
+      track.sort((a, b) => a.time - b.time);
+      clampTrackHandles(track);
+    }
+    selectedKfs = items.map(it => ({ key: it.key, time: it.kf.time }));
+  }
+
+  /**
+   * Select every keyframe whose dot falls inside the rubber-band box, given in
+   * rowsInner-local pixel coordinates. Dot positions are recomputed here the
+   * same way renderRows() draws them (x from time, y from row layout + value).
+   */
+  function selectKeyframesInBox(left, top, right, bottom) {
+    const w = rowsInner.clientWidth;
+    if (w <= 0) { selectedKfs = []; return; }
+    const { tops } = computeRowLayout();
+    const sel = [];
+    for (const key of activeKeys()) {
+      const track = animation.tracks[key] || [];
+      const isExpanded = expandedRows.has(key);
+      const h = rowHeight(key);
+      const rowTop = tops[key];
+      let range = null;
+      if (isExpanded) {
+        ensureBezierHandles(track);
+        range = computeValueRange(track, animation.baseValues?.[key]);
+      }
+      for (const kf of track) {
+        const x = timeToX(kf.time, w);
+        const yInRow = (isExpanded && range) ? valueToY(kf.value, range, h) : h / 2;
+        const y = rowTop + yInRow;
+        if (x >= left && x <= right && y >= top && y <= bottom) {
+          sel.push({ key, time: kf.time });
+        }
+      }
+    }
+    selectedKfs = sel;
   }
 
   const header = document.createElement('div');
@@ -590,13 +657,61 @@ export function createTimelineUI(animation, callbacks) {
             if (isExpanded && valueRange) {
               kf.handleMode = kf.handleMode === 'broken' ? 'smooth' : 'broken';
               if (kf.handleMode === 'smooth') realignSmooth(kf, w, h, valueRange);
-              selectedKf = { key, time: kf.time };
+              selectedKfs = [{ key, time: kf.time }];
               callbacks.onChange?.();
               render();
             }
             return;
           }
           lastClick = { key, time: kf.time, at: now };
+
+          // Group drag: if this dot is part of a multi-keyframe selection, move
+          // the whole group by a shared time delta (preserving relative spacing).
+          // Value is left untouched — the group may span rows with different
+          // value ranges, so only the time axis has a shared meaning.
+          const inGroup = selectedKfs.length > 1 && isDotSelected(key, kf);
+          if (inGroup) {
+            const rect = row.getBoundingClientRect();
+            const trackWidth = rect.width;
+            const startX = e.clientX;
+            const dur = animation.duration;
+            const fps = animation.fps || 30;
+            const items = selectedKfs.map((s) => {
+              const track2 = animation.tracks[s.key];
+              const f = track2 ? findKeyframeAt(track2, s.time) : null;
+              return f ? { key: s.key, track: track2, kf: f.kf, startTime: f.kf.time } : null;
+            }).filter(Boolean);
+            let minStart = Infinity, maxStart = -Infinity;
+            for (const it of items) {
+              minStart = Math.min(minStart, it.startTime);
+              maxStart = Math.max(maxStart, it.startTime);
+            }
+            const dtMin = -minStart;
+            const dtMax = dur - maxStart;
+            const onMoveG = (ev) => {
+              if (trackWidth <= 0) return;
+              const dx = ev.clientX - startX;
+              let delta = (dx / trackWidth) * dur;
+              delta = Math.round(delta * fps) / fps;
+              delta = Math.max(dtMin, Math.min(dtMax, delta));
+              const tracks = new Set();
+              for (const it of items) { it.kf.time = it.startTime + delta; tracks.add(it.track); }
+              for (const track2 of tracks) {
+                track2.sort((a, b) => a.time - b.time);
+                clampTrackHandles(track2);
+              }
+              selectedKfs = items.map(it => ({ key: it.key, time: it.kf.time }));
+              callbacks.onChange?.();
+              render();
+            };
+            const onUpG = () => {
+              document.removeEventListener('mousemove', onMoveG);
+              document.removeEventListener('mouseup', onUpG);
+            };
+            document.addEventListener('mousemove', onMoveG);
+            document.addEventListener('mouseup', onUpG);
+            return;
+          }
           // Cache row geometry NOW — render() below detaches `row`, after which
           // row.getBoundingClientRect() returns zeros and would snap the
           // keyframe to garbage coordinates.
@@ -604,7 +719,7 @@ export function createTimelineUI(animation, callbacks) {
           const trackWidth = rect.width;
           const trackHeight = rect.height;
           const startValueRange = valueRange; // frozen at drag start
-          selectedKf = { key, time: kf.time };
+          selectedKfs = [{ key, time: kf.time }];
           dragging = true;
           moved = false;
           dragStartX = e.clientX;
@@ -640,7 +755,7 @@ export function createTimelineUI(animation, callbacks) {
               const cur = track[idx];
               if (cur) cur.value = newV;
             }
-            selectedKf = { key, time: newT };
+            selectedKfs = [{ key, time: newT }];
             callbacks.onChange?.();
             render();
           };
@@ -666,7 +781,7 @@ export function createTimelineUI(animation, callbacks) {
         // the handle lines on the curve canvas and overlay draggable dots at
         // the handle endpoints. Endpoints whose handle drives no real segment
         // (first kf's in-handle, last kf's out-handle) are omitted.
-        if (isExpanded && valueRange && isDotSelected(key, kf)) {
+        if (isExpanded && valueRange && selectedKfs.length === 1 && isDotSelected(key, kf)) {
           drawHandleLines(curveCanvas, w, h, track, j, valueRange);
           if (j > 0) addHandleDot(row, key, track, j, 'in', w, h, valueRange);
           if (j < track.length - 1) addHandleDot(row, key, track, j, 'out', w, h, valueRange);
@@ -756,31 +871,92 @@ export function createTimelineUI(animation, callbacks) {
     document.addEventListener('mouseup', onUp);
   });
 
+  // Rubber-band multi-selection: drag over the empty track area to box-select
+  // keyframes. Keyframe/handle dots stopPropagation on their own mousedown, so
+  // a mousedown reaching rowsInner is always on bare background.
+  rowsInner.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const rect = rowsInner.getBoundingClientRect();
+    const x0 = e.clientX - rect.left;
+    const y0 = e.clientY - rect.top;
+    const box = document.createElement('div');
+    box.className = 'anim-select-box';
+    rowsInner.appendChild(box);
+    let didMove = false;
+
+    const onMove = (ev) => {
+      const x1 = ev.clientX - rect.left;
+      const y1 = ev.clientY - rect.top;
+      if (Math.abs(x1 - x0) > 2 || Math.abs(y1 - y0) > 2) didMove = true;
+      box.style.left = Math.min(x0, x1) + 'px';
+      box.style.top = Math.min(y0, y1) + 'px';
+      box.style.width = Math.abs(x1 - x0) + 'px';
+      box.style.height = Math.abs(y1 - y0) + 'px';
+    };
+    const onUp = (ev) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      box.remove();
+      if (!didMove) {
+        // Plain click on empty area clears the current selection.
+        if (clearSelection()) renderRows();
+        return;
+      }
+      const x1 = ev.clientX - rect.left;
+      const y1 = ev.clientY - rect.top;
+      selectKeyframesInBox(
+        Math.min(x0, x1), Math.min(y0, y1),
+        Math.max(x0, x1), Math.max(y0, y1),
+      );
+      renderRows();
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
   const resizeObserver = new ResizeObserver(() => render());
   resizeObserver.observe(trackArea);
 
-  // Arrow keys move the selected keyframe by 1 frame (Shift: 10 frames).
   function onKeyDown(e) {
-    if (!selectedKf) return;
-    if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
     const t = e.target;
     const tag = t?.tagName;
     const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable;
     if (typing) return;
+    if (selectedKfs.length === 0) return;
 
-    const track = animation.tracks[selectedKf.key];
-    if (!track) return;
-    const found = findKeyframeAt(track, selectedKf.time);
-    if (!found) return;
+    // Delete / Backspace removes every selected keyframe.
+    if (e.code === 'Delete' || e.code === 'Backspace') {
+      e.preventDefault();
+      // Group indices per track and splice in descending order so earlier
+      // removals don't shift the indices still pending.
+      const byTrack = new Map();
+      for (const s of selectedKfs) {
+        const track = animation.tracks[s.key];
+        if (!track) continue;
+        const found = findKeyframeAt(track, s.time);
+        if (!found) continue;
+        if (!byTrack.has(s.key)) byTrack.set(s.key, []);
+        byTrack.get(s.key).push(found.index);
+      }
+      for (const [key, indices] of byTrack) {
+        const track = animation.tracks[key];
+        indices.sort((a, b) => b - a);
+        for (const idx of indices) removeKeyframe(track, idx);
+        clampTrackHandles(track);
+      }
+      selectedKfs = [];
+      callbacks.onChange?.();
+      render();
+      return;
+    }
 
+    // Arrow keys nudge the whole selection by 1 frame (Shift: 10 frames).
+    if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
     e.preventDefault();
     const fps = animation.fps || 30;
     const step = (e.shiftKey ? 10 : 1) / fps;
     const dir = e.code === 'ArrowLeft' ? -1 : 1;
-    const newT = Math.max(0, Math.min(animation.duration, selectedKf.time + dir * step));
-    setKeyframeTime(track, found.index, newT);
-    clampTrackHandles(track);
-    selectedKf = { key: selectedKf.key, time: newT };
+    nudgeSelection(dir * step);
     callbacks.onChange?.();
     render();
   }
