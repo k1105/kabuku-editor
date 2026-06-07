@@ -75,7 +75,11 @@ function transformFromParams(p, global) {
 }
 
 export function computeLayout(params, animation, charIds, global) {
-  const positions = layoutText(animation.text, charIds, {
+  // params.text is the step-sampled text at the current time (see
+  // sampleAnimation); fall back to the base text for callers that pass raw
+  // params without it.
+  const text = params.text != null ? params.text : animation.text;
+  const positions = layoutText(text, charIds, {
     fontSize: params.fontSize,
     // Animation text never wraps — it grows infinitely (line breaks only on an
     // explicit '\n'), and the whole block is centered on the canvas. (The
@@ -258,7 +262,12 @@ export function createFrameRenderer(animation, ctx) {
   let _readyPromise = null;
   async function loadSources() {
     const chars = new Set();
-    for (const ch of (animation.text || '')) {
+    // Cover every character that can appear over time: the base text plus every
+    // text keyframe value (text is step-keyframed via animation.textTrack), so a
+    // glyph introduced only by a later keyframe still has its auto-mesh source.
+    let allText = animation.text || '';
+    for (const kf of (animation.textTrack || [])) allText += kf.value || '';
+    for (const ch of allText) {
       if (project.characters[ch]) chars.add(ch);
     }
     await Promise.all([...chars].map(async (cid) => {

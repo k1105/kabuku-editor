@@ -102,6 +102,13 @@ export function createDefaultAnimation() {
     canvasWidth: 1920,
     canvasHeight: 1080,
     tracks: initialTracks(baseValues),
+    // Step-keyframed text changes (no interpolation): { time, value:string }[].
+    // Empty until the user stamps a text keyframe.
+    textTrack: [],
+    // Guide audio for lyric-video editing. Null until a file is imported.
+    // Shape: { url, name, duration, offset, gain, peaks }. Not included in the
+    // rendered/exported output — it is an editing reference only.
+    audio: null,
     baseValues,
   };
 }

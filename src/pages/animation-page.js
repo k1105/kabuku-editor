@@ -8,7 +8,7 @@ import {
   subscribeAnimationProject, hasUnsavedChanges as animHasUnsavedChanges,
 } from '../core/animation-project.js';
 import { RENDER_SIZE } from '../compose/glyph-cache.js';
-import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime } from '../animation/animation.js';
+import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime, sampleText, upsertTextKeyframe, activeTextKeyframe } from '../animation/animation.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
 import { renderFrames, computeFrameCacheShape, createFrameRenderer, computeLayout, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
@@ -18,6 +18,8 @@ import { createSettingsModal, settingsToolBtn } from '../ui/settings-modal.js';
 import { commit as historyCommit } from '../core/animation-history.js';
 import { stretchMatrix } from '../core/transform-math.js';
 import { createSourceImageLoader } from '../compose/source-image.js';
+import { uploadAnimationAudio } from '../core/storage.js';
+import { createAudioPlayer, decodeAudioPeaks, songTimeAt, isAudible } from '../animation/audio-track.js';
 import { createParamRow } from '../ui/param-row.js';
 import { createLangToggle, t } from '../ui/i18n.js';
 import { getGrid } from '../grids/grid-plugin.js';
@@ -87,6 +89,11 @@ export function renderAnimationPage(app) {
   // Back-fill canvas size on animations created before it was configurable.
   if (animation.canvasWidth == null) animation.canvasWidth = DEFAULT_CANVAS_WIDTH;
   if (animation.canvasHeight == null) animation.canvasHeight = DEFAULT_CANVAS_HEIGHT;
+  // Back-fill the step-keyframed text track for animations created before it
+  // existed.
+  if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
+  // Guide audio (lyric-video editing) — null until a file is imported.
+  if (animation.audio === undefined) animation.audio = null;
 
   // Grid param sliders, grouped by default layer (one sub-section per layer).
   // The flattened def list is used for baseValues seeding + timeline labels.
@@ -129,6 +136,17 @@ export function renderAnimationPage(app) {
   // into the view with padding). Affects only on-screen display size, not the
   // canvas resolution or rendered output.
   let displayZoom = 'fit';
+
+  // Guide-audio player (HTMLAudioElement wrapper). The animation wall-clock is
+  // the master timeline; this is kept in sync by the playback loop. Disposed on
+  // page detach.
+  const audioPlayer = createAudioPlayer();
+  // Standalone "listen" engine for auditioning the song independently of the
+  // timeline — driven by the custom transport built in the AUDIO panel below.
+  // It shares no state with audioPlayer or the playhead. A detached <audio>
+  // element plays fine without being in the DOM.
+  const listenAudio = new Audio();
+  listenAudio.preload = 'metadata';
 
   function persist() {
     saveAnimation(animation);
@@ -319,7 +337,7 @@ export function renderAnimationPage(app) {
   const RAIL_ITEMS = [
     { id: 'text',   icon: 'lucide:type',   title: 'Text' },
     { id: 'camera', icon: 'lucide:video',  title: 'Camera' },
-    { id: 'layer',  icon: 'lucide:layers', title: 'Layer' },
+    { id: 'audio',  icon: 'lucide:music',  title: 'Audio' },
   ];
   let activePanel = 'text';
   const railButtons = {};
@@ -349,8 +367,8 @@ export function renderAnimationPage(app) {
   // parented into these containers — toggling visibility, not rebuilding.
   const panelText = document.createElement('div');
   const panelCamera = document.createElement('div');
-  const panelLayer = document.createElement('div');
-  const PANEL_ELS = { text: panelText, camera: panelCamera, layer: panelLayer };
+  const panelAudio = document.createElement('div');
+  const PANEL_ELS = { text: panelText, camera: panelCamera, audio: panelAudio };
   for (const el of Object.values(PANEL_ELS)) sidebarBody.appendChild(el);
 
   function setPanel(id) {
@@ -359,23 +377,95 @@ export function renderAnimationPage(app) {
     for (const [k, btn] of Object.entries(railButtons)) btn.classList.toggle('active', k === id);
   }
 
-  // Text group (non-animated)
-  const textGroup = document.createElement('div');
-  textGroup.className = 'param-group';
-  const textTitle = document.createElement('h3');
-  textTitle.textContent = 'Text';
-  textTitle.style.marginTop = '0';
+  // Collapsible param group. The heading doubles as a toggle button: clicking it
+  // hides/shows the body (a chevron rotates to indicate state). Content goes into
+  // the returned `body`, not the group, so slider/timeline wiring is unaffected.
+  function createCollapsibleGroup(titleText) {
+    const group = document.createElement('div');
+    group.className = 'param-group collapsible';
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'group-header';
+    const chevron = document.createElement('iconify-icon');
+    chevron.className = 'group-chevron';
+    chevron.setAttribute('icon', 'lucide:chevron-down');
+    const label = document.createElement('span');
+    label.textContent = titleText;
+    header.appendChild(chevron);
+    header.appendChild(label);
+    const body = document.createElement('div');
+    body.className = 'group-body';
+    header.addEventListener('click', () => group.classList.toggle('collapsed'));
+    group.appendChild(header);
+    group.appendChild(body);
+    return { group, body };
+  }
+
+  // Text group. Text is a step-keyframed parameter: the textarea edits whatever
+  // source governs the current time (the base `animation.text` before the first
+  // keyframe, otherwise the active text keyframe's value), and the diamond
+  // button stamps the current content as a keyframe at the playhead.
+  const { group: textGroup, body: textBody } = createCollapsibleGroup('Text');
+
+  // Header row: a keyframe (diamond) button sits beside the "Text" affordance.
+  const textKfRow = document.createElement('div');
+  textKfRow.className = 'anim-text-kf-row';
+  const textKfBtn = document.createElement('button');
+  textKfBtn.type = 'button';
+  textKfBtn.className = 'anim-text-kf-btn';
+  textKfBtn.title = 'Add / update a text keyframe at the current time';
+  const textKfIcon = document.createElement('iconify-icon');
+  textKfIcon.setAttribute('icon', 'lucide:diamond');
+  textKfBtn.appendChild(textKfIcon);
+  const textKfLbl = document.createElement('span');
+  textKfLbl.textContent = 'Keyframe';
+  textKfBtn.appendChild(textKfLbl);
+  textKfRow.appendChild(textKfBtn);
+  textBody.appendChild(textKfRow);
+
   const textarea = document.createElement('textarea');
   textarea.className = 'compose-textarea';
-  textarea.value = animation.text;
+  textarea.value = sampleText(animation, currentTime);
+
+  // Reflect the diamond's "is there a keyframe exactly here" state.
+  function refreshTextKfBtn() {
+    const onKf = (animation.textTrack || []).some(
+      kf => Math.abs(kf.time - currentTime) < 1e-4);
+    textKfBtn.classList.toggle('active', onKf);
+  }
+  // Mirror the time-sampled text into the textarea (called on seek / playback).
+  // Skip while the user is typing in it so we don't fight the caret.
+  function syncTextArea() {
+    if (document.activeElement === textarea) return;
+    textarea.value = sampleText(animation, currentTime);
+    refreshTextKfBtn();
+  }
+
   textarea.addEventListener('input', () => {
-    animation.text = textarea.value;
+    // Edit the source that governs the current time: the active keyframe when
+    // the playhead sits in its hold region, else the base text.
+    const active = activeTextKeyframe(animation, currentTime);
+    if (active) active.value = textarea.value;
+    else animation.text = textarea.value;
     persist();
     markDirty();
+    // Keep the timeline's keyframe label in sync while editing a keyframe's text
+    // (the base-text edit has no timeline row to refresh).
+    if (active) timeline.render();
     redrawPreview();
   });
-  textGroup.appendChild(textTitle);
-  textGroup.appendChild(textarea);
+
+  textKfBtn.addEventListener('click', () => {
+    upsertTextKeyframe(animation.textTrack, currentTime, textarea.value);
+    persist();
+    markDirty();
+    timeline.render();
+    refreshTextKfBtn();
+    redrawPreview();
+    commitHistory('text-keyframe');
+  });
+
+  textBody.appendChild(textarea);
 
   const modeRow = document.createElement('div');
   modeRow.className = 'param-row';
@@ -403,15 +493,11 @@ export function renderAnimationPage(app) {
   modeWrap.appendChild(vBtn);
   modeRow.appendChild(modeLbl);
   modeRow.appendChild(modeWrap);
-  textGroup.appendChild(modeRow);
+  textBody.appendChild(modeRow);
   panelText.appendChild(textGroup);
 
   // Animated param sliders
-  const paramsGroup = document.createElement('div');
-  paramsGroup.className = 'param-group';
-  const paramsTitle = document.createElement('h3');
-  paramsTitle.textContent = 'Animated Parameters';
-  paramsGroup.appendChild(paramsTitle);
+  const { group: paramsGroup, body: paramsBody } = createCollapsibleGroup('Animated Parameters');
 
   const sliderInputs = {}; // key -> { api, def }
 
@@ -443,7 +529,7 @@ export function renderAnimationPage(app) {
     }
   }
 
-  addAnimatedSliders(paramsGroup, ANIMATED_SLIDER_DEFS);
+  addAnimatedSliders(paramsBody, ANIMATED_SLIDER_DEFS);
   panelText.appendChild(paramsGroup);
 
   // CAMERA group
@@ -455,36 +541,268 @@ export function renderAnimationPage(app) {
   addAnimatedSliders(cameraGroup, CAMERA_SLIDER_DEFS);
   panelCamera.appendChild(cameraGroup);
 
+  // AUDIO group — guide audio for lyric-video editing. The clip plays during
+  // preview/playback in sync with the playhead but is never part of the
+  // rendered/exported output. See audio-track.js for the data model.
+  const audioGroup = document.createElement('div');
+  audioGroup.className = 'param-group anim-audio-group';
+  const audioTitle = document.createElement('h3');
+  audioTitle.textContent = 'AUDIO (guide)';
+  audioGroup.appendChild(audioTitle);
+
+  const audioHint = document.createElement('p');
+  audioHint.className = 'anim-audio-hint';
+  audioHint.textContent = '編集用のガイド音源です。書き出し動画には含まれません。';
+  audioGroup.appendChild(audioHint);
+
+  // Hidden file input + import button.
+  const audioFileInput = document.createElement('input');
+  audioFileInput.type = 'file';
+  audioFileInput.accept = 'audio/*';
+  audioFileInput.style.display = 'none';
+  const importAudioBtn = document.createElement('button');
+  importAudioBtn.className = 'tool-btn anim-audio-import';
+  importAudioBtn.appendChild(iconEl('upload'));
+  const importAudioLbl = document.createElement('span');
+  importAudioLbl.textContent = '音源を読み込む';
+  importAudioBtn.appendChild(importAudioLbl);
+  importAudioBtn.addEventListener('click', () => audioFileInput.click());
+  audioFileInput.addEventListener('change', () => {
+    const file = audioFileInput.files?.[0];
+    audioFileInput.value = ''; // allow re-selecting the same file later
+    if (file) doImportAudio(file);
+  });
+  audioGroup.appendChild(importAudioBtn);
+  audioGroup.appendChild(audioFileInput);
+
+  // Loaded-clip controls (filename, listen player, volume, remove). Shown only
+  // when a clip is loaded; refreshAudioPanel() toggles visibility + values.
+  const audioControls = document.createElement('div');
+  audioControls.className = 'anim-audio-controls';
+
+  const audioNameRow = document.createElement('div');
+  audioNameRow.className = 'anim-audio-name';
+  audioControls.appendChild(audioNameRow);
+
+  // Head-start field: how many seconds INTO the song to begin at the animation's
+  // start (= the song position at timeline t=0 = -offset). Skipping an intro
+  // reads as a positive number, which is what users expect. Internally we still
+  // store `offset` (the timeline time where the song's start sits), so the field
+  // edits `-offset`. Editable here OR by dragging the waveform clip; the drag
+  // updates this live via refreshAudioPanel().
+  const offsetInput = addNumberField(audioControls, '頭出し (s)', 0, -600, 600, 0.01, (v) => {
+    if (!animation.audio) return;
+    animation.audio.offset = -v;
+    persist(); timeline.render();
+    if (playing) syncAudioToTime(true);
+    commitHistory('audio-offset');
+  });
+
+  // Standalone "listen" UI: a custom transport to audition the whole song
+  // independently of the editing timeline. It only plays sound — it never
+  // touches the playhead, offset, or animation state ("他の状態を汚さない").
+  // Use it to find the spot you want, then set 開始位置 / drag the waveform clip
+  // to line the song up with the animation.
+  const listenHint = document.createElement('p');
+  listenHint.className = 'anim-audio-hint';
+  listenHint.textContent = '試聴用プレイヤー（タイムラインとは独立）。';
+  audioControls.appendChild(listenHint);
+
+  const listenPlayer = document.createElement('div');
+  listenPlayer.className = 'anim-listen-player';
+  // Full-width seek bar on its own row so it's as long as possible.
+  const listenSeek = document.createElement('input');
+  listenSeek.type = 'range';
+  listenSeek.className = 'anim-listen-seek';
+  listenSeek.min = 0;
+  listenSeek.max = 1;
+  listenSeek.step = 0.001;
+  listenSeek.value = 0;
+  listenPlayer.appendChild(listenSeek);
+  // Transport row: play/pause button + time readout.
+  const listenRow = document.createElement('div');
+  listenRow.className = 'anim-listen-row';
+  const listenPlayBtn = document.createElement('button');
+  listenPlayBtn.type = 'button';
+  listenPlayBtn.className = 'anim-listen-play';
+  listenPlayBtn.appendChild(iconEl('play'));
+  const listenTime = document.createElement('span');
+  listenTime.className = 'anim-listen-time';
+  listenTime.textContent = '0:00 / 0:00';
+  listenRow.appendChild(listenPlayBtn);
+  listenRow.appendChild(listenTime);
+  listenPlayer.appendChild(listenRow);
+  audioControls.appendChild(listenPlayer);
+
+  // --- listen transport wiring (all isolated to listenAudio) ---
+  const fmtTime = (s) => {
+    if (!Number.isFinite(s) || s < 0) s = 0;
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+  };
+  const listenDuration = () => {
+    const d = listenAudio.duration;
+    return Number.isFinite(d) && d > 0 ? d : (animation.audio?.duration || 0);
+  };
+  let listenScrubbing = false;
+  function refreshListenIcon() {
+    listenPlayBtn.innerHTML = '';
+    listenPlayBtn.appendChild(iconEl(listenAudio.paused ? 'play' : 'pause'));
+  }
+  function refreshListenProgress() {
+    const dur = listenDuration();
+    if (!listenScrubbing) {
+      listenSeek.value = dur > 0 ? listenAudio.currentTime / dur : 0;
+    }
+    listenTime.textContent = `${fmtTime(listenAudio.currentTime)} / ${fmtTime(dur)}`;
+  }
+  listenPlayBtn.addEventListener('click', () => {
+    if (!animation.audio) return;
+    if (listenAudio.paused) {
+      // Don't sound the audition over timeline playback.
+      if (playing) pausePlayback();
+      listenAudio.play().catch(() => { /* not ready / gesture — ignore */ });
+    } else {
+      listenAudio.pause();
+    }
+  });
+  listenSeek.addEventListener('input', () => {
+    listenScrubbing = true;
+    const dur = listenDuration();
+    if (dur > 0) {
+      try { listenAudio.currentTime = parseFloat(listenSeek.value) * dur; } catch { /* not seekable */ }
+    }
+    listenTime.textContent = `${fmtTime(listenAudio.currentTime)} / ${fmtTime(dur)}`;
+  });
+  listenSeek.addEventListener('change', () => { listenScrubbing = false; });
+  listenAudio.addEventListener('play', refreshListenIcon);
+  listenAudio.addEventListener('pause', refreshListenIcon);
+  listenAudio.addEventListener('ended', () => { refreshListenIcon(); refreshListenProgress(); });
+  listenAudio.addEventListener('timeupdate', refreshListenProgress);
+  listenAudio.addEventListener('loadedmetadata', refreshListenProgress);
+
+  const { row: gainRow, api: gainApi } = createParamRow('音量', {
+    min: 0, max: 1, step: 0.01, value: 1,
+    onInput: (v) => { if (animation.audio) audioPlayer.setGain(v); },
+    onChange: (v) => {
+      if (!animation.audio) return;
+      animation.audio.gain = v;
+      audioPlayer.setGain(v);
+      persist();
+      commitHistory('audio-gain');
+    },
+  });
+  audioControls.appendChild(gainRow);
+
+  const removeAudioBtn = document.createElement('button');
+  removeAudioBtn.className = 'tool-btn anim-audio-remove';
+  removeAudioBtn.appendChild(iconEl('trash'));
+  const removeAudioLbl = document.createElement('span');
+  removeAudioLbl.textContent = '音源を削除';
+  removeAudioBtn.appendChild(removeAudioLbl);
+  removeAudioBtn.addEventListener('click', () => {
+    if (!animation.audio) return;
+    if (!confirm('ガイド音源を削除します。よろしいですか?')) return;
+    animation.audio = null;
+    audioPlayer.dispose();
+    persist();
+    timeline.render();
+    refreshAudioPanel();
+    commitHistory('audio-remove');
+  });
+  audioControls.appendChild(removeAudioBtn);
+
+  audioGroup.appendChild(audioControls);
+  panelAudio.appendChild(audioGroup);
+
+  // Reflect the current animation.audio state into the panel controls.
+  function refreshAudioPanel() {
+    const a = animation.audio;
+    if (a) {
+      audioControls.style.display = '';
+      importAudioLbl.textContent = '音源を差し替える';
+      audioNameRow.textContent = a.name || 'audio';
+      // Field shows head-start (= -offset); see the field's definition above.
+      offsetInput.value = -(a.offset ?? 0);
+      gainApi.setValue(a.gain ?? 1);
+      // Point the listen player at the clip. Only reassign on a real URL change
+      // so refreshes (offset drag, undo) don't reset its playback position.
+      if (listenAudio.dataset.url !== a.url) {
+        listenAudio.src = a.url;
+        listenAudio.dataset.url = a.url;
+      }
+      refreshListenIcon();
+      refreshListenProgress();
+    } else {
+      audioControls.style.display = 'none';
+      importAudioLbl.textContent = '音源を読み込む';
+      listenAudio.pause();
+      listenAudio.removeAttribute('src');
+      delete listenAudio.dataset.url;
+    }
+  }
+
+  /**
+   * Import a guide-audio file: decode peaks from its bytes (for the waveform),
+   * upload the file to Storage, then attach it to the animation. Peaks are
+   * computed up front and persisted so reloads never re-decode.
+   */
+  async function doImportAudio(file) {
+    importAudioBtn.disabled = true;
+    const prevLbl = importAudioLbl.textContent;
+    importAudioLbl.textContent = '読み込み中…';
+    try {
+      const bytes = await file.arrayBuffer();
+      // decodeAudioData detaches its buffer — decode from a copy so the
+      // original bytes remain intact for the upload.
+      const { peaks, duration } = await decodeAudioPeaks(bytes.slice(0));
+      const url = await uploadAnimationAudio({ file });
+      animation.audio = {
+        url, name: file.name || 'audio',
+        duration, offset: 0, gain: animation.audio?.gain ?? 1, peaks,
+      };
+      audioPlayer.load(url);
+      audioPlayer.setGain(animation.audio.gain);
+      persist();
+      markDirty();
+      timeline.render();
+      refreshAudioPanel();
+      commitHistory('audio-import');
+    } catch (e) {
+      console.error('Audio import failed:', e);
+      alert('音源の読み込みに失敗しました: ' + e.message);
+    } finally {
+      importAudioBtn.disabled = false;
+      importAudioLbl.textContent = animation.audio ? '音源を差し替える' : prevLbl;
+    }
+  }
+
   // GLYPH / GRID group — animatable grid params (size/scale/etc.) per layer.
   // Animating any of these switches that glyph to per-frame cell regeneration
   // + auto-mesh in the render pipeline (see render.js).
   if (gridLayerGroups.length > 0) {
-    const gridGroup = document.createElement('div');
-    gridGroup.className = 'param-group';
-    const gridTitle = document.createElement('h3');
-    gridTitle.textContent = 'Glyph / Grid';
-    gridGroup.appendChild(gridTitle);
+    const { group: gridGroup, body: gridBody } = createCollapsibleGroup('Glyph / Grid');
     // One sub-section per layer: the layer name is the heading, params sit
     // under it with plain labels so rows stay readable.
     for (const lg of gridLayerGroups) {
       const sub = document.createElement('h4');
       sub.className = 'param-subhead';
       sub.textContent = lg.title;
-      gridGroup.appendChild(sub);
-      addAnimatedSliders(gridGroup, lg.defs);
+      gridBody.appendChild(sub);
+      addAnimatedSliders(gridBody, lg.defs);
     }
-    panelLayer.appendChild(gridGroup);
+    panelText.appendChild(gridGroup);
   } else {
     // No animatable grid params (typeset has no grid layers) — leave a hint so
-    // the Layer panel isn't blank.
-    const emptyMsg = document.createElement('div');
-    emptyMsg.className = 'param-group';
+    // the Glyph / Grid section isn't blank.
+    const { group: emptyGroup, body: emptyBody } = createCollapsibleGroup('Glyph / Grid');
     const p = document.createElement('p');
     p.style.color = 'var(--text-dim)';
     p.style.fontSize = '12px';
     p.textContent = 'No grid layers available.';
-    emptyMsg.appendChild(p);
-    panelLayer.appendChild(emptyMsg);
+    emptyBody.appendChild(p);
+    panelText.appendChild(emptyGroup);
   }
 
   // Canvas size + movie duration/fps live in the settings popup (see above).
@@ -521,7 +839,7 @@ export function renderAnimationPage(app) {
     return input;
   }
 
-  addNumberField(sfMovie, 'Duration (s)', animation.duration, 0.5, 120, 0.5, (v) => {
+  const durationInput = addNumberField(sfMovie, 'Duration (s)', animation.duration, 0.5, 120, 0.5, (v) => {
     animation.duration = v;
     if (currentTime > v) currentTime = v;
     persist(); markDirty(); timeline.render(); updateSlidersFromTime();
@@ -712,10 +1030,27 @@ export function renderAnimationPage(app) {
       timeline.renderPlayhead();
       updateTimeDisplay();
       redrawPreview();
+      if (playing) syncAudioToTime(true);
     },
-    onChange: () => { persist(); markDirty(); commitHistory('keyframe-edit'); },
+    onChange: () => { persist(); markDirty(); syncTextArea(); commitHistory('keyframe-edit'); },
     getCurrentTime: () => currentTime,
     labelFor: (key) => trackLabelMap[key] || key,
+    // Dragging the waveform clip re-times the audio offset; persist + reflect
+    // it in the Audio panel field, and re-sync the player if playing.
+    onAudioOffsetChange: () => {
+      persist();
+      refreshAudioPanel();
+      if (playing) syncAudioToTime(true);
+      commitHistory('audio-offset');
+    },
+    // The timeline resized the composition (end-handle drag, fit-to-content, or
+    // auto-grow when a keyframe is dragged past the end). Persist, clamp the
+    // playhead, and keep the settings popup's Duration field in sync.
+    onDurationChange: (d) => {
+      if (currentTime > d) { currentTime = d; updateSlidersFromTime(); updateTimeDisplay(); }
+      durationInput.value = Number.isInteger(d) ? d : d.toFixed(2);
+      persist(); markDirty();
+    },
   });
   timelineWrap.appendChild(timeline.el);
 
@@ -789,7 +1124,11 @@ export function renderAnimationPage(app) {
       .filter(k => k.startsWith('grid.') && animation.tracks[k]?.length)
       .sort()
       .join(',');
-    return `${animation.text || ''}|${gridKeys}`;
+    // Include text keyframe values: a keyframe can introduce a glyph absent from
+    // the base text, and the renderer pre-loads per-glyph sources (auto-mesh) up
+    // front, so its source set must be invalidated when the text track changes.
+    const textKf = (animation.textTrack || []).map(kf => kf.value).join('');
+    return `${animation.text || ''}|${gridKeys}|${textKf}`;
   }
   function getFrameRenderer() {
     const sig = rendererSignature();
@@ -965,6 +1304,7 @@ export function renderAnimationPage(app) {
   }
 
   function updateSlidersFromTime() {
+    syncTextArea();
     const p = sampleAnimation(animation, currentTime);
     for (const key of Object.keys(sliderInputs)) {
       const ref = sliderInputs[key];
@@ -981,6 +1321,34 @@ export function renderAnimationPage(app) {
   }
 
   // === Playback ===
+  /**
+   * Keep the guide-audio element aligned to the master wall-clock during
+   * playback. Starts/pauses the clip as the playhead enters/leaves the song's
+   * placed range, and re-seeks ONLY on explicit events (`force`: start, scrub,
+   * offset change).
+   *
+   * It deliberately does NOT hard-correct drift every frame: the audio element
+   * has output latency (tens to a couple hundred ms), so its clock trails the
+   * wall-clock by more than any small tolerance, and per-frame seeking made the
+   * sound stutter ("ぶつぶつ"). Once started the element free-runs at real time —
+   * over a short guide clip the residual drift is inaudible.
+   */
+  function syncAudioToTime(force) {
+    const a = animation.audio;
+    if (!a || !playing) { return; }
+    if (isAudible(a, currentTime)) {
+      const desired = songTimeAt(a, currentTime);
+      if (!audioPlayer.isPlaying()) {
+        audioPlayer.setGain(a.gain ?? 1);
+        audioPlayer.play(desired);
+      } else if (force) {
+        audioPlayer.seek(desired);
+      }
+    } else if (audioPlayer.isPlaying()) {
+      audioPlayer.pause();
+    }
+  }
+
   function togglePlay() {
     if (playing) pausePlayback();
     else startPlayback();
@@ -991,10 +1359,27 @@ export function renderAnimationPage(app) {
     setPlayState(true);
     playStartWallTime = performance.now();
     playStartAnimTime = currentTime;
+    // Auditioning and timeline playback shouldn't sound at once.
+    listenAudio.pause();
+    syncAudioToTime(true);
     const tick = () => {
       if (!playing) return;
-      const elapsed = (performance.now() - playStartWallTime) / 1000;
-      currentTime = playStartAnimTime + elapsed;
+      const a = animation.audio;
+      const offset = a?.offset || 0;
+      // While the guide audio is actually sounding, slave the playhead to the
+      // audio element's own clock so the playhead sits exactly over the part of
+      // the waveform being heard (the wall-clock drifts ahead of the audio by
+      // its output latency, which looked like the waveform was out of sync).
+      // Re-anchor the wall-clock baseline each frame so handing back to it (out
+      // of the song's range / after a clip ends) is seamless.
+      if (a && audioPlayer.isPlaying()) {
+        currentTime = offset + audioPlayer.currentTime;
+        playStartWallTime = performance.now();
+        playStartAnimTime = currentTime;
+      } else {
+        const elapsed = (performance.now() - playStartWallTime) / 1000;
+        currentTime = playStartAnimTime + elapsed;
+      }
       if (currentTime >= animation.duration) {
         currentTime = animation.duration;
         updateSlidersFromTime();
@@ -1004,6 +1389,7 @@ export function renderAnimationPage(app) {
         pausePlayback();
         return;
       }
+      syncAudioToTime(false);
       updateSlidersFromTime();
       timeline.renderPlayhead();
       updateTimeDisplay();
@@ -1015,6 +1401,7 @@ export function renderAnimationPage(app) {
   function pausePlayback() {
     playing = false;
     setPlayState(false);
+    audioPlayer.pause();
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     // On pause, fall through to redrawPreview — it picks up the cache when
     // available, or live-renders the frame otherwise.
@@ -1027,6 +1414,7 @@ export function renderAnimationPage(app) {
     timeline.renderPlayhead();
     updateTimeDisplay();
     redrawPreview();
+    if (playing) syncAudioToTime(true);
   }
 
   // Keyboard shortcuts:
@@ -1069,6 +1457,10 @@ export function renderAnimationPage(app) {
     document.removeEventListener('keydown', onKeyDown);
     timeline.destroy?.();
     viewResizeObserver.disconnect();
+    audioPlayer.dispose();
+    listenAudio.pause();
+    listenAudio.removeAttribute('src');
+    listenAudio.load?.();
     window.removeEventListener('hashchange', detach);
   });
 
@@ -1178,7 +1570,7 @@ export function renderAnimationPage(app) {
         const data = JSON.parse(text);
         // Merge with defaults to ensure all tracks exist
         const base = createDefaultAnimation();
-        const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) } };
+        const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) }, textTrack: Array.isArray(data.textTrack) ? data.textTrack : [], audio: data.audio ?? null };
         animation = merged;
         saveAnimation(animation);
         // Make sure the imported state is persisted before we reload, otherwise
@@ -1195,6 +1587,12 @@ export function renderAnimationPage(app) {
   // Init
   updateSlidersFromTime();
   updateTimeDisplay();
+  // Prime the guide-audio player + panel from persisted state.
+  if (animation.audio?.url) {
+    audioPlayer.load(animation.audio.url);
+    audioPlayer.setGain(animation.audio.gain ?? 1);
+  }
+  refreshAudioPanel();
   requestAnimationFrame(() => {
     timeline.render();
     redrawPreview();
@@ -1209,7 +1607,19 @@ export function renderAnimationPage(app) {
    */
   function refresh() {
     if (!animation) return;
-    textarea.value = animation.text ?? '';
+    if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
+    if (animation.audio === undefined) animation.audio = null;
+    // Re-prime the guide-audio player after an undo/redo (the clip may have
+    // been added/removed/changed by the snapshot).
+    if (animation.audio?.url) {
+      audioPlayer.load(animation.audio.url);
+      audioPlayer.setGain(animation.audio.gain ?? 1);
+    } else {
+      audioPlayer.pause();
+    }
+    refreshAudioPanel();
+    textarea.value = sampleText(animation, currentTime);
+    refreshTextKfBtn();
     hBtn.classList.toggle('active', animation.writingMode === 'horizontal');
     vBtn.classList.toggle('active', animation.writingMode === 'vertical');
     if (animation.duration != null && currentTime > animation.duration) {

@@ -12,6 +12,7 @@
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getBucket } from './firebase.js';
 import { currentFontProjectId } from './project.js';
+import { currentAnimationProjectId } from './animation-project.js';
 
 function safeName(charId) {
   // Storage object names can contain most chars, but `/` is treated as a
@@ -43,5 +44,33 @@ export async function uploadCharacterImage({ projectId, charId, file }) {
   const path = `fontProjects/${pid}/characters/${safeName(charId)}-${Date.now()}.${ext}`;
   const r = ref(getBucket(), path);
   await uploadBytes(r, file, { contentType: file.type || 'image/png' });
+  return await getDownloadURL(r);
+}
+
+function audioExtFromFile(file) {
+  const t = (file.type || '').toLowerCase();
+  if (t.includes('mpeg') || t.includes('mp3')) return 'mp3';
+  if (t.includes('wav')) return 'wav';
+  if (t.includes('ogg')) return 'ogg';
+  if (t.includes('aac')) return 'aac';
+  if (t.includes('flac')) return 'flac';
+  if (t.includes('mp4') || t.includes('m4a')) return 'm4a';
+  const name = (file.name || '').toLowerCase();
+  const m = name.match(/\.([a-z0-9]+)$/);
+  return m ? m[1] : 'mp3';
+}
+
+/**
+ * Upload a guide-audio file for an AnimationProject and return its HTTPS
+ * download URL. Mirrors uploadCharacterImage; path is scoped to the animation
+ * project. projectId defaults to the active AnimationProject.
+ */
+export async function uploadAnimationAudio({ projectId, file }) {
+  const pid = projectId || currentAnimationProjectId();
+  if (!pid) throw new Error('No active animation project — cannot determine upload path');
+  const ext = audioExtFromFile(file);
+  const path = `animationProjects/${pid}/audio/${Date.now()}.${ext}`;
+  const r = ref(getBucket(), path);
+  await uploadBytes(r, file, { contentType: file.type || 'audio/mpeg' });
   return await getDownloadURL(r);
 }

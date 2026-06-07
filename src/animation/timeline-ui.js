@@ -1,10 +1,13 @@
 import { ANIMATED_PARAM_KEYS } from '../core/project.js';
 import { EASING_NAMES, EASING_TO_BEZIER, sampleBezierSegment } from './interpolation.js';
-import { removeKeyframe, setKeyframeTime, findKeyframeAt, ensureBezierHandles, clampTrackHandles } from './animation.js';
+import { removeKeyframe, setKeyframeTime, findKeyframeAt, ensureBezierHandles, clampTrackHandles, collectKeyframeTimes } from './animation.js';
 
 const ROW_HEIGHT = 22;
 const ROW_HEIGHT_EXPANDED = 90;
 const LABEL_WIDTH = 140;
+// Height (px) of the guide-audio waveform lane shown between the ruler and the
+// rows. Zero-height (hidden) when no audio is loaded.
+const WAVEFORM_HEIGHT = 56;
 const KEYFRAME_RADIUS = 5;
 const SELECT_EPSILON = 1e-4;
 const CURVE_VERT_PAD = 10;
@@ -14,6 +17,22 @@ const CURVE_SEGMENTS = 24;
 // manually from mousedown timestamps because render() re-creates the dot
 // between clicks, which would defeat the native dblclick event.
 const DBLCLICK_MS = 300;
+// Smallest allowed composition duration (s) when dragging the end handle in.
+const MIN_DURATION = 0.5;
+// Tail (s) left after the last keyframe / audio end when fitting the duration to
+// content via a double-click on the end handle.
+const FIT_TAIL = 0.5;
+// Zoom limits, in pixels per second. The max is kept modest (frame-level
+// editing needs only a few hundred px/s at 30fps) so the content — and the
+// per-row curve / waveform canvases drawn at its full width — stay well under
+// the browser's ~32767px canvas size limit for typical comp durations.
+const MIN_PPS = 2;
+const MAX_PPS = 800;
+// Synthetic row key for the step-keyframed text track. It is NOT a numeric
+// `animation.tracks` entry — text keyframes live in `animation.textTrack` as
+// `{ time, value:string }` and hold (no interpolation), so this row is rendered
+// specially and excluded from all curve / value-range / multi-select logic.
+const TEXT_KEY = '__text__';
 
 /**
  * Create timeline UI.
@@ -48,6 +67,59 @@ export function createTimelineUI(animation, callbacks) {
   // Clicking a label toggles membership.
   const expandedRows = new Set();
 
+  // --- Horizontal zoom + scroll (AE-style: time→pixels is governed by a zoom
+  // factor, NOT by the total duration). `pxPerSecond === null` means "fit": the
+  // whole duration is scaled to fill the viewport (the original behaviour). Once
+  // the user zooms — or the duration auto-grows past the viewport — this holds a
+  // concrete px/sec so extending the duration widens the (scrollable) content
+  // instead of squishing every keyframe. Horizontal scroll is native, owned by
+  // the `.anim-timeline-tracks` element (see CSS); we only read/set scrollLeft.
+  let pxPerSecond = null;
+
+  /** Visible width of the track viewport (excludes labels). */
+  function viewportW() {
+    return Math.max(1, trackArea.clientWidth);
+  }
+  /** px/sec that makes the whole duration exactly fill the viewport. */
+  function fitPps() {
+    return viewportW() / Math.max(0.001, animation.duration);
+  }
+  /** Effective px/sec — the fit value while in auto ("fit") mode. */
+  function pps() {
+    return pxPerSecond != null ? pxPerSecond : fitPps();
+  }
+  /**
+   * Pixel width of the full timeline content. In fit mode this equals the
+   * viewport (no horizontal scroll); when zoomed it is duration×pps, clamped to
+   * be at least the viewport so a short comp never leaves a dead gap.
+   */
+  function contentW() {
+    // Fit mode fills the viewport exactly (no horizontal scroll, original
+    // behaviour). Float rounding on duration×fitPps could otherwise overflow by
+    // a pixel and flicker a scrollbar.
+    if (pxPerSecond == null) return viewportW();
+    return Math.max(viewportW(), Math.ceil(animation.duration * pxPerSecond));
+  }
+
+  /**
+   * Set the zoom to `newPps` px/sec (or back to fit when null), keeping the time
+   * currently under viewport-x `anchorX` pinned in place. Re-renders and adjusts
+   * scrollLeft so the zoom feels anchored at the cursor rather than the origin.
+   */
+  function setZoom(newPps, anchorX) {
+    const ax = anchorX != null ? anchorX : viewportW() / 2;
+    const timeAtAnchor = (trackArea.scrollLeft + ax) / pps();
+    pxPerSecond = newPps == null ? null : Math.max(MIN_PPS, Math.min(MAX_PPS, newPps));
+    render();
+    if (pxPerSecond != null) {
+      trackArea.scrollLeft = Math.max(0, timeAtAnchor * pps() - ax);
+      positionPlayhead(); // keep the anchor; don't re-scroll to follow
+    }
+  }
+  function zoomBy(factor, anchorX) {
+    setZoom(pps() * factor, anchorX);
+  }
+
   /**
    * Track keys to show, in a stable order: only params that actually hold
    * keyframes get a row (instead of the full fixed ANIMATED_PARAM_KEYS list),
@@ -59,6 +131,9 @@ export function createTimelineUI(animation, callbacks) {
     const tracks = animation.tracks || {};
     const seen = new Set();
     const keys = [];
+    // The text row (when it has keyframes) sits at the very top — it's the
+    // coarsest, most structural parameter.
+    if ((animation.textTrack || []).length > 0) keys.push(TEXT_KEY);
     for (const k of ANIMATED_PARAM_KEYS) {
       if (tracks[k] && tracks[k].length > 0) { keys.push(k); seen.add(k); }
     }
@@ -69,6 +144,8 @@ export function createTimelineUI(animation, callbacks) {
   }
 
   function rowHeight(key) {
+    // The text row is never expandable (no curve), so it keeps the base height.
+    if (key === TEXT_KEY) return ROW_HEIGHT;
     return expandedRows.has(key) ? ROW_HEIGHT_EXPANDED : ROW_HEIGHT;
   }
 
@@ -348,11 +425,13 @@ export function createTimelineUI(animation, callbacks) {
    * same way renderRows() draws them (x from time, y from row layout + value).
    */
   function selectKeyframesInBox(left, top, right, bottom) {
-    const w = rowsInner.clientWidth;
+    const w = contentW();
     if (w <= 0) { selectedKfs = []; return; }
     const { tops } = computeRowLayout();
     const sel = [];
     for (const key of activeKeys()) {
+      // Text keyframes aren't part of the numeric multi-select model.
+      if (key === TEXT_KEY) continue;
       const track = animation.tracks[key] || [];
       const isExpanded = expandedRows.has(key);
       const h = rowHeight(key);
@@ -378,6 +457,26 @@ export function createTimelineUI(animation, callbacks) {
   header.className = 'anim-timeline-header';
   el.appendChild(header);
 
+  // Horizontal-zoom controls. Fit returns to auto (whole comp fills the view);
+  // − / + step the zoom anchored on the viewport centre. Ctrl/⌘+wheel over the
+  // tracks zooms at the cursor, Shift+wheel scrolls horizontally (see below).
+  const zoomCtl = document.createElement('div');
+  zoomCtl.className = 'anim-timeline-zoom';
+  const mkZoomBtn = (label, title, onClick) => {
+    const b = document.createElement('button');
+    b.className = 'anim-zoom-btn';
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener('click', onClick);
+    zoomCtl.appendChild(b);
+    return b;
+  };
+  mkZoomBtn('−', '縮小', () => zoomBy(1 / 1.4));
+  mkZoomBtn('全体', '全体表示（フィット）', () => setZoom(null));
+  mkZoomBtn('＋', '拡大', () => zoomBy(1.4));
+  mkZoomBtn('尺合わせ', '尺を内容に合わせる', () => fitDurationToContent());
+  header.appendChild(zoomCtl);
+
   const body = document.createElement('div');
   body.className = 'anim-timeline-body';
   el.appendChild(body);
@@ -397,6 +496,18 @@ export function createTimelineUI(animation, callbacks) {
   function renderLabels() {
     labelCol.innerHTML = '';
     for (const key of activeKeys()) {
+      if (key === TEXT_KEY) {
+        const lbl = document.createElement('div');
+        lbl.className = 'anim-timeline-label anim-timeline-label-text-row';
+        lbl.style.height = rowHeight(key) + 'px';
+        lbl.dataset.key = key;
+        const text = document.createElement('span');
+        text.className = 'anim-timeline-label-text';
+        text.textContent = 'Text';
+        lbl.appendChild(text);
+        labelCol.appendChild(lbl);
+        continue;
+      }
       const isExpanded = expandedRows.has(key);
       const lbl = document.createElement('div');
       lbl.className = 'anim-timeline-label' + (isExpanded ? ' expanded' : '');
@@ -431,6 +542,91 @@ export function createTimelineUI(animation, callbacks) {
   const ruler = document.createElement('div');
   ruler.className = 'anim-timeline-ruler';
   trackArea.appendChild(ruler);
+
+  // End-of-composition handle, parented to the ruler and positioned at the
+  // duration each render. Horizontal drag resizes the comp (snapped to frames,
+  // floored at MIN_DURATION); double-click fits the duration to content.
+  const durationHandle = document.createElement('div');
+  durationHandle.className = 'anim-duration-handle';
+  durationHandle.title = 'ドラッグで尺を変更 / ダブルクリックで内容に合わせる';
+  durationHandle.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation(); // don't let the ruler seek
+    const startX = e.clientX;
+    const startDur = animation.duration;
+    const fps = animation.fps || 30;
+    const onMove = (ev) => {
+      const dt = xToTime(ev.clientX - startX);
+      const snapped = Math.round((startDur + dt) * fps) / fps;
+      animation.duration = Math.max(MIN_DURATION, snapped);
+      callbacks.onChange?.();
+      render();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      callbacks.onDurationChange?.(animation.duration);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  durationHandle.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    fitDurationToContent();
+  });
+
+  /**
+   * Shrink/grow the composition duration to just past the last piece of content
+   * (keyframes, text keyframes, and the guide-audio clip end), leaving FIT_TAIL
+   * seconds of tail. Snapped to a whole frame. Floored at MIN_DURATION.
+   */
+  function fitDurationToContent() {
+    const times = collectKeyframeTimes(animation);
+    let last = times.length ? times[times.length - 1] : 0;
+    const audio = animation.audio;
+    if (audio && audio.duration > 0) {
+      last = Math.max(last, (audio.offset || 0) + audio.duration);
+    }
+    const fps = animation.fps || 30;
+    const fitted = Math.ceil((last + FIT_TAIL) * fps) / fps;
+    animation.duration = Math.max(MIN_DURATION, fitted);
+    callbacks.onChange?.();
+    callbacks.onDurationChange?.(animation.duration);
+    render();
+  }
+
+  /**
+   * Auto-grow the composition when a keyframe is dragged past the current end —
+   * the AE-hybrid behaviour: the comp end is not a hard wall, it yields. Returns
+   * true when the duration changed (so callers can notify the page). The zoom is
+   * untouched, so growing the duration widens the scrollable content rather than
+   * rescaling existing keyframes.
+   */
+  function growDurationTo(time) {
+    if (time <= animation.duration) return false;
+    // Leaving fit mode (pinning the current px/sec) is what makes growth widen
+    // the scrollable content instead of rescaling — in fit mode a larger
+    // duration would just re-fit and squish everything mid-drag.
+    if (pxPerSecond == null) pxPerSecond = fitPps();
+    animation.duration = time;
+    callbacks.onDurationChange?.(animation.duration);
+    return true;
+  }
+
+  // Guide-audio waveform lane. Sits between the ruler and the rows; hidden
+  // (zero height) until an audio clip is loaded. The clip is drawn over the
+  // animation-timeline span [offset, offset+duration] and dragged horizontally
+  // to change `animation.audio.offset`. A plain click seeks like the ruler.
+  const waveformLane = document.createElement('div');
+  waveformLane.className = 'anim-timeline-waveform';
+  waveformLane.style.display = 'none';
+  const waveformCanvas = document.createElement('canvas');
+  waveformCanvas.className = 'anim-waveform-canvas';
+  waveformLane.appendChild(waveformCanvas);
+  const waveformLabel = document.createElement('span');
+  waveformLabel.className = 'anim-waveform-label';
+  waveformLane.appendChild(waveformLabel);
+  trackArea.appendChild(waveformLane);
 
   // Cached-frame indicator strip. Painted as a 1-D canvas just below the
   // ruler — green segments mark frame ranges that have been rendered and are
@@ -559,39 +755,195 @@ export function createTimelineUI(animation, callbacks) {
     ctxMenu.style.top = top + 'px';
   }
 
-  function timeToX(time, trackWidth) {
-    return (time / Math.max(0.001, animation.duration)) * trackWidth;
+  // Time→pixel maps onto the full content width, so X = time × pps. All callers
+  // work in content (not viewport) coordinates; native scroll on the track area
+  // translates content under the viewport, and getBoundingClientRect()-relative
+  // mouse math therefore already yields content-space X without manual offset.
+  function timeToX(time) {
+    return time * pps();
   }
-  function xToTime(x, trackWidth) {
-    return (x / trackWidth) * animation.duration;
+  function xToTime(x) {
+    return x / pps();
   }
 
   function renderRuler() {
     ruler.innerHTML = '';
-    const w = ruler.clientWidth;
+    const w = contentW();
     if (w <= 0) return;
+    ruler.style.width = w + 'px';
     const dur = animation.duration;
-    const step = dur <= 2 ? 0.2 : dur <= 10 ? 1 : dur <= 30 ? 5 : 10;
+    // Pick a tick interval that keeps labels ~70px apart at the current zoom, so
+    // ruler density follows pps rather than the total duration. Snap to a 1-2-5
+    // sequence of seconds (or 0.1-0.2-0.5 when zoomed in tight).
+    const targetPx = 70;
+    const rawStep = targetPx / pps();
+    const niceSteps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
+    let step = niceSteps[niceSteps.length - 1];
+    for (const s of niceSteps) { if (s >= rawStep) { step = s; break; } }
+    const decimals = step < 1 ? (step < 0.5 ? 1 : 1) : 0;
     for (let t = 0; t <= dur + 1e-6; t += step) {
       const tick = document.createElement('div');
       tick.className = 'anim-timeline-tick';
-      tick.style.left = timeToX(t, w) + 'px';
+      tick.style.left = timeToX(t) + 'px';
       const label = document.createElement('span');
-      label.textContent = t.toFixed(step < 1 ? 1 : 0) + 's';
+      label.textContent = t.toFixed(decimals) + 's';
       tick.appendChild(label);
       ruler.appendChild(tick);
+    }
+    // End-of-composition handle: a draggable marker at the duration. Dragging
+    // resizes the comp (auto-grow / trim); double-click fits it to content.
+    ruler.appendChild(durationHandle);
+    durationHandle.style.left = timeToX(dur) + 'px';
+  }
+
+  /** Clamp the context menu inside the viewport, then show it at (x, y). */
+  function positionCtxMenu(x, y) {
+    ctxMenu.style.display = '';
+    const margin = 8;
+    const rect = ctxMenu.getBoundingClientRect();
+    let left = x, top = y;
+    if (left + rect.width > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - rect.width - margin);
+    }
+    if (top + rect.height > window.innerHeight - margin) {
+      top = Math.max(margin, window.innerHeight - rect.height - margin);
+    }
+    ctxMenu.style.left = left + 'px';
+    ctxMenu.style.top = top + 'px';
+  }
+
+  /** Prompt-edit a text keyframe's string value (secondary path; the primary
+   *  editor is the sidebar Text field). */
+  function editTextKeyframe(kf) {
+    const v = window.prompt(`Text @ ${kf.time.toFixed(2)}s`, kf.value);
+    if (v == null) return; // cancelled
+    kf.value = v;
+    callbacks.onChange?.();
+    render();
+  }
+
+  function showTextCtxMenu(x, y, kf) {
+    ctxMenu.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'anim-ctx-header';
+    head.textContent = `Text @ ${kf.time.toFixed(2)}s`;
+    ctxMenu.appendChild(head);
+
+    const editBtn = document.createElement('button');
+    editBtn.textContent = 'Edit Text…';
+    editBtn.className = 'anim-ctx-edit';
+    editBtn.addEventListener('click', () => { hideCtxMenu(); editTextKeyframe(kf); });
+    ctxMenu.appendChild(editBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.textContent = 'Delete Keyframe';
+    delBtn.className = 'anim-ctx-del';
+    delBtn.addEventListener('click', () => {
+      const tr = animation.textTrack || [];
+      const idx = tr.indexOf(kf);
+      if (idx >= 0) tr.splice(idx, 1);
+      callbacks.onChange?.();
+      render();
+      hideCtxMenu();
+    });
+    ctxMenu.appendChild(delBtn);
+
+    positionCtxMenu(x, y);
+  }
+
+  /**
+   * Render the step-keyframed text row: one square dot per text keyframe with
+   * a value label. Click seeks, drag re-times (snapped to fps), double-click or
+   * right-click edits / deletes. Text keyframes are NOT interpolated and never
+   * join the numeric multi-select model.
+   */
+  function renderTextDots(row, w, h) {
+    const tr = animation.textTrack || [];
+    for (const kf of tr) {
+      const dot = document.createElement('div');
+      dot.className = 'anim-keyframe anim-text-keyframe';
+      dot.style.left = timeToX(kf.time, w) + 'px';
+      dot.style.top = (h / 2) + 'px';
+      dot.title = kf.value;
+
+      const lbl = document.createElement('span');
+      lbl.className = 'anim-text-kf-label';
+      lbl.textContent = kf.value;
+      dot.appendChild(lbl);
+
+      dot.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        if (e.button !== 0) return;
+        const now = performance.now();
+        const isDouble = lastClick && lastClick.key === TEXT_KEY
+          && Math.abs(lastClick.time - kf.time) < SELECT_EPSILON
+          && (now - lastClick.at) < DBLCLICK_MS;
+        if (isDouble) { lastClick = null; editTextKeyframe(kf); return; }
+        lastClick = { key: TEXT_KEY, time: kf.time, at: now };
+
+        const rect = row.getBoundingClientRect();
+        const trackWidth = rect.width;
+        const startX = e.clientX;
+        const startTime = kf.time;
+        const fps = animation.fps || 30;
+        let moved = false;
+
+        const onMove = (ev) => {
+          if (trackWidth <= 0) return;
+          const dx = ev.clientX - startX;
+          if (Math.abs(dx) > 2) moved = true;
+          if (!moved) return;
+          const rawT = startTime + xToTime(dx);
+          const snapped = Math.round(rawT * fps) / fps;
+          const t = Math.max(0, snapped);
+          growDurationTo(t);
+          kf.time = t;
+          (animation.textTrack || []).sort((a, b) => a.time - b.time);
+          callbacks.onChange?.();
+          render();
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          // A plain click (no drag) seeks the playhead to this keyframe so the
+          // sidebar Text field reflects its value.
+          if (!moved) callbacks.onSeek?.(kf.time);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+
+      dot.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showTextCtxMenu(e.clientX, e.clientY, kf);
+      });
+
+      row.appendChild(dot);
     }
   }
 
   function renderRows() {
     rowsInner.innerHTML = '';
-    const w = rowsInner.clientWidth;
+    const w = contentW();
     if (w <= 0) return;
+    rowsInner.style.width = w + 'px';
 
     const { tops, total } = computeRowLayout();
     rowsInner.style.height = total + 'px';
 
     for (const key of activeKeys()) {
+      if (key === TEXT_KEY) {
+        const h = rowHeight(key);
+        const row = document.createElement('div');
+        row.className = 'anim-timeline-row anim-timeline-row-text';
+        row.style.top = tops[key] + 'px';
+        row.style.height = h + 'px';
+        row.dataset.key = key;
+        renderTextDots(row, w, h);
+        rowsInner.appendChild(row);
+        continue;
+      }
       const isExpanded = expandedRows.has(key);
       const h = rowHeight(key);
       const top = tops[key];
@@ -737,10 +1089,11 @@ export function createTimelineUI(animation, callbacks) {
             // mode, so the user can re-time without nudging the value.
             let newT = dragStartTime;
             if (!(ev.shiftKey && isExpanded)) {
-              const rawT = dragStartTime + (dx / trackWidth) * animation.duration;
+              const rawT = dragStartTime + xToTime(dx);
               const fps = animation.fps || 30;
               const snapped = Math.round(rawT * fps) / fps;
-              newT = Math.max(0, Math.min(animation.duration, snapped));
+              newT = Math.max(0, snapped);
+              growDurationTo(newT); // comp end yields instead of clamping
             }
             const idx = setKeyframeTime(track, currentIndex, newT);
             currentIndex = idx;
@@ -792,16 +1145,107 @@ export function createTimelineUI(animation, callbacks) {
     }
   }
 
-  function renderPlayhead() {
-    const w = trackArea.clientWidth;
-    if (w <= 0) return;
+  /** Position the playhead only (no scroll). Used by internal render() so an
+   *  edit far from the playhead never yanks the view back to it. */
+  function positionPlayhead() {
+    if (contentW() <= 0) return;
     const t = callbacks.getCurrentTime?.() ?? 0;
-    playheadOverlay.style.left = timeToX(t, w) + 'px';
+    playheadOverlay.style.left = timeToX(t) + 'px';
+  }
+
+  /**
+   * Public playhead update — repositions and, when zoomed in, scrolls to keep
+   * the playhead visible. Called by the page on each playback tick and on seek,
+   * so following happens during playback/scrubbing but not during arbitrary
+   * re-renders. Only nudges at the viewport edges, so scrubbing inside the
+   * visible span doesn't fight the user's manual scroll.
+   */
+  function renderPlayhead() {
+    if (contentW() <= 0) return;
+    const t = callbacks.getCurrentTime?.() ?? 0;
+    const x = timeToX(t);
+    playheadOverlay.style.left = x + 'px';
+    const vw = viewportW();
+    const sl = trackArea.scrollLeft;
+    const margin = 24;
+    if (x < sl + margin) trackArea.scrollLeft = Math.max(0, x - margin);
+    else if (x > sl + vw - margin) trackArea.scrollLeft = x - vw + margin;
+  }
+
+  /**
+   * Draw the guide-audio waveform clip. The clip occupies the animation
+   * timeline span [offset, offset+duration]; peaks are a downsampled abs-peak
+   * array (see audio-track.js). Hidden when no audio is loaded.
+   */
+  function renderWaveform() {
+    const audio = animation.audio;
+    if (!audio || !audio.peaks?.length || !(audio.duration > 0)) {
+      waveformLane.style.display = 'none';
+      return;
+    }
+    waveformLane.style.display = '';
+    waveformLane.style.height = WAVEFORM_HEIGHT + 'px';
+    waveformLabel.textContent = audio.name || 'audio';
+
+    const w = contentW();
+    const h = WAVEFORM_HEIGHT;
+    if (w <= 0) return;
+    waveformLane.style.width = w + 'px';
+    const dpr = window.devicePixelRatio || 1;
+    waveformCanvas.style.width = w + 'px';
+    waveformCanvas.style.height = h + 'px';
+    waveformCanvas.width = Math.max(1, Math.floor(w * dpr));
+    waveformCanvas.height = Math.max(1, Math.floor(h * dpr));
+    const c = waveformCanvas.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+
+    const offset = audio.offset || 0;
+    const startX = timeToX(offset, w);
+    const endX = timeToX(offset + audio.duration, w);
+    const clipW = endX - startX;
+    if (clipW <= 0) return;
+
+    // Clip background band so the song's placement on the timeline is obvious.
+    c.fillStyle = 'rgba(74,158,255,0.10)';
+    c.fillRect(startX, 0, clipW, h);
+
+    const peaks = audio.peaks;
+    const n = peaks.length;
+    const mid = h / 2;
+    c.strokeStyle = 'rgba(74,158,255,0.9)';
+    c.lineWidth = 1;
+    c.beginPath();
+    // One vertical line per on-screen pixel column inside the clip. Take the MAX
+    // peak over every bucket that maps into the column's width — when the clip
+    // holds more buckets than pixels, this keeps transients visible instead of
+    // skipping the buckets between nearest-samples (which looked low-res).
+    const x0 = Math.max(0, Math.floor(startX));
+    const x1 = Math.min(w, Math.ceil(endX));
+    for (let x = x0; x <= x1; x++) {
+      const f0 = (x - startX) / clipW;
+      const f1 = (x + 1 - startX) / clipW;
+      if (f1 < 0 || f0 > 1) continue;
+      let i0 = Math.floor(Math.max(0, f0) * n);
+      let i1 = Math.ceil(Math.min(1, f1) * n);
+      if (i1 <= i0) i1 = i0 + 1;
+      let peak = 0;
+      for (let i = i0; i < i1 && i < n; i++) {
+        if (peaks[i] > peak) peak = peaks[i];
+      }
+      const amp = peak * (mid - 2);
+      c.moveTo(x + 0.5, mid - amp);
+      c.lineTo(x + 0.5, mid + amp);
+    }
+    c.stroke();
   }
 
   function renderCacheStrip() {
-    const w = trackArea.clientWidth;
+    const w = contentW();
     if (w <= 0) return;
+    // Keep the cache strip pinned to the top of the rows, below the waveform
+    // lane when one is shown (its height varies with audio presence).
+    cacheStrip.style.top = rowsInner.offsetTop + 'px';
     const cssH = 4;
     const dpr = window.devicePixelRatio || 1;
     cacheStrip.style.width = w + 'px';
@@ -847,10 +1291,53 @@ export function createTimelineUI(animation, callbacks) {
   function render() {
     renderRuler();
     renderLabels();
+    renderWaveform();
     renderRows();
-    renderPlayhead();
+    // Keep the label column's top padding aligned with the rows. The rows are
+    // pushed down by the ruler plus the (variable-height) waveform lane, so a
+    // static CSS padding-top would misalign labels against their keyframe rows
+    // whenever a guide-audio clip is loaded.
+    labelCol.style.paddingTop = rowsInner.offsetTop + 'px';
+    positionPlayhead();
     renderCacheStrip();
   }
+
+  // Waveform lane interaction: horizontal drag re-times the audio clip
+  // (animation.audio.offset); a plain click seeks the playhead like the ruler.
+  waveformLane.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const audio = animation.audio;
+    if (!audio) return;
+    const rect = waveformLane.getBoundingClientRect();
+    const w = rect.width;
+    if (w <= 0) return;
+    const startX = e.clientX;
+    const startOffset = audio.offset || 0;
+    const fps = animation.fps || 30;
+    let moved = false;
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      if (Math.abs(dx) > 2) moved = true;
+      if (!moved) return;
+      const deltaT = (dx / w) * animation.duration;
+      // Snap to whole frames so the clip lands on frame boundaries.
+      audio.offset = Math.round((startOffset + deltaT) * fps) / fps;
+      renderWaveform();
+    };
+    const onUp = (ev) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (moved) {
+        callbacks.onAudioOffsetChange?.(audio.offset);
+      } else {
+        const t = xToTime(ev.clientX - rect.left, w);
+        callbacks.onSeek?.(Math.max(0, Math.min(animation.duration, t)));
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 
   // Seek by clicking ruler (the only area from which the playhead can be scrubbed).
   ruler.addEventListener('mousedown', (e) => {
@@ -913,6 +1400,25 @@ export function createTimelineUI(animation, callbacks) {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
+
+  // Wheel over the tracks: Ctrl/⌘ zooms anchored at the cursor; Shift turns
+  // vertical wheel into horizontal scroll. Plain wheel falls through to the
+  // rows' native vertical scroll. Re-fitting on plain resize is handled by the
+  // observer below; an explicit zoom pins pxPerSecond so resize won't refit.
+  trackArea.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const ax = e.clientX - trackArea.getBoundingClientRect().left;
+      zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15, ax);
+    } else if (e.shiftKey || e.deltaX !== 0) {
+      const d = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+      if (contentW() > viewportW()) {
+        trackArea.scrollLeft += d;
+        e.preventDefault();
+        // Manual scroll: the playhead rides along natively, so just reposition.
+      }
+    }
+  }, { passive: false });
 
   const resizeObserver = new ResizeObserver(() => render());
   resizeObserver.observe(trackArea);

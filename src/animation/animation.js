@@ -68,6 +68,53 @@ export function removeKeyframe(track, index) {
   }
 }
 
+/**
+ * Text is a STEP (hold) parameter — no interpolation. Its keyframes live in a
+ * separate `animation.textTrack` list of `{ time, value:string }` (kept out of
+ * the numeric `tracks` map so the bezier / value-range / curve machinery never
+ * sees string values). Upsert replaces an existing keyframe within EPSILON of
+ * `time`, otherwise inserts and re-sorts. Returns the affected keyframe.
+ */
+export function upsertTextKeyframe(track, time, value) {
+  for (let i = 0; i < track.length; i++) {
+    if (Math.abs(track[i].time - time) < EPSILON) {
+      track[i].value = value;
+      return track[i];
+    }
+  }
+  const kf = { time, value };
+  track.push(kf);
+  track.sort((a, b) => a.time - b.time);
+  return kf;
+}
+
+/**
+ * The text keyframe whose hold region covers `time` — the last keyframe at or
+ * before `time`. Returns null when `time` precedes the first keyframe (the
+ * base `animation.text` governs that region) or the track is empty.
+ */
+export function activeTextKeyframe(animation, time) {
+  const tr = animation.textTrack;
+  if (!tr || tr.length === 0) return null;
+  let active = null;
+  for (const kf of tr) {
+    if (kf.time <= time + EPSILON) active = kf;
+    else break;
+  }
+  return active;
+}
+
+/**
+ * Sample the displayed text at `time`. Hold semantics: the value of the last
+ * keyframe at or before `time`. Before the first keyframe (or with no text
+ * keyframes) the base `animation.text` is used, so animations that never
+ * keyframe text behave exactly as before.
+ */
+export function sampleText(animation, time) {
+  const active = activeTextKeyframe(animation, time);
+  return active ? active.value : (animation.text || '');
+}
+
 export function setKeyframeTime(track, index, newTime) {
   if (index < 0 || index >= track.length) return index;
   track[index].time = newTime;
@@ -104,6 +151,10 @@ export function sampleAnimation(animation, time) {
     if (key in out) continue;
     out[key] = sampleTrack(tracks[key], time, baseValues[key] ?? 0);
   }
+  // Text is a step parameter sampled separately (see sampleText). Carried on the
+  // params object so computeLayout — the single layout entry point — picks up
+  // the time-varying text without needing a second sampling call.
+  out.text = sampleText(animation, time);
   return out;
 }
 
@@ -145,6 +196,7 @@ export function collectKeyframeTimes(animation) {
     if (!track) continue;
     for (const kf of track) times.add(kf.time);
   }
+  for (const kf of animation.textTrack || []) times.add(kf.time);
   return [...times].sort((a, b) => a - b);
 }
 
