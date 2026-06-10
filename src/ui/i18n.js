@@ -112,8 +112,6 @@ const TRANSLATIONS = {
   "Rendering...": "書き出し中…",
   "Encoding...": "変換中…",
   "Meshing...": "分割中…",
-  Compose: "組版",
-  Animation: "動画",
   "+ Add Layer": "+ レイヤーを追加",
   "Delete Keyframe": "キー削除",
 

@@ -93,7 +93,7 @@ async function renderFontColumn(col) {
   list.className = "project-list";
   col.appendChild(list);
 
-  let items = [];
+  let items;
   try {
     items = await listFontProjects();
   } catch (e) {
@@ -217,7 +217,7 @@ async function renderAnimationColumn(col) {
   list.className = "project-list";
   col.appendChild(list);
 
-  let items = [];
+  let items;
   try {
     items = await listAnimationProjects();
   } catch (e) {

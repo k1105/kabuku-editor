@@ -1455,6 +1455,7 @@ export function renderAnimationPage(app) {
   // Detach on hashchange so we don't leak across pages
   window.addEventListener('hashchange', function detach() {
     document.removeEventListener('keydown', onKeyDown);
+    settings.destroy();
     timeline.destroy?.();
     viewResizeObserver.disconnect();
     audioPlayer.dispose();

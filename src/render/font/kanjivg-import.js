@@ -45,7 +45,7 @@ export async function loadKanjiVGPaths(char) {
     try {
       res = await fetch(url);
     } catch (e) {
-      throw new Error(`KanjiVG fetch failed for "${char}": ${e.message || e}`);
+      throw new Error(`KanjiVG fetch failed for "${char}": ${e.message || e}`, { cause: e });
     }
     if (!res.ok) {
       const err = new Error(`"${char}" is not in KanjiVG (HTTP ${res.status}).`);

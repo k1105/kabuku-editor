@@ -618,19 +618,6 @@ export async function fetchFontProjectSnapshot(projectId) {
   };
 }
 
-// =========================================================================
-// JSON export / import (whole project round-trip)
-// =========================================================================
-export function exportProject() {
-  return JSON.stringify(_fp || blankProject(), null, 2);
-}
-
-export function importProject(json) {
-  const data = JSON.parse(json);
-  // Treat as full overwrite of in-memory state; meta + chars all dirty.
-  saveProject(data);
-}
-
 /**
  * Resolve a single Unicode codepoint for a glyph from its charId.
  * Returns null when the id isn't a single character (e.g. "new_1") so the
@@ -661,14 +648,8 @@ export function resolveTransform(global, overrides) {
   };
 }
 
-/** Resolve grid params: global grid defaults merged with per-layer overrides */
-export function resolveGridParams(global, gridName, overrides) {
-  const gd = global.gridDefaults?.[gridName] || {};
-  return { ...gd, ...overrides };
-}
-
 /** Compute overrides: returns only keys where resolved differs from global */
-export function computeOverrides(resolved, globalDefaults) {
+function computeOverrides(resolved, globalDefaults) {
   const overrides = {};
   for (const [k, v] of Object.entries(resolved)) {
     if (globalDefaults[k] !== v) overrides[k] = v;
@@ -730,9 +711,4 @@ export function serializeLayerOverrides(layers, global) {
     if (layer.visible !== gVisible) out.visible = layer.visible;
     return out;
   }).filter(Boolean);
-}
-
-// Keep for backward compat during transition
-export function serializeLayerData(layers, global) {
-  return serializeLayerOverrides(layers, global);
 }

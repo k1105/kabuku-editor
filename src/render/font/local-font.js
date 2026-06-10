@@ -134,7 +134,7 @@ export async function importLocalFontFile(file) {
   try {
     font = opentype.parse(buffer);
   } catch (e) {
-    throw new Error(`Failed to parse font file "${file.name}": ${e.message || e}`);
+    throw new Error(`Failed to parse font file "${file.name}": ${e.message || e}`, { cause: e });
   }
 
   const fallback = file.name.replace(/\.[^.]+$/, '');

@@ -1,0 +1,166 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`grid plugins > CircleGrid > 出力の特性スナップショット 1`] = `
+{
+  "count": 706,
+  "firstCenters": [
+    {
+      "x": 512,
+      "y": 512,
+    },
+    {
+      "x": 542,
+      "y": 512,
+    },
+    {
+      "x": 527,
+      "y": 537.98,
+    },
+    {
+      "x": 497,
+      "y": 537.98,
+    },
+    {
+      "x": 482,
+      "y": 512,
+    },
+  ],
+  "geometryTypes": [
+    "circle",
+  ],
+}
+`;
+
+exports[`grid plugins > EllipseGrid > 出力の特性スナップショット 1`] = `
+{
+  "count": 706,
+  "firstCenters": [
+    {
+      "x": 512,
+      "y": 512,
+    },
+    {
+      "x": 557,
+      "y": 512,
+    },
+    {
+      "x": 534.5,
+      "y": 537.98,
+    },
+    {
+      "x": 489.5,
+      "y": 537.98,
+    },
+    {
+      "x": 467,
+      "y": 512,
+    },
+  ],
+  "geometryTypes": [
+    "circle",
+  ],
+}
+`;
+
+exports[`grid plugins > FibonacciGrid > 出力の特性スナップショット 1`] = `
+{
+  "count": 300,
+  "firstCenters": [
+    {
+      "x": 512,
+      "y": 512,
+    },
+    {
+      "x": 500.2,
+      "y": 522.81,
+    },
+    {
+      "x": 513.98,
+      "y": 489.46,
+    },
+    {
+      "x": 528.86,
+      "y": 533.99,
+    },
+    {
+      "x": 480.49,
+      "y": 506.43,
+    },
+  ],
+  "geometryTypes": [
+    "circle",
+  ],
+}
+`;
+
+exports[`grid plugins > PixelGrid > 出力の特性スナップショット 1`] = `
+{
+  "count": 1024,
+  "firstCenters": [
+    {
+      "x": 16,
+      "y": 16,
+    },
+    {
+      "x": 48,
+      "y": 16,
+    },
+    {
+      "x": 80,
+      "y": 16,
+    },
+    {
+      "x": 112,
+      "y": 16,
+    },
+    {
+      "x": 144,
+      "y": 16,
+    },
+  ],
+  "geometryTypes": [
+    "rect",
+  ],
+}
+`;
+
+exports[`grid plugins > VoronoiGrid > 出力の特性スナップショット 1`] = `
+{
+  "count": 400,
+  "firstCenters": [
+    {
+      "x": 607.04,
+      "y": 460.41,
+    },
+    {
+      "x": 893.49,
+      "y": 705.82,
+    },
+    {
+      "x": 156.12,
+      "y": 534.34,
+    },
+    {
+      "x": 278.5,
+      "y": 657.67,
+    },
+    {
+      "x": 890.06,
+      "y": 495.42,
+    },
+  ],
+  "geometryTypes": [
+    "polygon",
+  ],
+}
+`;
+
+exports[`grid plugins > 登録済みグリッド一覧 1`] = `
+[
+  "CircleGrid",
+  "EllipseGrid",
+  "FibonacciGrid",
+  "PixelGrid",
+  "VoronoiGrid",
+]
+`;

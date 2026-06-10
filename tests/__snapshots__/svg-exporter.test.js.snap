@@ -1,0 +1,32 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`svg-exporter > stretch + gap 込みの全レイヤー出力 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1816" height="1816" viewBox="-791 -791 1816 1816">
+  <g opacity="0.9" id="layer_1">
+    <g fill="#000">
+      <rect x="-789.61" y="-789.61" width="40" height="40"/>
+      <circle cx="-343.35" cy="-445.74" r="25"/>
+      <polygon points="400.5,611.74 430.5,616.74 420.5,636.74 398.5,631.74"/>
+    </g>
+  </g>
+  <g opacity="0.5" id="layer_2">
+    <g fill="#000">
+      <rect x="-789.61" y="-789.61" width="40" height="40"/>
+      <circle cx="-343.35" cy="-445.74" r="25"/>
+      <polygon points="400.5,611.74 430.5,616.74 420.5,636.74 398.5,631.74"/>
+    </g>
+  </g>
+</svg>"
+`;
+
+exports[`svg-exporter > 変換なしの単一レイヤー出力 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1026" height="1026" viewBox="-1 -1 1026 1026">
+<g fill="#000">
+  <rect x="80" y="80" width="40" height="40"/>
+  <circle cx="300" cy="200" r="25"/>
+  <polygon points="500,690 530,695 520,715 498,710"/>
+</g>
+</svg>"
+`;

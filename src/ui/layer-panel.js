@@ -1,5 +1,3 @@
-import { getAllGrids } from '../grids/grid-plugin.js';
-import { createLayer } from '../core/layer.js';
 import { iconEl } from './icons.js';
 
 export function createLayerPanel(layers, activeLayerIdx, callbacks) {

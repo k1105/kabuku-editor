@@ -113,6 +113,11 @@ export function createUserBadge() {
     document.removeEventListener('click', onDocClick);
   }
   function onDocClick(e) {
+    // Self-detach if the badge left the DOM (page navigated with menu open).
+    if (!document.contains(wrap)) {
+      document.removeEventListener('click', onDocClick);
+      return;
+    }
     if (!wrap.contains(e.target)) closeMenu();
   }
   avatar.addEventListener('click', (e) => {

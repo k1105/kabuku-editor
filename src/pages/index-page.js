@@ -508,6 +508,12 @@ export function renderIndexPage(app) {
   }
   const resizeObserver = new ResizeObserver(() => resizeCanvas());
   resizeObserver.observe(previewCanvasL);
+  // Disconnect on page teardown — an observing ResizeObserver keeps this
+  // page's entire closure alive after navigation.
+  window.addEventListener('hashchange', function detachResizeObserver() {
+    resizeObserver.disconnect();
+    window.removeEventListener('hashchange', detachResizeObserver);
+  });
   requestAnimationFrame(() => resizeCanvas());
 
   // Painting happens on the left (un-stretched, guide) pane only — its cell
@@ -2319,7 +2325,7 @@ async function importFromKanjiVG(project, chars, strokeWidth, ui) {
   for (const ch of chars) {
     const charId = ch;
     if (!project.characters[charId]) {
-      let paths = null;
+      let paths;
       try {
         ({ paths } = await loadKanjiVGPaths(ch));
       } catch (e) {

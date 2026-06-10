@@ -1,0 +1,31 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildFont (static OTF) > グリフのパスデータがスナップショットと一致する 1`] = `
+[
+  {
+    "advanceWidth": 1024,
+    "name": ".notdef",
+    "path": "M102.40 716.60L921.60 716.60L921.60-102.60L102.40-102.60ZM153.60 665.40L153.60-51.40L870.40-51.40L870.40 665.40Z",
+    "unicode": null,
+  },
+  {
+    "advanceWidth": 512,
+    "name": "space",
+    "path": "",
+    "unicode": 32,
+  },
+  {
+    "advanceWidth": 1024,
+    "name": "uni0049",
+    "path": "M-159.11 1236.93L96.89 1236.93L96.89 980.93L-159.11 980.93ZM-32.67 851.87L223.33 851.87L223.33 595.87L-32.67 595.87ZM94.48 461.52L350.48 461.52L350.48 205.52L94.48 205.52Z",
+    "unicode": 73,
+  },
+]
+`;
+
+exports[`buildVariableTTF > バイト列が決定的で、スナップショットと一致する 1`] = `
+{
+  "length": 1468,
+  "sha256": "a1d121d0055b7bbdde5cf74aaf44ad05d714a7a93043891fce67e03a8ae349c6",
+}
+`;
