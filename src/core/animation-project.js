@@ -15,6 +15,7 @@ import {
 import { getDb } from './firebase.js';
 import { userInfo } from './auth.js';
 import { fetchFontProjectSnapshot, createDefaultAnimation, ANIMATED_PARAM_KEYS, stripUndefined, charIdToDocId, docIdToCharId } from './project.js';
+import { createChangeBus, createDebouncedWriter } from './store-utils.js';
 
 const WRITE_DEBOUNCE_MS = 1500;
 
@@ -25,17 +26,19 @@ let _ap = null;       // { id, name, fontProjectId, fontProjectName, snapshotAt,
 let _apId = null;
 let _animDirty = false;
 let _metaDirty = false;
-let _writeTimer = null;
-const _changeSubs = new Set();
+const _changes = createChangeBus();
+const _writer = createDebouncedWriter(() => { flushNow(); }, {
+  debounceMs: WRITE_DEBOUNCE_MS,
+  onSchedule: () => notifyChange(),
+});
 
 function notifyChange() {
-  for (const fn of _changeSubs) fn();
+  _changes.notify();
 }
 
 /** Subscribe to in-memory state changes (e.g. for unsaved-indicator UI). */
 export function subscribeAnimationProject(fn) {
-  _changeSubs.add(fn);
-  return () => _changeSubs.delete(fn);
+  return _changes.subscribe(fn);
 }
 
 /** True when there are edits not yet committed to Firestore. */
@@ -135,13 +138,11 @@ export async function bootAnimationProject(projectId) {
 }
 
 function scheduleWrite() {
-  if (_writeTimer) clearTimeout(_writeTimer);
-  _writeTimer = setTimeout(() => { flushNow(); }, WRITE_DEBOUNCE_MS);
-  notifyChange();
+  _writer.schedule();
 }
 
 export async function flushNow() {
-  if (_writeTimer) { clearTimeout(_writeTimer); _writeTimer = null; }
+  _writer.cancel();
   if (!_ap || !_apId) return;
   if (!_animDirty && !_metaDirty) return;
   const db = getDb();

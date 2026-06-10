@@ -12,6 +12,8 @@
  * colors at cell boundaries. The resulting per-cell ratio is unaffected.
  */
 
+import { accumulateCellPixels } from './mesh-accumulate.js';
+
 const ALPHA_THRESHOLD = 200;
 const DARK_BRIGHTNESS = 128;
 
@@ -73,19 +75,7 @@ function renderIdMask(W, H, cells) {
 }
 
 function accumulate(source, mask, cellCount) {
-  const dark = new Uint32Array(cellCount);
-  const total = new Uint32Array(cellCount);
-  const len = source.length;
-  for (let i = 0; i < len; i += 4) {
-    if (mask[i + 3] < ALPHA_THRESHOLD) continue;
-    const id = mask[i] | (mask[i + 1] << 8);
-    if (id === 0 || id > cellCount) continue;
-    const idx = id - 1;
-    total[idx]++;
-    const brightness = (source[i] + source[i + 1] + source[i + 2]) / 3;
-    if (brightness < DARK_BRIGHTNESS) dark[idx]++;
-  }
-  return { dark, total };
+  return accumulateCellPixels(source, mask, cellCount, ALPHA_THRESHOLD, DARK_BRIGHTNESS);
 }
 
 function applyResults(cells, dark, total, threshold) {

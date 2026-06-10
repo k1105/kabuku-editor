@@ -1,5 +1,4 @@
-import { applyStretch } from '../transform/stretch.js';
-import { applyGap } from '../transform/gap.js';
+import { cellDisplacement } from './transform-utils.js';
 
 /**
  * Export a single layer to SVG.
@@ -62,15 +61,7 @@ function placeCells(layer, width, height, opts) {
     : height / 2;
   const filled = layer.cells.filter(c => c.filled);
   return filled.map(cell => {
-    let pos = { x: cell.center.x, y: cell.center.y };
-    if (t.stretchAmount) {
-      pos = applyStretch(pos, t.stretchAngle || 0, t.stretchAmount, width, height, baselineY);
-    }
-    if (t.baseGap) {
-      pos = applyGap(pos, t.stretchAngle || 0, t.baseGap, t.gapDirectionWeight || 0, width, height);
-    }
-    const dx = pos.x - cell.center.x;
-    const dy = pos.y - cell.center.y;
+    const { dx, dy, pos } = cellDisplacement(cell.center, t, width, height, baselineY);
     return { cell, dx, dy, pos, radius: cellRadius(cell) };
   });
 }

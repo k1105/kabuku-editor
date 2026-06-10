@@ -23,6 +23,8 @@ import { createAudioPlayer, decodeAudioPeaks, songTimeAt, isAudible } from '../a
 import { createParamRow } from '../ui/param-row.js';
 import { createLangToggle, t } from '../ui/i18n.js';
 import { getGrid } from '../grids/grid-plugin.js';
+import { createIconRail } from '../ui/icon-rail.js';
+import { downloadBlob, pickAndApplyJson } from '../utils/file-io.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -332,28 +334,13 @@ export function renderAnimationPage(app) {
   // A vertical strip of icon buttons left of the sidebar (mirrors the Glyphs
   // editor). Each button swaps the sidebar to a dedicated panel: Text, Camera,
   // Layer, Export. Icons come from Iconify (Lucide set) via <iconify-icon>.
-  const iconRail = document.createElement('div');
-  iconRail.className = 'icon-rail';
-  const RAIL_ITEMS = [
-    { id: 'text',   icon: 'lucide:type',   title: 'Text' },
-    { id: 'camera', icon: 'lucide:video',  title: 'Camera' },
-    { id: 'audio',  icon: 'lucide:music',  title: 'Audio' },
-  ];
+  const rail = createIconRail([
+    { id: 'text',   icon: 'lucide:type',  title: 'Text' },
+    { id: 'camera', icon: 'lucide:video', title: 'Camera' },
+    { id: 'audio',  icon: 'lucide:music', title: 'Audio' },
+  ], (id) => setPanel(id));
+  const iconRail = rail.el;
   let activePanel = 'text';
-  const railButtons = {};
-  for (const item of RAIL_ITEMS) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'rail-btn';
-    btn.title = t(item.title);
-    btn.setAttribute('aria-label', item.title);
-    const ic = document.createElement('iconify-icon');
-    ic.setAttribute('icon', item.icon);
-    btn.appendChild(ic);
-    btn.addEventListener('click', () => setPanel(item.id));
-    railButtons[item.id] = btn;
-    iconRail.appendChild(btn);
-  }
 
   // --- Sidebar ---
   const sidebar = document.createElement('div');
@@ -374,7 +361,7 @@ export function renderAnimationPage(app) {
   function setPanel(id) {
     activePanel = id;
     for (const [k, el] of Object.entries(PANEL_ELS)) el.style.display = k === id ? '' : 'none';
-    for (const [k, btn] of Object.entries(railButtons)) btn.classList.toggle('active', k === id);
+    rail.setActive(id);
   }
 
   // Collapsible param group. The heading doubles as a toggle button: clicking it
@@ -1551,38 +1538,21 @@ export function renderAnimationPage(app) {
 
   function doJsonExport() {
     const blob = new Blob([JSON.stringify(animation, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'kabuku_animation.json';
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, 'kabuku_animation.json');
   }
 
   function doJsonImport() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json';
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        const data = JSON.parse(text);
-        // Merge with defaults to ensure all tracks exist
-        const base = createDefaultAnimation();
-        const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) }, textTrack: Array.isArray(data.textTrack) ? data.textTrack : [], audio: data.audio ?? null };
-        animation = merged;
-        saveAnimation(animation);
-        // Make sure the imported state is persisted before we reload, otherwise
-        // the debounced write would be cancelled by the navigation.
-        await flushAnimationNow();
-        location.reload();
-      } catch (e) {
-        alert('Import failed: ' + e.message);
-      }
+    pickAndApplyJson(async (data) => {
+      // Merge with defaults to ensure all tracks exist
+      const base = createDefaultAnimation();
+      const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) }, textTrack: Array.isArray(data.textTrack) ? data.textTrack : [], audio: data.audio ?? null };
+      animation = merged;
+      saveAnimation(animation);
+      // Make sure the imported state is persisted before we reload, otherwise
+      // the debounced write would be cancelled by the navigation.
+      await flushAnimationNow();
+      location.reload();
     });
-    input.click();
   }
 
   // Init

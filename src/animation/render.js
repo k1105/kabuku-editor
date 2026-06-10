@@ -8,9 +8,8 @@ import { loadImageCached } from '../core/image-cache.js';
 import { drawSourceImage } from '../render/canvas-renderer.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
-import { applyStretch } from '../transform/stretch.js';
-import { applyGap } from '../transform/gap.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
+import { cellDisplacement } from '../render/transform-utils.js';
 import { sampleAnimation } from './animation.js';
 
 // Threshold for per-frame auto-mesh of animated-grid glyphs. Matches the
@@ -181,15 +180,7 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
     workCtx.globalAlpha = layer.opacity;
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
-      let pos = cell.center;
-      if (charTransform.stretchAmount) {
-        pos = applyStretch(pos, charTransform.stretchAngle || 0, charTransform.stretchAmount, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
-      }
-      if (charTransform.baseGap) {
-        pos = applyGap(pos, charTransform.stretchAngle || 0, charTransform.baseGap, charTransform.gapDirectionWeight || 0, RENDER_SIZE, RENDER_SIZE);
-      }
-      const cdx = pos.x - cell.center.x;
-      const cdy = pos.y - cell.center.y;
+      const { dx: cdx, dy: cdy } = cellDisplacement(cell.center, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
       workCtx.save();
       workCtx.translate(cdx, cdy);
       workCtx.fillStyle = '#000';

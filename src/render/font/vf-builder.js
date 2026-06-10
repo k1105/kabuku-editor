@@ -18,8 +18,7 @@
  */
 
 import { applyStretch } from '../../transform/stretch.js';
-import { buildRuntimeLayers } from '../../core/layer-builder.js';
-import { resolveCodepoint } from '../../core/project.js';
+import { EM_SIZE, fontVerticalMetrics, glyphName, collectGlyphEntries } from './glyph-collect.js';
 import { cellGeometryToContours } from './glyph-points.js';
 import { buildSfnt } from './binary.js';
 import {
@@ -30,8 +29,6 @@ import { makeFvar, makeGvar } from './vf-tables.js';
 import { zipSync } from 'fflate';
 
 export const DEFAULT_FAMILY_ANGLES = [0, 30, 45, 60, 90, 120, 135, 150];
-
-const EM_SIZE = 1024;
 
 /**
  * @param {Object} project
@@ -50,11 +47,7 @@ export function buildVariableTTF(project, opts) {
   const fontInfo = project.global.fontInfo || {};
   const familyName = fontInfo.familyName || 'Kabuku';
   const fontMetrics = project.global.fontMetrics || {};
-  const baselineY = (fontMetrics.baseline ?? 0.8) * EM_SIZE;
-  const ascender = Math.round(baselineY);
-  const descender = -Math.round(EM_SIZE - baselineY);
-
-  const skipped = [];
+  const { baselineY, ascender, descender } = fontVerticalMetrics(fontMetrics);
 
   // ── Collect glyph specs in glyph-index order ──
   // Index 0: .notdef   (required)
@@ -70,8 +63,7 @@ export function buildVariableTTF(project, opts) {
     advanceWidth: EM_SIZE,
   });
 
-  const charIds = Object.keys(project.characters || {});
-  const hasUserSpace = charIds.includes(' ');
+  const { entries, skipped, hasUserSpace } = collectGlyphEntries(project);
   if (!hasUserSpace) {
     glyphSpecs.push({
       name: 'space',
@@ -82,15 +74,7 @@ export function buildVariableTTF(project, opts) {
     });
   }
 
-  for (const charId of charIds) {
-    const cp = resolveCodepoint(charId);
-    if (cp == null) {
-      skipped.push(charId);
-      continue;
-    }
-    const charData = project.characters[charId];
-    const layers = buildRuntimeLayers(project.global, charData, EM_SIZE);
-
+  for (const { codepoint: cp, layers } of entries) {
     const contoursDefault = [];
     const contoursPeak = [];
 
@@ -409,9 +393,3 @@ function notdefContours(ascender, descender) {
   ];
 }
 
-function glyphName(codepoint) {
-  if (codepoint <= 0xFFFF) {
-    return 'uni' + codepoint.toString(16).toUpperCase().padStart(4, '0');
-  }
-  return 'u' + codepoint.toString(16).toUpperCase().padStart(6, '0');
-}

@@ -12,7 +12,7 @@ import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { exportLayerToSVG, exportAllLayersToSVG } from '../render/svg-exporter.js';
 import { buildFontBytes } from '../render/font-exporter.js';
 import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../render/font/vf-builder.js';
-import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog, saveFile } from '../ui/export-dialog.js';
+import { svgExportDialog, staticFontDialog, variableFontDialog, glyphAddDialog } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
 import { ensureFontLoaded, renderCharToContext, renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { importLocalFontFile } from '../render/font/local-font.js';
@@ -26,7 +26,8 @@ import { computeCacheScale } from '../compose/glyph-cache.js';
 import { drawSourceImage, metricsLabelMargin } from '../render/canvas-renderer.js';
 import { createParamRow } from '../ui/param-row.js';
 import { createStretchControl } from '../ui/preview-controls.js';
-import { fileToDataURL, loadImage, saveBlobWithPicker } from '../utils/file-io.js';
+import { fileToDataURL, loadImage, saveBlobWithPicker, saveFile, pickAndApplyJson } from '../utils/file-io.js';
+import { createIconRail } from '../ui/icon-rail.js';
 import { createSettingsModal, settingsToolBtn } from '../ui/settings-modal.js';
 import { createComposeView } from '../compose/compose-view.js';
 
@@ -170,27 +171,16 @@ export function renderIndexPage(app) {
   }
 
   function doImportProject() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.json';
-    input.addEventListener('change', async () => {
-      const file = input.files[0];
-      if (!file) return;
-      try {
-        const data = JSON.parse(await file.text());
-        if (data.global) {
-          if (data.global.stretchAngle === undefined) data.global.stretchAngle = 0;
-          if (data.global.stretchAmount === undefined) data.global.stretchAmount = 0;
-        }
-        saveProject(data);
-        // Wait for Firestore write so the reload picks up the imported state.
-        await flushProjectNow();
-        location.reload();
-      } catch (e) {
-        alert(`Import failed: ${e.message}`);
+    pickAndApplyJson(async (data) => {
+      if (data.global) {
+        if (data.global.stretchAngle === undefined) data.global.stretchAngle = 0;
+        if (data.global.stretchAmount === undefined) data.global.stretchAmount = 0;
       }
+      saveProject(data);
+      // Wait for Firestore write so the reload picks up the imported state.
+      await flushProjectNow();
+      location.reload();
     });
-    input.click();
   }
 
   function fontFamilyName() {
@@ -271,33 +261,16 @@ export function renderIndexPage(app) {
   // A vertical strip of icon buttons sitting left of the sidebar. Each button
   // swaps the sidebar to a dedicated panel. Icons come from Iconify (Lucide
   // set) via the <iconify-icon> web component registered in main.js.
-  const iconRail = document.createElement('div');
-  iconRail.className = 'icon-rail';
-  const RAIL_ITEMS = [
-    { id: 'layers',   icon: 'lucide:layers',             title: 'Layers' },
-    { id: 'pen',      icon: 'lucide:pen-tool',           title: 'Pen' },
-    { id: 'automesh', icon: 'lucide:grid-3x3',           title: 'Auto Mesh' },
-    { id: 'metrics',  icon: 'lucide:ruler',              title: 'Font Metrics' },
-    { id: 'compose',  icon: 'lucide:type',               title: 'Compose' },
-  ];
-  const railButtons = {};
-  for (const item of RAIL_ITEMS) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'rail-btn';
-    btn.title = t(item.title);
-    btn.setAttribute('aria-label', item.title);
-    const ic = document.createElement('iconify-icon');
-    ic.setAttribute('icon', item.icon);
-    btn.appendChild(ic);
-    btn.addEventListener('click', () => setPanel(item.id));
-    railButtons[item.id] = btn;
-    iconRail.appendChild(btn);
-  }
+  const rail = createIconRail([
+    { id: 'layers',   icon: 'lucide:layers',   title: 'Layers' },
+    { id: 'pen',      icon: 'lucide:pen-tool', title: 'Pen' },
+    { id: 'automesh', icon: 'lucide:grid-3x3', title: 'Auto Mesh' },
+    { id: 'metrics',  icon: 'lucide:ruler',    title: 'Font Metrics' },
+    { id: 'compose',  icon: 'lucide:type',     title: 'Compose' },
+  ], (id) => setPanel(id));
+  const iconRail = rail.el;
   function syncRailButtons() {
-    for (const [id, btn] of Object.entries(railButtons)) {
-      btn.classList.toggle('active', panel === id);
-    }
+    rail.setActive(panel);
   }
   syncRailButtons();
 

@@ -88,34 +88,34 @@ God-file 分割（Phase 3）の前にやる。分割対象のコード量自体�
 
 ### 2a. core 層の二重実装統合
 
-| # | 新モジュール | 統合元 | 削減量目安 |
+| # | 新モジュール | 統合元 | 状況 |
 |---|--------------|--------|-----------|
-| 2-1 | `core/base-history.js` — 汎用 undo/redo スタック（snapshot/restore をパラメータ化） | `history.js:14-110` と `animation-history.js:11-80` | ~60行 |
-| 2-2 | `core/project-store.js` — dirty追跡・`scheduleWrite()`・`subscribe()`・`beforeunload` flush を共通化したストアファクトリ | `project.js:221-285,360-362` と `animation-project.js:23-141,170-172` | ~100行 |
-| 2-3 | セル最近傍マッチングの共通化 | `layer.js:26-45` と `layer-builder.js:8-27`（同一アルゴリズム） | ~20行 |
-| 2-4 | ピクセル集計ループの共有 | `mesh.js:75-89` と `mesh-worker.js:8-16` | 共通関数を別ファイルに置き worker から import（Vite の module worker で可能）。難しければ「意図的な複製」とコメントで明示し当面許容 |
+| 2-1 | `core/base-history.js` — 汎用 undo/redo スタック | `history.js` と `animation-history.js` | ✅ 完了。ユニットテスト9件追加 |
+| 2-2 | `core/store-utils.js` — change-bus と debounce 書き込みタイマーを共通化 | `project.js` と `animation-project.js` | ✅ 保守的に完了。dirty フラグの形が両者で異なるため、フル統合は Phase 4-2（repository 分離、エミュレータテスト付き）で実施 |
+| 2-3 | セル最近傍マッチング → `cell.js` の `nearestCell()` + `CELL_MATCH_DIST_SQ` | `layer.js` と `layer-builder.js` | ✅ 完了。`manualOverride` の扱いの差（true固定 vs 保存値コピー）は意図的なので呼び出し側に残した |
+| 2-4 | ピクセル集計ループ → `core/mesh-accumulate.js` | `mesh.js` と `mesh-worker.js` | ✅ 完了。worker は module worker だったので import で共有。ユニットテスト5件追加 |
 
 ### 2b. レンダリングパイプラインの統合（このフェーズの本丸）
 
-| # | 新モジュール | 統合元 |
-|---|--------------|--------|
-| 2-5 | `render/transform-utils.js` — `transformCell(cell, transform, size, baselineY) → {dx, dy}`（stretch → gap を一括適用） | `canvas-renderer.js:56-62,143-149,171-177`、`animation/render.js:184-190`、`svg-exporter.js:65-71`、`font-exporter.js:138-146` の**6箇所** |
-| 2-6 | `render/geometry-utils.js` — circle/rect/polygon の形状シリアライズ | `svg-exporter.js:156` (geometryToSVG) と `font-exporter.js:153` (appendCellSubpath) |
-| 2-7 | グリフ収集の共通化 `collectGlyphSpecs(project)` | `font-exporter.js:21` (buildFont) と `font/vf-builder.js:46` (buildVariableTTF) — 約70%同一 |
-| 2-8 | metaball ブラー半径スケーリングの仕様統一 | `canvas-renderer.js:79`（生半径）と `animation/render.js:207`（`scale * camDist`）— 差異が意図的か確認のうえドキュメント化 or 統一 |
+| # | 新モジュール | 統合元 | 状況 |
+|---|--------------|--------|------|
+| 2-5 | `render/transform-utils.js` — `cellDisplacement(center, t, w, h, baselineY) → {dx, dy, pos}` | canvas-renderer（3箇所）、animation/render、svg-exporter、font-exporter の**6箇所** | ✅ 完了。SVG/フォントのスナップショット完全一致を確認 |
+| 2-6 | ~~`render/geometry-utils.js`~~ | svg-exporter (geometryToSVG) と font-exporter (appendCellSubpath) | **見送り**: 出力形式（SVG要素 vs Y反転+巻き方向付き opentype パス）が根本的に異なり、統合すると悪い抽象になる。並列実装として維持 |
+| 2-7 | `render/font/glyph-collect.js` — `collectGlyphEntries()` + `fontVerticalMetrics()` + `glyphName()` + `EM_SIZE` | font-exporter (buildFont) と vf-builder (buildVariableTTF) | ✅ 完了。TTF バイト列の SHA-256 スナップショット一致を確認 |
+| 2-8 | metaball ブラー半径スケーリング | canvas-renderer（生半径）と animation/render（`scale * camDist`） | **意図的な差異と確認**: animation 側はラスタ解像度が異なるためスケール補正が必要（render.js 内コメントに既記載） |
 
 **検証**: Phase 0-4 の SVG / フォントバイト列スナップショットが**完全一致**すること。これがこのフェーズの合否判定。
 
 ### 2c. grids / UI 層の小規模抽出
 
-| # | 内容 | 対象 |
-|---|------|------|
-| 2-9 | `grids/circle-utils.js` — 位置ジェネレータを受け取る円形グリッド共通ヘルパ | circle / ellipse / fibonacci の3グリッドの同型ループ（~30行） |
-| 2-10 | モーダル基盤統一 — `ui/modal.js`（backdrop・open/close・Escape・destroy）+ スタイルを style.css へ移動 | `export-dialog.js:14-188`（JS内ハードコードCSS 174行）、`settings-modal.js`、project-list-page のダイアログ |
-| 2-11 | `ui/tab-panel.js` と文字範囲チェックボックスヘルパ | `export-dialog.js:416-708` のタブ管理、482-514 / 551-583 / 607-640 の3重コピペ |
-| 2-12 | ファイル保存の一本化 | `utils/file-io.js:saveBlobWithPicker()` と `export-dialog.js:197-230 saveFile()`、`animation/export.js:4-11 downloadBlob()` — 90%同一なので file-io.js に集約 |
-| 2-13 | JSON インポート/エクスポートダイアログの共通化 | `index-page.js:156-194` と `animation-page.js:1551-1585` |
-| 2-14 | アイコンレール（サイドバー切替）の共通化 `ui/icon-rail.js` | `index-page.js:270-302,774-791` と `animation-page.js:337-378` |
+| # | 内容 | 対象 | 状況 |
+|---|------|------|------|
+| 2-9 | `grids/circle-utils.js` — `circleCell()` / `circleCellInBounds()` | circle / ellipse / fibonacci の3グリッド | ✅ 完了。グリッド特性スナップショット一致を確認 |
+| 2-10 | モーダルCSSの style.css 移動 | export-dialog.js のJS内ハードコードCSS（~100行） | ✅ CSS移動完了。openModal と createSettingsModal の基盤統一は Phase 3e（ダイアログ分割）と同時に実施 |
+| 2-11 | 文字範囲チェックボックス・行ヘルパ（`rangeCheckboxRow` / `customTextRow` / `labeledRow`） | export-dialog.js の3重コピペ | ✅ 完了（735行 → 523行）。タブ基盤の抽出は Phase 3e で |
+| 2-12 | ファイル保存の一本化 — `saveFile` / `saveBlobWithPicker` / `downloadBlob` を file-io.js に集約 | export-dialog.js、animation/export.js | ✅ 完了 |
+| 2-13 | JSON インポートの共通化 — `file-io.js: pickAndApplyJson()` | index-page.js と animation-page.js | ✅ 完了 |
+| 2-14 | アイコンレールの共通化 `ui/icon-rail.js` | index-page.js と animation-page.js | ✅ 完了 |
 
 **完了条件**: 重複6箇所の座標変換が1関数に集約され、スナップショット一致。推定 ~500行削減。
 **リスク**: 中。特に 2-5 は座標計算の微差（baselineY の扱い等）が4経路で本当に同一か、統合前に diff で精査すること。

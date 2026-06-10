@@ -25,9 +25,41 @@ export function loadImage(src) {
 }
 
 /**
+ * Open a file picker for a .json file, parse it, and hand the result to
+ * `apply`. Parse/apply errors surface via alert (shared import UX of the
+ * font and animation editors).
+ */
+export function pickAndApplyJson(apply) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      await apply(data);
+    } catch (e) {
+      alert(`Import failed: ${e.message}`);
+    }
+  });
+  input.click();
+}
+
+/** Trigger a plain anchor download (no save dialog). */
+export function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
  * Save a Blob through the OS save dialog (Chrome/Edge) so the user picks the
  * filename and folder. Falls back to anchor-download on Safari/Firefox.
- * Silently no-ops if the user cancels the picker.
+ * Returns false when the user cancels the picker, true otherwise.
  */
 export async function saveBlobWithPicker(blob, suggestedName, { description = '', accept } = {}) {
   if (typeof window.showSaveFilePicker === 'function') {
@@ -39,16 +71,27 @@ export async function saveBlobWithPicker(blob, suggestedName, { description = ''
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
-      return;
+      return true;
     } catch (e) {
-      if (e?.name === 'AbortError') return;
+      if (e?.name === 'AbortError') return false;
       console.warn('Save picker failed, falling back to download:', e);
     }
   }
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = suggestedName;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, suggestedName);
+  return true;
+}
+
+/**
+ * Save bytes (Uint8Array or string) with a save dialog when supported, else
+ * fall back to triggering an anchor download. Returns true on success, false
+ * on cancellation. The picker's file-type filter is derived from the
+ * suggested name's extension.
+ */
+export async function saveFile(bytes, suggestedName, mimeType) {
+  const blob = new Blob([bytes], { type: mimeType });
+  const ext = suggestedName.split('.').pop().toLowerCase();
+  return saveBlobWithPicker(blob, suggestedName, {
+    description: ext.toUpperCase() + ' file',
+    accept: { [mimeType]: ['.' + ext] },
+  });
 }

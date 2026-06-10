@@ -1,3 +1,5 @@
+import { nearestCell, CELL_MATCH_DIST_SQ } from './cell.js';
+
 let layerIdCounter = 0;
 
 export function createLayer(gridPlugin, params = {}) {
@@ -26,20 +28,10 @@ export function regenerateCells(layer, width, height) {
   if (oldCells.length > 0) {
     const overrides = oldCells.filter(c => c.manualOverride);
     for (const oc of overrides) {
-      let minDist = Infinity;
-      let nearest = null;
-      for (const nc of newCells) {
-        const dx = nc.center.x - oc.center.x;
-        const dy = nc.center.y - oc.center.y;
-        const dist = dx * dx + dy * dy;
-        if (dist < minDist) {
-          minDist = dist;
-          nearest = nc;
-        }
-      }
-      if (nearest && minDist < 400) { // within ~20px
-        nearest.filled = oc.filled;
-        nearest.manualOverride = true;
+      const { cell, distSq } = nearestCell(newCells, oc.center);
+      if (cell && distSq < CELL_MATCH_DIST_SQ) {
+        cell.filled = oc.filled;
+        cell.manualOverride = true;
       }
     }
   }

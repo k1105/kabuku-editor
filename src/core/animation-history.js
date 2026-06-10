@@ -7,80 +7,24 @@
  * whichever is active based on the current route.
  */
 import { getAnimation, restoreAnimationSnapshot } from './animation-project.js';
-
-const MAX_HISTORY = 50;
-
-let undoStack = []; // [{ snapshot, label }]
-let redoStack = [];
-const subscribers = new Set();
+import { createHistory } from './base-history.js';
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function snapsEqual(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
+const history = createHistory({
+  getState: getAnimation,
+  buildSnapshot: clone,
+  restoreSnapshot: (snap) => restoreAnimationSnapshot(clone(snap)),
+});
 
-function notify(isRestore = false) {
-  const state = { canUndo: canUndo(), canRedo: canRedo(), isRestore };
-  for (const fn of subscribers) fn(state);
-}
-
-export function initAnimationHistory(animation) {
-  undoStack = [{ snapshot: clone(animation), label: 'init' }];
-  redoStack = [];
-  notify();
-}
-
-/** Idempotent: skipped when the new state matches the top of the stack. */
-export function commit(label = '') {
-  const animation = getAnimation();
-  if (!animation) return;
-  if (undoStack.length === 0) {
-    initAnimationHistory(animation);
-    return;
-  }
-  const snap = clone(animation);
-  const last = undoStack[undoStack.length - 1];
-  if (snapsEqual(last.snapshot, snap)) return;
-  undoStack.push({ snapshot: snap, label });
-  if (undoStack.length > MAX_HISTORY + 1) undoStack.shift();
-  redoStack = [];
-  notify();
-}
-
-export function canUndo() { return undoStack.length > 1; }
-export function canRedo() { return redoStack.length > 0; }
-
-export function undo() {
-  if (!canUndo()) return false;
-  const current = undoStack.pop();
-  redoStack.push(current);
-  const target = undoStack[undoStack.length - 1];
-  restoreAnimationSnapshot(clone(target.snapshot));
-  notify(true);
-  return true;
-}
-
-export function redo() {
-  if (!canRedo()) return false;
-  const target = redoStack.pop();
-  undoStack.push(target);
-  restoreAnimationSnapshot(clone(target.snapshot));
-  notify(true);
-  return true;
-}
-
-export function subscribe(fn) {
-  subscribers.add(fn);
-  fn({ canUndo: canUndo(), canRedo: canRedo() });
-  return () => subscribers.delete(fn);
-}
-
+export const initAnimationHistory = history.init;
+export const commit = history.commit;
+export const canUndo = history.canUndo;
+export const canRedo = history.canRedo;
+export const undo = history.undo;
+export const redo = history.redo;
+export const subscribe = history.subscribe;
 /** Reset the history (used when navigating away from the animation page). */
-export function resetAnimationHistory() {
-  undoStack = [];
-  redoStack = [];
-  notify();
-}
+export const resetAnimationHistory = history.reset;

@@ -1,11 +1,9 @@
 import opentype from 'opentype.js';
-import { applyStretch } from '../transform/stretch.js';
-import { applyGap } from '../transform/gap.js';
-import { buildRuntimeLayers } from '../core/layer-builder.js';
-import { resolveTransform, resolveCodepoint } from '../core/project.js';
+import { cellDisplacement } from './transform-utils.js';
+import { resolveTransform } from '../core/project.js';
+import { EM_SIZE, fontVerticalMetrics, glyphName, collectGlyphEntries } from './font/glyph-collect.js';
 
 const KAPPA = 0.5522847498307936; // unit-circle bezier control offset
-const EM_SIZE = 1024;             // 1 kabuku px = 1 font unit (matches GLYPH_SIZE)
 
 /**
  * Export the current project as a static OTF at the given transform state.
@@ -27,11 +25,9 @@ export function buildFont(project, opts = {}) {
   // Font-unit reference: baseline at y=0, ascent above (positive), descent below.
   // kabuku's canvas Y is down with baseline at `baselineRatio * EM_SIZE`.
   // Convert: fontY = baselineY_canvas - canvasY.
-  const baselineY = (fontMetrics.baseline ?? 0.8) * EM_SIZE;
-  const ascender = Math.round(baselineY);
-  const descender = -Math.round(EM_SIZE - baselineY);
+  const { ascender, descender } = fontVerticalMetrics(fontMetrics);
 
-  const skipped = [];
+  const { entries, skipped, hasUserSpace } = collectGlyphEntries(project);
   const glyphs = [];
 
   // .notdef is required as the first glyph.
@@ -43,8 +39,6 @@ export function buildFont(project, opts = {}) {
   }));
 
   // Provide a default space glyph (U+0020) if the project doesn't define one.
-  const charIds = Object.keys(project.characters || {});
-  const hasUserSpace = charIds.some(id => id === ' ');
   if (!hasUserSpace) {
     glyphs.push(new opentype.Glyph({
       name: 'space',
@@ -54,14 +48,7 @@ export function buildFont(project, opts = {}) {
     }));
   }
 
-  for (const charId of charIds) {
-    const codepoint = resolveCodepoint(charId);
-    if (codepoint == null) {
-      skipped.push(charId);
-      continue;
-    }
-    const charData = project.characters[charId];
-    const layers = buildRuntimeLayers(global, charData, EM_SIZE);
+  for (const { codepoint, layers } of entries) {
     const path = buildGlyphPath(layers, transform, fontMetrics);
     glyphs.push(new opentype.Glyph({
       name: glyphName(codepoint),
@@ -124,26 +111,11 @@ function buildGlyphPath(layers, transform, fontMetrics) {
     if (!layer.visible) continue;
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
-      const { dx, dy } = cellDisplacement(cell, transform, baselineY);
+      const { dx, dy } = cellDisplacement(cell.center, transform, EM_SIZE, EM_SIZE, baselineY);
       appendCellSubpath(path, cell, dx, dy, baselineY);
     }
   }
   return path;
-}
-
-/**
- * Compute the cell's (dx, dy) shift from stretch + gap transforms. Mirrors
- * the canvas renderer so the OTF matches what the user sees.
- */
-function cellDisplacement(cell, t, baselineY) {
-  let pos = { x: cell.center.x, y: cell.center.y };
-  if (t.stretchAmount) {
-    pos = applyStretch(pos, t.stretchAngle || 0, t.stretchAmount, EM_SIZE, EM_SIZE, baselineY);
-  }
-  if (t.baseGap) {
-    pos = applyGap(pos, t.stretchAngle || 0, t.baseGap, t.gapDirectionWeight || 0, EM_SIZE, EM_SIZE);
-  }
-  return { dx: pos.x - cell.center.x, dy: pos.y - cell.center.y };
 }
 
 /**
@@ -230,11 +202,3 @@ function notdefPath(ascender, descender) {
   return path;
 }
 
-/** Generate a postScript-safe glyph name from a Unicode codepoint. */
-function glyphName(codepoint) {
-  // Use uniXXXX for BMP, uXXXXXX for non-BMP. opentype.js will sanitize.
-  if (codepoint <= 0xFFFF) {
-    return 'uni' + codepoint.toString(16).toUpperCase().padStart(4, '0');
-  }
-  return 'u' + codepoint.toString(16).toUpperCase().padStart(6, '0');
-}

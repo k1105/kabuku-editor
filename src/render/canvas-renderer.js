@@ -1,6 +1,5 @@
-import { applyStretch } from '../transform/stretch.js';
-import { applyGap } from '../transform/gap.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
+import { cellDisplacement } from './transform-utils.js';
 
 /**
  * Render layers to canvas.
@@ -53,16 +52,9 @@ export function renderCanvas(ctx, layers, opts = {}) {
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
 
-      let pos = { ...cell.center };
-      if (t.stretchAmount) {
-        pos = applyStretch(pos, t.stretchAngle || 0, t.stretchAmount, glyphSize, glyphSize, baselineLocalY);
-      }
-      if (t.baseGap) {
-        pos = applyGap(pos, t.stretchAngle || 0, t.baseGap, t.gapDirectionWeight || 0, glyphSize, glyphSize);
-      }
-
-      const dx = (pos.x - cell.center.x) + ox;
-      const dy = (pos.y - cell.center.y) + oy;
+      const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
+      const dx = d.dx + ox;
+      const dy = d.dy + oy;
 
       ctx.save();
       ctx.translate(dx, dy);
@@ -140,16 +132,9 @@ export function renderCanvas(ctx, layers, opts = {}) {
         for (const cell of layer.cells) {
           if (!cell.filled) continue;
 
-          let pos = { ...cell.center };
-          if (t.stretchAmount) {
-            pos = applyStretch(pos, t.stretchAngle || 0, t.stretchAmount, glyphSize, glyphSize, baselineLocalY);
-          }
-          if (t.baseGap) {
-            pos = applyGap(pos, t.stretchAngle || 0, t.baseGap, t.gapDirectionWeight || 0, glyphSize, glyphSize);
-          }
-
-          const dx = (pos.x - cell.center.x) + ox;
-          const dy = (pos.y - cell.center.y) + oy;
+          const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
+          const dx = d.dx + ox;
+          const dy = d.dy + oy;
 
           ctx.save();
           ctx.translate(dx, dy);
@@ -168,16 +153,9 @@ export function renderCanvas(ctx, layers, opts = {}) {
       const strokeColor = li === activeLayerIndex ? ACTIVE_GRID_COLOR : '#ccc';
 
       for (const cell of layer.cells) {
-        let pos = { ...cell.center };
-        if (t.stretchAmount) {
-          pos = applyStretch(pos, t.stretchAngle || 0, t.stretchAmount, glyphSize, glyphSize, baselineLocalY);
-        }
-        if (t.baseGap) {
-          pos = applyGap(pos, t.stretchAngle || 0, t.baseGap, t.gapDirectionWeight || 0, glyphSize, glyphSize);
-        }
-
-        const dx = (pos.x - cell.center.x) + ox;
-        const dy = (pos.y - cell.center.y) + oy;
+        const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
+        const dx = d.dx + ox;
+        const dy = d.dy + oy;
 
         ctx.save();
         ctx.translate(dx, dy);

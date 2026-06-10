@@ -1,6 +1,7 @@
 import { getGrid } from '../grids/grid-plugin.js';
 import { createLayer, regenerateCells } from './layer.js';
 import { resolveCharacterLayers } from './project.js';
+import { nearestCell, CELL_MATCH_DIST_SQ } from './cell.js';
 
 /**
  * Restore saved cell states onto new cells by matching nearest center positions.
@@ -8,20 +9,10 @@ import { resolveCharacterLayers } from './project.js';
 function applySavedCells(newCells, savedCells) {
   for (const saved of savedCells) {
     if (!saved.center) continue;
-    let minDist = Infinity;
-    let nearest = null;
-    for (const nc of newCells) {
-      const dx = nc.center.x - saved.center.x;
-      const dy = nc.center.y - saved.center.y;
-      const dist = dx * dx + dy * dy;
-      if (dist < minDist) {
-        minDist = dist;
-        nearest = nc;
-      }
-    }
-    if (nearest && minDist < 400) {
-      nearest.filled = saved.filled;
-      nearest.manualOverride = saved.manualOverride;
+    const { cell, distSq } = nearestCell(newCells, saved.center);
+    if (cell && distSq < CELL_MATCH_DIST_SQ) {
+      cell.filled = saved.filled;
+      cell.manualOverride = saved.manualOverride;
     }
   }
 }

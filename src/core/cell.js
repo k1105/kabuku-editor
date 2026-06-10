@@ -21,3 +21,26 @@ export function createCell({ path, center, filled = false, geometry = null }) {
     geometry,
   };
 }
+
+/**
+ * Max squared center distance (~20px) for matching a saved/old cell onto a
+ * freshly generated grid — shared by regenerateCells (param tweaks) and
+ * applySavedCells (load from store) so both restore fills identically.
+ */
+export const CELL_MATCH_DIST_SQ = 400;
+
+/** Nearest cell to `center` by squared Euclidean distance. */
+export function nearestCell(cells, center) {
+  let minDist = Infinity;
+  let nearest = null;
+  for (const c of cells) {
+    const dx = c.center.x - center.x;
+    const dy = c.center.y - center.y;
+    const dist = dx * dx + dy * dy;
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = c;
+    }
+  }
+  return { cell: nearest, distSq: minDist };
+}

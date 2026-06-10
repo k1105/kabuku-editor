@@ -13,117 +13,6 @@ import { createSliderInput } from './slider-input.js';
 
 // ─── Modal infrastructure ──────────────────────────────────────────────────
 
-let stylesInjected = false;
-function ensureStyles() {
-  if (stylesInjected) return;
-  stylesInjected = true;
-  const style = document.createElement('style');
-  style.textContent = `
-.export-modal-backdrop {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.55);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 9999;
-}
-.export-modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 20px;
-  min-width: 320px; max-width: 420px;
-  color: var(--text);
-  font-size: 13px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-}
-.export-modal h3 {
-  margin: 0 0 14px 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-.export-modal .row {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 10px;
-}
-.export-modal .row label {
-  flex: 0 0 110px;
-  color: var(--text-dim);
-  font-size: 12px;
-}
-.export-modal .row input[type="number"],
-.export-modal .row input[type="text"],
-.export-modal .row select {
-  flex: 1;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 5px 8px;
-  border-radius: 3px;
-  font-size: 12px;
-  min-width: 0;
-}
-.export-modal .row input[type="range"] {
-  flex: 1;
-}
-.export-modal .row .value {
-  flex: 0 0 50px;
-  color: var(--text-dim);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.export-modal .note {
-  margin-top: 4px;
-  padding: 8px 10px;
-  background: var(--bg);
-  border-left: 2px solid var(--accent);
-  border-radius: 3px;
-  color: var(--text-dim);
-  font-size: 11px;
-  line-height: 1.4;
-}
-.export-modal .actions {
-  display: flex; justify-content: flex-end; gap: 8px;
-  margin-top: 16px;
-}
-.export-modal .actions button {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 6px 14px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.export-modal .actions button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.export-modal .actions button:hover { border-color: var(--accent); }
-.export-modal .tab-bar {
-  display: flex; gap: 4px;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-.export-modal .tab-btn {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-dim);
-  padding: 6px 12px;
-  cursor: pointer;
-  font-size: 12px;
-  margin-bottom: -1px;
-}
-.export-modal .tab-btn:hover { color: var(--text); }
-.export-modal .tab-btn.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-.export-modal .tab-pane { margin-top: 4px; }
-`;
-  document.head.appendChild(style);
-}
-
 /**
  * Open a modal with the given DOM body. Returns a Promise that resolves with
  * either the value passed to `confirm` or null if cancelled.
@@ -133,7 +22,6 @@ function ensureStyles() {
  */
 function openModal(title, build, opts = {}) {
   const okLabel = opts.okLabel || 'Export';
-  ensureStyles();
 
   return new Promise(resolve => {
     const backdrop = document.createElement('div');
@@ -187,46 +75,60 @@ function openModal(title, build, opts = {}) {
   });
 }
 
-// ─── File save helper ──────────────────────────────────────────────────────
+
+/** A `.row` with a fixed-width label followed by the given controls. */
+function labeledRow(labelText, ...controls) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  row.appendChild(label);
+  for (const c of controls) row.appendChild(c);
+  return { row, label };
+}
 
 /**
- * Save bytes (Uint8Array or string) with a save dialog when supported, else
- * fall back to triggering an anchor download. Returns true on success, false
- * on cancellation.
+ * "Ranges" row: one checkbox per character-set preset. Shared by the Font /
+ * Font File / KanjiVG panes of the add-glyph dialog.
  */
-export async function saveFile(bytes, suggestedName, mimeType) {
-  const data = (typeof bytes === 'string')
-    ? new Blob([bytes], { type: mimeType })
-    : new Blob([bytes], { type: mimeType });
-
-  if (window.showSaveFilePicker) {
-    try {
-      const ext = suggestedName.split('.').pop().toLowerCase();
-      const handle = await window.showSaveFilePicker({
-        suggestedName,
-        types: [{
-          description: ext.toUpperCase() + ' file',
-          accept: { [mimeType]: ['.' + ext] },
-        }],
-      });
-      const writable = await handle.createWritable();
-      await writable.write(data);
-      await writable.close();
-      return true;
-    } catch (e) {
-      if (e.name === 'AbortError') return false;
-      // Permission errors / unsupported → fall through to legacy download
-      console.warn('showSaveFilePicker failed, falling back:', e);
-    }
+function rangeCheckboxRow(presets, defaultPresetIds) {
+  const col = document.createElement('div');
+  col.style.display = 'flex';
+  col.style.flexDirection = 'column';
+  col.style.gap = '4px';
+  col.style.flex = '1';
+  const map = {};
+  for (const p of presets) {
+    const lab = document.createElement('label');
+    lab.style.display = 'flex';
+    lab.style.alignItems = 'center';
+    lab.style.gap = '6px';
+    lab.style.fontSize = '12px';
+    lab.style.color = 'var(--text)';
+    lab.style.flex = 'unset';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = defaultPresetIds.includes(p.id);
+    map[p.id] = cb;
+    const span = document.createElement('span');
+    span.textContent = p.label;
+    lab.appendChild(cb);
+    lab.appendChild(span);
+    col.appendChild(lab);
   }
+  const { row, label } = labeledRow('Ranges', col);
+  label.style.alignSelf = 'flex-start';
+  label.style.paddingTop = '4px';
+  return { row, selectedIds: () => Object.keys(map).filter((id) => map[id].checked) };
+}
 
-  const url = URL.createObjectURL(data);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = suggestedName;
-  a.click();
-  URL.revokeObjectURL(url);
-  return true;
+/** "Custom" free-text row for extra characters. */
+function customTextRow() {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'extra characters (optional)';
+  const { row } = labeledRow('Custom', input);
+  return { row, input };
 }
 
 // ─── Specific dialogs ──────────────────────────────────────────────────────
@@ -479,50 +381,12 @@ export function glyphAddDialog({
     fRow.appendChild(fInput);
     fontPane.appendChild(fRow);
 
-    const rangeRow = document.createElement('div');
-    rangeRow.className = 'row';
-    const rangeLabel = document.createElement('label');
-    rangeLabel.textContent = 'Ranges';
-    rangeLabel.style.alignSelf = 'flex-start';
-    rangeLabel.style.paddingTop = '4px';
-    const checks = document.createElement('div');
-    checks.style.display = 'flex';
-    checks.style.flexDirection = 'column';
-    checks.style.gap = '4px';
-    checks.style.flex = '1';
-    const cbMap = {};
-    for (const p of presets) {
-      const lab = document.createElement('label');
-      lab.style.display = 'flex';
-      lab.style.alignItems = 'center';
-      lab.style.gap = '6px';
-      lab.style.fontSize = '12px';
-      lab.style.color = 'var(--text)';
-      lab.style.flex = 'unset';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = defaultPresetIds.includes(p.id);
-      cbMap[p.id] = cb;
-      const span = document.createElement('span');
-      span.textContent = p.label;
-      lab.appendChild(cb);
-      lab.appendChild(span);
-      checks.appendChild(lab);
-    }
-    rangeRow.appendChild(rangeLabel);
-    rangeRow.appendChild(checks);
-    fontPane.appendChild(rangeRow);
+    const fontRanges = rangeCheckboxRow(presets, defaultPresetIds);
+    fontPane.appendChild(fontRanges.row);
 
-    const cRow = document.createElement('div');
-    cRow.className = 'row';
-    const cLabel = document.createElement('label');
-    cLabel.textContent = 'Custom';
-    const cInput = document.createElement('input');
-    cInput.type = 'text';
-    cInput.placeholder = 'extra characters (optional)';
-    cRow.appendChild(cLabel);
-    cRow.appendChild(cInput);
-    fontPane.appendChild(cRow);
+    const fontCustom = customTextRow();
+    const cInput = fontCustom.input;
+    fontPane.appendChild(fontCustom.row);
 
     const fNote = document.createElement('div');
     fNote.className = 'note';
@@ -548,50 +412,12 @@ export function glyphAddDialog({
     ffFileRow.appendChild(ffFileInput);
     ffPane.appendChild(ffFileRow);
 
-    const ffRangeRow = document.createElement('div');
-    ffRangeRow.className = 'row';
-    const ffRangeLabel = document.createElement('label');
-    ffRangeLabel.textContent = 'Ranges';
-    ffRangeLabel.style.alignSelf = 'flex-start';
-    ffRangeLabel.style.paddingTop = '4px';
-    const ffChecks = document.createElement('div');
-    ffChecks.style.display = 'flex';
-    ffChecks.style.flexDirection = 'column';
-    ffChecks.style.gap = '4px';
-    ffChecks.style.flex = '1';
-    const ffCbMap = {};
-    for (const p of presets) {
-      const lab = document.createElement('label');
-      lab.style.display = 'flex';
-      lab.style.alignItems = 'center';
-      lab.style.gap = '6px';
-      lab.style.fontSize = '12px';
-      lab.style.color = 'var(--text)';
-      lab.style.flex = 'unset';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = defaultPresetIds.includes(p.id);
-      ffCbMap[p.id] = cb;
-      const span = document.createElement('span');
-      span.textContent = p.label;
-      lab.appendChild(cb);
-      lab.appendChild(span);
-      ffChecks.appendChild(lab);
-    }
-    ffRangeRow.appendChild(ffRangeLabel);
-    ffRangeRow.appendChild(ffChecks);
-    ffPane.appendChild(ffRangeRow);
+    const ffRanges = rangeCheckboxRow(presets, defaultPresetIds);
+    ffPane.appendChild(ffRanges.row);
 
-    const ffCustomRow = document.createElement('div');
-    ffCustomRow.className = 'row';
-    const ffCustomLabel = document.createElement('label');
-    ffCustomLabel.textContent = 'Custom';
-    const ffCustomInput = document.createElement('input');
-    ffCustomInput.type = 'text';
-    ffCustomInput.placeholder = 'extra characters (optional)';
-    ffCustomRow.appendChild(ffCustomLabel);
-    ffCustomRow.appendChild(ffCustomInput);
-    ffPane.appendChild(ffCustomRow);
+    const ffCustom = customTextRow();
+    const ffCustomInput = ffCustom.input;
+    ffPane.appendChild(ffCustom.row);
 
     const ffNote = document.createElement('div');
     ffNote.className = 'note';
@@ -605,50 +431,12 @@ export function glyphAddDialog({
     const kvgPane = document.createElement('div');
     kvgPane.className = 'tab-pane';
 
-    const kRangeRow = document.createElement('div');
-    kRangeRow.className = 'row';
-    const kRangeLabel = document.createElement('label');
-    kRangeLabel.textContent = 'Ranges';
-    kRangeLabel.style.alignSelf = 'flex-start';
-    kRangeLabel.style.paddingTop = '4px';
-    const kChecks = document.createElement('div');
-    kChecks.style.display = 'flex';
-    kChecks.style.flexDirection = 'column';
-    kChecks.style.gap = '4px';
-    kChecks.style.flex = '1';
-    const kCbMap = {};
-    for (const p of presets) {
-      const lab = document.createElement('label');
-      lab.style.display = 'flex';
-      lab.style.alignItems = 'center';
-      lab.style.gap = '6px';
-      lab.style.fontSize = '12px';
-      lab.style.color = 'var(--text)';
-      lab.style.flex = 'unset';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = defaultPresetIds.includes(p.id);
-      kCbMap[p.id] = cb;
-      const span = document.createElement('span');
-      span.textContent = p.label;
-      lab.appendChild(cb);
-      lab.appendChild(span);
-      kChecks.appendChild(lab);
-    }
-    kRangeRow.appendChild(kRangeLabel);
-    kRangeRow.appendChild(kChecks);
-    kvgPane.appendChild(kRangeRow);
+    const kRanges = rangeCheckboxRow(presets, defaultPresetIds);
+    kvgPane.appendChild(kRanges.row);
 
-    const kCustomRow = document.createElement('div');
-    kCustomRow.className = 'row';
-    const kCustomLabel = document.createElement('label');
-    kCustomLabel.textContent = 'Custom';
-    const kCustomInput = document.createElement('input');
-    kCustomInput.type = 'text';
-    kCustomInput.placeholder = 'extra characters (optional)';
-    kCustomRow.appendChild(kCustomLabel);
-    kCustomRow.appendChild(kCustomInput);
-    kvgPane.appendChild(kCustomRow);
+    const kCustom = customTextRow();
+    const kCustomInput = kCustom.input;
+    kvgPane.appendChild(kCustom.row);
 
     const kStrokeRow = document.createElement('div');
     kStrokeRow.className = 'row';
@@ -713,20 +501,20 @@ export function glyphAddDialog({
       if (activeTab === 'fontfile') {
         const file = ffFileInput.files && ffFileInput.files[0];
         if (!file) { ffFileInput.focus(); return null; }
-        const presetIds = Object.keys(ffCbMap).filter(id => ffCbMap[id].checked);
+        const presetIds = ffRanges.selectedIds();
         const customText = ffCustomInput.value || '';
         if (presetIds.length === 0 && customText.length === 0) return null;
         return { mode: 'fontfile', file, presetIds, customText };
       }
       if (activeTab === 'kanjivg') {
-        const presetIds = Object.keys(kCbMap).filter(id => kCbMap[id].checked);
+        const presetIds = kRanges.selectedIds();
         const customText = kCustomInput.value || '';
         if (presetIds.length === 0 && customText.length === 0) return null;
         return { mode: 'kanjivg', presetIds, customText, strokeWidth: Number(kStrokeInput.value) };
       }
       const family = fInput.value.trim();
       if (!family) { fInput.focus(); return null; }
-      const presetIds = Object.keys(cbMap).filter(id => cbMap[id].checked);
+      const presetIds = fontRanges.selectedIds();
       const customText = cInput.value || '';
       if (presetIds.length === 0 && customText.length === 0) return null;
       return { mode: 'font', family, presetIds, customText };

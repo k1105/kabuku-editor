@@ -1,4 +1,4 @@
-import { createCell } from '../core/cell.js';
+import { circleCellInBounds } from './circle-utils.js';
 
 export const FibonacciGrid = {
   name: 'FibonacciGrid',
@@ -25,16 +25,8 @@ export const FibonacciGrid = {
       const theta = i * goldenAngle + rotRad;
       const x = cx + r * Math.cos(theta);
       const y = cy + r * Math.sin(theta);
-
-      if (x - dotRadius < 0 || x + dotRadius > width || y - dotRadius < 0 || y + dotRadius > height) continue;
-
-      const path = new Path2D();
-      path.arc(x, y, dotRadius, 0, Math.PI * 2);
-      cells.push(createCell({
-        path,
-        center: { x, y },
-        geometry: { type: 'circle', cx: x, cy: y, r: dotRadius },
-      }));
+      const cell = circleCellInBounds(x, y, dotRadius, width, height);
+      if (cell) cells.push(cell);
     }
     return cells;
   },
