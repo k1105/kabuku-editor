@@ -16,6 +16,9 @@ export default [
       // Phase 1 以降で順次 error に昇格する。
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-empty': ['warn', { allowEmptyCatch: true }],
+      // Phase 3 のモジュール抽出で「2Dコンテキストの引数 ctx が状態オブジェクト
+      // ctx をシャドーして undefined 参照になる」実バグが出たため導入。
+      'no-shadow': 'warn',
     },
   },
   {

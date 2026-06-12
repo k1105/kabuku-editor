@@ -132,25 +132,31 @@ Phase 2 で共通部品が揃った状態で、巨大ファイルを責務単位
 
 抽出順（依存が浅い順）:
 
-1. `pages/index/kvg-editor.js` — KanjiVG パス編集（現 512-744 行: kvgEnterEdit / kvgHitTest / kvgDragMove / drawKvgOverlay）。kvgEdit/kvgDrag 状態ごと移動
-2. `pages/index/char-import.js` — importImages / importFromFont / importFromKanjiVG（現 1598-1734, 2046-2370 行）
-3. `pages/index/char-list.js` — createCharCard / renderThumbnail / 文字CRUD（現 1736-1826 行）
-4. `pages/index/panels/` — renderLayersPanel / renderPenPanel / renderAutoMeshPanel / renderMetricsPanel（現 745-1339 行）。各パネルは `(state, callbacks) → {el, refresh}` の形に
-5. `pages/index/preview.js` — キャンバス描画・リサイズ・プレビュー更新（現 1340-1596, 1828-2041 行）
+1. ✅ `pages/index/constants.js` — GLYPH_SIZE
+2. ✅ `pages/index/char-cards.js` — createCharCard / renderThumbnail（元からクロージャ外のモジュール関数だったため移動のみ）
+3. ✅ `pages/index/char-import.js` — importImages / importFromFont / importFromKanjiVG（共通の buildImportLayers / 進捗ヘルパも内部で重複排除）
+4. ✅ `pages/index/settings-actions.js` — 設定モーダル + JSON入出力 + フォント書き出しアクション（project/global の参照と headerActions だけ受け取る自己完結ブロックだった）
+5. ✅ `pages/index/kvg-editor.js` — KanjiVG パス編集を `createKvgEditor({canvas, ctx, getEnv, setBackgroundImage, redraw})` ファクトリに。kvgEdit/kvgDrag 状態を内包し、ページ側はマウスイベントを hitTest/startDrag/dragMove/endDrag/toggleAnchorModeAt で接続
+6. ✅ `pages/index/sidebar-panels.js` — 4パネル + renderSourceImageSection / loadLocalImage / doAutoMesh（679行）。閉包変数は `pageState`（getter/setter のアクセサオブジェクト）経由で読み書きし、ページが唯一の状態保持者のまま。ページ側関数は `deps` で注入
+7. ✅ `pages/index/guides-renderer.js` — renderTarget / renderLeft / blit / redraw（150行）。offCtx を露出してペイントのヒットテストに共用。ついでに「renderer 宣言が Init より後ろ」という元コード由来の潜在TDZ（ソース画像なしグリフ選択中のブート時にクラッシュしうる順序）を、宣言を Init 前に移動して解消
+
+**3a 完了（2026-06-11）: 2350行 → 1025行 + モジュール7個**（char-cards 101 / char-import 219 / settings-actions 151 / kvg-editor 195 / sidebar-panels 679 / guides-renderer 150 / constants 2）。残る 1025 行はレイアウト構築・状態遷移（setPanel/setPreviewMode/syncCenterView）・グリフCRUD・undo/redo refresh というページ配線で、これ以上の分割は費用対効果が低いと判断
 
 **注意点（調査で判明した罠）**:
 - `selectChar()`（現 1737 行）は `rebuildLocalState()` → `loadBackgroundImage()` → `renderSidebarBody()` の**暗黙の実行順序**に依存。分割時にこの順序を `GlyphEditorState` のメソッドとして明示化する
 - `regenerateCells()` が async で UI コールバックと競合しうる（renderPenPanel 内）。分割ついでに in-flight ガードを入れる
 
-### 3b. `pages/animation-page.js`（1637行）
+### 3b. `pages/animation-page.js` ✅ 完了（2026-06-12: 1608行 → 970行 + モジュール5個）
 
-index-page より構造は良いが同じ方針で:
+index-page と同じ pageState アクセサ方式（`animation` は JSON インポートで**再代入**されるため、モジュールは必ず getter 経由で読む）:
 
-1. `pages/animation/playback.js` — togglePlay / pausePlayback / syncAudioToTime / rAF ループ（現 1323-1410 行）
-2. `pages/animation/preview.js` — applyDisplayZoom / redrawFast / drawFull（現 1074-1272 行）
-3. `pages/animation/export-actions.js` — doRender / doExportPng / doExportGif / JSON入出力（現 1476-1599 行）
-4. `pages/animation/sidebar.js` — テキスト・カメラ・音声パネル（現 327-779 行）
-- timeline コールバック（現 1027-1054 行）が timeline 自身と循環参照している点は、シンプルな EventTarget ベースに置き換えて解消
+1. ✅ `pages/animation/preview.js`（269行）— 表示ズーム / フレームキャッシュ / 共有フレームレンダラ / drawFull / redrawFast / redrawPreview。ResizeObserver も内包し `destroy()` で解放
+2. ✅ `pages/animation/playback.js`（117行）— rAF マスタークロック / ガイド音声同期 / seek。playStartWallTime / rafId はモジュール内部状態に縮退
+3. ✅ `pages/animation/audio-panel.js`（256行）— ガイド音源の取込/差替/削除・頭出し・音量・試聴トランスポート
+4. ✅ `pages/animation/typeface-link.js`（123行）— スナップショットの再リンク + Refresh（完全自己完結だった）
+5. ✅ `pages/animation/form-utils.js`（22行）— addNumberField 共有
+- timeline ↔ コールバックの循環は deps の遅延ラムダ（`() => timeline.render()`）で実用上解消。EventTarget 化は不要と判断
+- 残る 970 行はヘッダ/設定モーダル/テキスト・パラメータパネル/タイムライン配線/エクスポートで、ページ配線として許容
 
 ### 3c. `animation/timeline-ui.js`（1483行）
 
