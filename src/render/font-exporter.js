@@ -1,5 +1,5 @@
 import opentype from 'opentype.js';
-import { cellDisplacement } from './transform-utils.js';
+import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
 import { resolveTransform } from '../core/project.js';
 import { EM_SIZE, fontVerticalMetrics, glyphName, collectGlyphEntries } from './font/glyph-collect.js';
 
@@ -112,7 +112,8 @@ function buildGlyphPath(layers, transform, fontMetrics) {
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
       const { dx, dy } = cellDisplacement(cell.center, transform, EM_SIZE, EM_SIZE, baselineY);
-      appendCellSubpath(path, cell, dx, dy, baselineY);
+      const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, transform));
+      appendCellSubpath(path, geom, dx, dy, baselineY);
     }
   }
   return path;
@@ -122,8 +123,7 @@ function buildGlyphPath(layers, transform, fontMetrics) {
  * Append a closed subpath for one cell. Coordinates are converted from
  * canvas-Y-down to font-Y-up with baseline at y=0.
  */
-function appendCellSubpath(path, cell, dx, dy, baselineY) {
-  const g = cell.geometry;
+function appendCellSubpath(path, g, dx, dy, baselineY) {
   if (!g) return;
 
   // Y-up conversion helper

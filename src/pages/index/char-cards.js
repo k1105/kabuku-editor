@@ -50,8 +50,13 @@ export function renderThumbnail(canvas, charData) {
   // still reflects the live stretch state.
   const transform = {
     ...resolveTransform(global, transformOverrides),
+    // Neutral stretch displacement (thumbnails don't follow the live stretch),
+    // but DO apply the per-cell orientation scale, measured against the real
+    // stretch direction via scaleRefAngle. scaleParallel/scaleOrthogonal stay
+    // from the global resolve so the setting shows in the grid.
     stretchAngle: 0,
     stretchAmount: 0,
+    scaleRefAngle: global.stretchAngle ?? 0,
   };
   const imageTransform = {
     imageOffsetX: charData.imageOffsetX ?? 0,

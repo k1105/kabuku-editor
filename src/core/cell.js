@@ -9,7 +9,12 @@ let cellIdCounter = 0;
  *   { type: 'rect', x, y, width, height }
  *   { type: 'circle', cx, cy, r }
  *   { type: 'polygon', points: [{x, y}, ...] }
- * @returns {{id: string, path: Path2D, center: {x: number, y: number}, filled: boolean, manualOverride: boolean, geometry?: Object}}
+ * @returns {{id: string, path: Path2D, center: {x: number, y: number}, filled: boolean, manualOverride: boolean, geometry?: Object, orientation: ?number, coherence: number, orientationSource: ?string}}
+ *
+ * orientation: stroke tangent angle in [0,180) (0=horizontal, 90=vertical),
+ *   or null when the cell has no assigned direction (isotropic). See orientation.js.
+ * coherence: 0..1 confidence of that angle (low at junctions / hand-drawn blobs).
+ * orientationSource: 'image' | 'propagated' | 'manual' | null.
  */
 export function createCell({ path, center, filled = false, geometry = null }) {
   return {
@@ -19,6 +24,9 @@ export function createCell({ path, center, filled = false, geometry = null }) {
     filled,
     manualOverride: false,
     geometry,
+    orientation: null,
+    coherence: 0,
+    orientationSource: null,
   };
 }
 

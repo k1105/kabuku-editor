@@ -2,6 +2,85 @@ import { describe, it, expect } from 'vitest';
 import { stretchMatrix } from '../src/core/transform-math.js';
 import { applyStretch } from '../src/transform/stretch.js';
 import { applyGap } from '../src/transform/gap.js';
+import { cellScaleFactor, scaleGeometryAboutCenter } from '../src/render/transform-utils.js';
+
+describe('scaleGeometryAboutCenter', () => {
+  const center = { x: 100, y: 100 };
+
+  it('s===1 returns the original object', () => {
+    const g = { type: 'rect', x: 90, y: 90, width: 20, height: 20 };
+    expect(scaleGeometryAboutCenter(g, center, 1)).toBe(g);
+  });
+
+  it('scales a centered rect about its center', () => {
+    const g = { type: 'rect', x: 90, y: 90, width: 20, height: 20 }; // center 100,100
+    const r = scaleGeometryAboutCenter(g, center, 2);
+    expect(r.width).toBeCloseTo(40);
+    expect(r.height).toBeCloseTo(40);
+    expect(r.x).toBeCloseTo(80);  // stays centered on 100
+    expect(r.y).toBeCloseTo(80);
+  });
+
+  it('scales a circle radius and keeps its center', () => {
+    const g = { type: 'circle', cx: 100, cy: 100, r: 10 };
+    const r = scaleGeometryAboutCenter(g, center, 1.5);
+    expect(r.r).toBeCloseTo(15);
+    expect(r.cx).toBeCloseTo(100);
+    expect(r.cy).toBeCloseTo(100);
+  });
+
+  it('negative scale normalizes rect dims (stays centered) ', () => {
+    const g = { type: 'rect', x: 90, y: 90, width: 20, height: 20 };
+    const r = scaleGeometryAboutCenter(g, center, -1);
+    expect(r.width).toBeCloseTo(20);
+    expect(r.height).toBeCloseTo(20);
+    expect(r.x).toBeCloseTo(90);
+    expect(r.y).toBeCloseTo(90);
+  });
+
+  it('mirrors polygon points about center for negative scale', () => {
+    const g = { type: 'polygon', points: [{ x: 110, y: 100 }, { x: 100, y: 110 }] };
+    const r = scaleGeometryAboutCenter(g, center, -1);
+    expect(r.points[0]).toEqual({ x: 90, y: 100 });
+    expect(r.points[1]).toEqual({ x: 100, y: 90 });
+  });
+});
+
+describe('cellScaleFactor', () => {
+  const cell = (orientation) => ({ orientation });
+
+  it('range 1/1 is identity regardless of orientation', () => {
+    const t = { stretchAngle: 30, scaleParallel: 1, scaleOrthogonal: 1 };
+    expect(cellScaleFactor(cell(0), t)).toBe(1);
+    expect(cellScaleFactor(cell(90), t)).toBe(1);
+  });
+
+  it('orthogonal → scaleOrthogonal, parallel → scaleParallel', () => {
+    const t = { stretchAngle: 0, scaleParallel: 0.5, scaleOrthogonal: 1.5 };
+    expect(cellScaleFactor(cell(0), t)).toBeCloseTo(0.5);  // parallel to 0°
+    expect(cellScaleFactor(cell(90), t)).toBeCloseTo(1.5); // orthogonal
+    expect(cellScaleFactor(cell(45), t)).toBeCloseTo(1.0); // midpoint
+  });
+
+  it('uses the angle vs the stretch direction (undirected)', () => {
+    const t = { stretchAngle: 90, scaleParallel: 0.5, scaleOrthogonal: 1.5 };
+    expect(cellScaleFactor(cell(90), t)).toBeCloseTo(0.5);  // now 90° is parallel
+    expect(cellScaleFactor(cell(0), t)).toBeCloseTo(1.5);   // 0° is orthogonal
+    expect(cellScaleFactor(cell(180), t)).toBeCloseTo(1.5); // 180 == 0
+  });
+
+  it('null orientation (isolated cell) is not scaled', () => {
+    const t = { stretchAngle: 0, scaleParallel: 0.5, scaleOrthogonal: 1.5 };
+    expect(cellScaleFactor(cell(null), t)).toBe(1);
+  });
+
+  it('negative endpoints interpolate through zero', () => {
+    const t = { stretchAngle: 0, scaleParallel: 1, scaleOrthogonal: -1 };
+    expect(cellScaleFactor(cell(0), t)).toBeCloseTo(1);
+    expect(cellScaleFactor(cell(45), t)).toBeCloseTo(0);   // shrinks to nothing
+    expect(cellScaleFactor(cell(90), t)).toBeCloseTo(-1);  // mirrored
+  });
+});
 
 describe('stretchMatrix', () => {
   it('amount 0 は単位行列', () => {

@@ -13,6 +13,7 @@
  */
 
 import { accumulateCellPixels } from './mesh-accumulate.js';
+import { computeCellOrientations, fillOrientationGaps } from './orientation.js';
 
 const ALPHA_THRESHOLD = 200;
 const DARK_BRIGHTNESS = 128;
@@ -27,6 +28,12 @@ export function autoMesh(imgCtx, cells, threshold = 0.5) {
   const maskData = renderIdMask(W, H, targetCells);
   const { dark, total } = accumulate(sourceData, maskData, targetCells.length);
   applyResults(targetCells, dark, total, threshold);
+  // Orientation needs the *final* fill state, so it runs after applyResults.
+  // All cells are eligible (a manual-fill cell on a stroke gets a valid angle).
+  computeCellOrientations(sourceData, W, H, cells);
+  // Diffuse into cells the image left undecided (junctions, thick-stroke
+  // interiors) so every filled cell ends up with an angle.
+  fillOrientationGaps(cells);
 }
 
 /** Async variant: pixel-loop runs on a Worker thread. Mask rendering stays on
@@ -49,6 +56,11 @@ export async function autoMeshAsync(imgCtx, cells, threshold = 0.5) {
   });
 
   applyResults(targetCells, dark, total, threshold);
+  // sourceData.data was transferred to (and neutered by) the worker; re-read the
+  // pixels from the canvas to derive orientations from the final fill state.
+  const px = imgCtx.getImageData(0, 0, W, H).data;
+  computeCellOrientations(px, W, H, cells);
+  fillOrientationGaps(cells);
 }
 
 function collectTargets(cells) {

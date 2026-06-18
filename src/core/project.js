@@ -38,6 +38,12 @@ export const DEFAULT_FONT_INFO = {
 const DEFAULT_GLOBAL = {
   stretchAngle: 0,
   stretchAmount: 0,
+  // Per-cell scale driven by the angle between a cell's stroke orientation and
+  // the stretch direction: parallel cells → scaleParallel, orthogonal →
+  // scaleOrthogonal (lerp by なす角/90). 1.0/1.0 = identity (no visual change).
+  // Negatives are allowed (cells shrink through 0 then mirror).
+  scaleParallel: 1,
+  scaleOrthogonal: 1,
   baseGap: 20,
   gapDirectionWeight: 1,
   metaballStrength: 1,
@@ -645,6 +651,8 @@ export function resolveTransform(global, overrides) {
     metaballRadius: global.metaballRadius,
     stretchAngle: global.stretchAngle,
     stretchAmount: global.stretchAmount,
+    scaleParallel: global.scaleParallel ?? 1,
+    scaleOrthogonal: global.scaleOrthogonal ?? 1,
     ...overrides,
   };
 }
@@ -690,6 +698,11 @@ function compactCell(c) {
   };
   if (c.filled) out.filled = true;
   if (c.manualOverride) out.manualOverride = true;
+  if (c.orientation != null) {
+    out.orientation = Math.round(c.orientation * 10) / 10;
+    out.coherence = Math.round((c.coherence ?? 0) * 100) / 100;
+    if (c.orientationSource) out.orientationSource = c.orientationSource;
+  }
   return out;
 }
 

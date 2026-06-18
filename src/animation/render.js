@@ -9,7 +9,7 @@ import { drawSourceImage } from '../render/canvas-renderer.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
-import { cellDisplacement } from '../render/transform-utils.js';
+import { cellDisplacement, cellScaleFactor } from '../render/transform-utils.js';
 import { sampleAnimation } from './animation.js';
 
 // Threshold for per-frame auto-mesh of animated-grid glyphs. Matches the
@@ -70,6 +70,9 @@ function transformFromParams(p, global) {
     gapDirectionWeight: p.gapDirectionWeight,
     metaballStrength: global.metaballStrength ?? 1,
     metaballRadius: p.metaballRadius,
+    // Per-cell orientation scale is not animatable — read from global.
+    scaleParallel: global.scaleParallel ?? 1,
+    scaleOrthogonal: global.scaleOrthogonal ?? 1,
   };
 }
 
@@ -183,6 +186,12 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
       const { dx: cdx, dy: cdy } = cellDisplacement(cell.center, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
       workCtx.save();
       workCtx.translate(cdx, cdy);
+      const cs = cellScaleFactor(cell, charTransform);
+      if (cs !== 1) {
+        workCtx.translate(cell.center.x, cell.center.y);
+        workCtx.scale(cs, cs);
+        workCtx.translate(-cell.center.x, -cell.center.y);
+      }
       workCtx.fillStyle = '#000';
       workCtx.fill(cell.path);
       workCtx.restore();

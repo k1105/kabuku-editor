@@ -3,6 +3,7 @@ import { loadImageCached } from '../core/image-cache.js';
 import { getGrid } from '../grids/grid-plugin.js';
 import { createLayer } from '../core/layer.js';
 import { autoMeshAsync } from '../core/mesh.js';
+import { propagateOrientation, setCellOrientationManual, estimatePitch } from '../core/orientation.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { glyphAddDialog } from '../ui/export-dialog.js';
 import { PRESETS as FONT_IMPORT_PRESETS, buildCharSet } from '../render/font/char-ranges.js';
@@ -50,6 +51,7 @@ export function renderIndexPage(app) {
 
   // Paint state
   let currentTool = 'paint';
+  let showOrientation = false; // overlay per-cell stroke tangent ticks
   let isPainting = false;
   let backgroundImage = null;
   let bgOpacity = 0.3;
@@ -372,6 +374,8 @@ export function renderIndexPage(app) {
     set baseLayerActive(v) { baseLayerActive = v; },
     get currentTool() { return currentTool; },
     set currentTool(v) { currentTool = v; },
+    get showOrientation() { return showOrientation; },
+    set showOrientation(v) { showOrientation = v; },
     get bgOpacity() { return bgOpacity; },
     set bgOpacity(v) { bgOpacity = v; },
     get backgroundImage() { return backgroundImage; },
@@ -409,6 +413,10 @@ export function renderIndexPage(app) {
       }
       return;
     }
+    if (currentTool === 'orient') { applyOrientAt(e); return; }
+    // Only the fill tools mutate cell.filled — guard against any other tool
+    // accidentally erasing (newFilled would otherwise be false).
+    if (currentTool !== 'paint' && currentTool !== 'erase') return;
     isPainting = true;
     handlePaint(e);
   });
@@ -453,8 +461,9 @@ export function renderIndexPage(app) {
     historyCommit('kvg-edit');
   });
 
-  function handlePaint(e) {
-    if (!selectedCharId || localLayers.length === 0) return;
+  // Cell under the cursor in the active local layer (+ that layer), or null.
+  function cellAt(e) {
+    if (!selectedCharId || localLayers.length === 0) return null;
     const rect = previewCanvasL.getBoundingClientRect();
     const sx = previewCanvasL.width / rect.width;
     const sy = previewCanvasL.height / rect.height;
@@ -463,24 +472,53 @@ export function renderIndexPage(app) {
     // Glyph is drawn scaled & centered: width = GLYPH_SIZE * s
     const s = scaleL;
     const dw = GLYPH_SIZE * s;
-    const dh = GLYPH_SIZE * s;
     const dx = (previewCanvasL.width - dw) / 2;
-    const dy = (previewCanvasL.height - dh) / 2;
+    const dy = (previewCanvasL.height - dw) / 2;
     const gx = (px - dx) / s;
     const gy = (py - dy) / s;
     const layer = localLayers[activeLocalLayerIdx];
-    if (!layer) return;
+    if (!layer) return null;
     for (const cell of layer.cells) {
-      if (renderer.offCtx.isPointInPath(cell.path, gx, gy)) {
-        const newFilled = currentTool === 'paint';
-        if (cell.filled !== newFilled) {
-          cell.filled = newFilled;
-          cell.manualOverride = true;
-          redraw();
-        }
-        break;
-      }
+      if (renderer.offCtx.isPointInPath(cell.path, gx, gy)) return { cell, layer };
     }
+    return null;
+  }
+
+  function handlePaint(e) {
+    const hit = cellAt(e);
+    if (!hit) return;
+    const newFilled = currentTool === 'paint';
+    if (hit.cell.filled !== newFilled) {
+      hit.cell.filled = newFilled;
+      hit.cell.manualOverride = true;
+      // 案A: a freshly painted cell inherits its angle from oriented neighbors.
+      if (newFilled) propagateOrientation(hit.layer.cells, hit.cell);
+      redraw();
+    }
+  }
+
+  // Angle tool: click a filled cell, type its stroke angle (degrees). Empty
+  // input clears the manual override so the next auto pass recomputes it.
+  function applyOrientAt(e) {
+    const hit = cellAt(e);
+    if (!hit || !hit.cell.filled) return;
+    const cell = hit.cell;
+    const current = cell.orientation != null ? Math.round(cell.orientation) : '';
+    const input = prompt('このセルの角度（度・0=水平, 90=垂直）。空欄で自動に戻す:', String(current));
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (trimmed === '') {
+      cell.orientation = null;
+      cell.coherence = 0;
+      cell.orientationSource = null;
+    } else {
+      const deg = Number(trimmed);
+      if (!Number.isFinite(deg)) return;
+      setCellOrientationManual(cell, deg);
+    }
+    redraw();
+    saveLocalChar();
+    historyCommit('orient');
   }
 
   // === Render ===

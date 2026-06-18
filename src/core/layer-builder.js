@@ -13,6 +13,11 @@ function applySavedCells(newCells, savedCells) {
     if (cell && distSq < CELL_MATCH_DIST_SQ) {
       cell.filled = saved.filled;
       cell.manualOverride = saved.manualOverride;
+      if (saved.orientation != null) {
+        cell.orientation = saved.orientation;
+        cell.coherence = saved.coherence ?? 0;
+        cell.orientationSource = saved.orientationSource ?? null;
+      }
     }
   }
 }

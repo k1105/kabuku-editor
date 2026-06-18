@@ -164,6 +164,33 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
       transformGroup.appendChild(row);
     }
     sidebarBody.appendChild(transformGroup);
+
+    // Per-cell orientation scale (global, applies to all glyphs + export). The
+    // factor lerps by なす角(cell orientation vs stretch direction)/90: parallel
+    // cells → ∥, orthogonal → ⊥. 1.0/1.0 = no change; negatives invert/mirror.
+    const scaleGroup = document.createElement('div');
+    scaleGroup.className = 'param-group';
+    const scaleTitle = document.createElement('h3');
+    scaleTitle.textContent = '角度スケール (全文字共通)';
+    scaleGroup.appendChild(scaleTitle);
+    const SCALE_DEFS = [
+      { key: 'scaleParallel', label: 'Scale ∥ (平行)' },
+      { key: 'scaleOrthogonal', label: 'Scale ⊥ (直交)' },
+    ];
+    for (const def of SCALE_DEFS) {
+      const { row } = createParamRow(def.label, {
+        min: -2, max: 3, step: 0.05,
+        value: ctx.global[def.key] ?? 1,
+        onInput: (v) => {
+          ctx.global[def.key] = v;
+          saveGlobal(ctx.global);
+          deps.redraw();
+        },
+        onChange: () => { deps.refreshAllThumbnails(); historyCommit('cell-scale'); },
+      });
+      scaleGroup.appendChild(row);
+    }
+    sidebarBody.appendChild(scaleGroup);
     // Font export moved to the Settings modal (gear icon in the header).
   }
 
@@ -244,8 +271,25 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
     if (!ctx.selectedCharId) { appendNoSelMsg(); return; }
 
     // Tools
-    const toolbar = createToolbar((tool) => { ctx.currentTool = tool; });
+    const toolbar = createToolbar((tool) => { ctx.currentTool = tool; deps.redraw(); });
     sidebarBody.appendChild(toolbar.el);
+
+    // Orientation overlay toggle
+    const orientLabel = document.createElement('label');
+    orientLabel.style.display = 'flex';
+    orientLabel.style.alignItems = 'center';
+    orientLabel.style.gap = '6px';
+    orientLabel.style.marginTop = '6px';
+    const orientCb = document.createElement('input');
+    orientCb.type = 'checkbox';
+    orientCb.checked = ctx.showOrientation;
+    orientCb.addEventListener('change', () => {
+      ctx.showOrientation = orientCb.checked;
+      deps.redraw();
+    });
+    orientLabel.appendChild(orientCb);
+    orientLabel.appendChild(document.createTextNode('角度オーバーレイ'));
+    toolbar.el.appendChild(orientLabel);
 
     // Per-layer baseline = the layer's own gridParams in ctx.global.defaultLayers
     // (NOT ctx.global.gridDefaults, which is the per-grid-type fallback). This is

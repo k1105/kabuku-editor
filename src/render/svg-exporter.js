@@ -1,4 +1,4 @@
-import { cellDisplacement } from './transform-utils.js';
+import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
 
 /**
  * Export a single layer to SVG.
@@ -62,7 +62,10 @@ function placeCells(layer, width, height, opts) {
   const filled = layer.cells.filter(c => c.filled);
   return filled.map(cell => {
     const { dx, dy, pos } = cellDisplacement(cell.center, t, width, height, baselineY);
-    return { cell, dx, dy, pos, radius: cellRadius(cell) };
+    // Per-cell orientation scale, baked into a scaled geometry so the export
+    // matches the canvas renderer.
+    const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, t));
+    return { cell, geom, dx, dy, pos, radius: cellRadius(geom) };
   });
 }
 
@@ -76,7 +79,7 @@ function computeBBox(layerPlacements, width, height) {
   for (const { placed, blur } of layerPlacements) {
     const pad = blur || 0;
     for (const p of placed) {
-      const ext = geometryExtent(p.cell.geometry, p.dx, p.dy);
+      const ext = geometryExtent(p.geom, p.dx, p.dy);
       if (ext) {
         if (ext.minX - pad < minX) minX = ext.minX - pad;
         if (ext.minY - pad < minY) minY = ext.minY - pad;
@@ -138,7 +141,7 @@ function renderLayerBody(placed, bbox, blurRadius) {
     return renderMetaballPath(placed, bbox, blurRadius);
   }
   const shapes = placed
-    .map(({ cell, dx, dy }) => geometryToSVG(cell.geometry, dx, dy))
+    .map(({ geom, dx, dy }) => geometryToSVG(geom, dx, dy))
     .filter(Boolean);
   if (shapes.length === 0) return '';
   return `<g fill="#000">\n${shapes.map(s => '  ' + s).join('\n')}\n</g>`;
@@ -164,18 +167,19 @@ function geometryToSVG(geometry, dx = 0, dy = 0) {
   }
 }
 
-/** Approximate radius of a cell from its geometry (fallback for metaball bbox). */
-function cellRadius(cell) {
-  const g = cell.geometry;
+/** Approximate radius of a cell from its (already-scaled) geometry. */
+function cellRadius(g) {
   if (!g) return 6;
   if (g.type === 'circle') return g.r;
   if (g.type === 'rect') return Math.max(g.width, g.height) * 0.5;
   if (g.type === 'polygon') {
+    // Centroid of the polygon points, then max distance to a vertex.
+    let cx = 0, cy = 0;
+    for (const p of g.points) { cx += p.x; cy += p.y; }
+    cx /= g.points.length; cy /= g.points.length;
     let max = 0;
     for (const p of g.points) {
-      const dx = p.x - cell.center.x;
-      const dy = p.y - cell.center.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
+      const d = Math.hypot(p.x - cx, p.y - cy);
       if (d > max) max = d;
     }
     return max || 6;
@@ -207,7 +211,7 @@ function renderMetaballPath(placed, bbox, blurRadius) {
   // Map glyph-local coords into the offscreen canvas (origin at bbox.min)
   offCtx.translate(-bbox.minX, -bbox.minY);
   for (const p of placed) {
-    drawGeometryToCtx(offCtx, p.cell.geometry, p.dx, p.dy);
+    drawGeometryToCtx(offCtx, p.geom, p.dx, p.dy);
   }
 
   const filtered = new OffscreenCanvas(bw, bh);

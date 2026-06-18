@@ -19,6 +19,7 @@ const PATHS = {
   // tools
   paintbrush: '<path d="M14 4l6 6-9 9-6-6z"/><path d="M11 7l6 6"/><path d="M8 18l-3 3"/>',
   eraser:     '<path d="M3 17l8-8 8 8-4 4H7z"/><path d="M21 21H8"/>',
+  compass:    '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
 
   // visibility
   eye:        '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',

@@ -1,5 +1,5 @@
 import { applyMetaballFilter } from '../transform/metaball.js';
-import { cellDisplacement } from './transform-utils.js';
+import { cellDisplacement, cellScaleFactor } from './transform-utils.js';
 
 /**
  * Render layers to canvas.
@@ -44,6 +44,20 @@ export function renderCanvas(ctx, layers, opts = {}) {
 
   ctx.clearRect(0, 0, width, height);
 
+  // Position a cell in the current ctx: displace its center, then (if the
+  // per-cell scale ≠ 1) scale its shape about its own center. Caller wraps in
+  // save()/restore() and then fill/stroke(cell.path).
+  function placeCell(cell) {
+    const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
+    ctx.translate(d.dx + ox, d.dy + oy);
+    const s = cellScaleFactor(cell, t);
+    if (s !== 1) {
+      ctx.translate(cell.center.x, cell.center.y);
+      ctx.scale(s, s);
+      ctx.translate(-cell.center.x, -cell.center.y);
+    }
+  }
+
   // ── 1. Cell fills (back-most) ──
   for (const layer of layers) {
     if (!layer.visible) continue;
@@ -52,12 +66,8 @@ export function renderCanvas(ctx, layers, opts = {}) {
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
 
-      const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
-      const dx = d.dx + ox;
-      const dy = d.dy + oy;
-
       ctx.save();
-      ctx.translate(dx, dy);
+      placeCell(cell);
       ctx.fillStyle = '#000';
       ctx.fill(cell.path);
       ctx.restore();
@@ -132,12 +142,8 @@ export function renderCanvas(ctx, layers, opts = {}) {
         for (const cell of layer.cells) {
           if (!cell.filled) continue;
 
-          const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
-          const dx = d.dx + ox;
-          const dy = d.dy + oy;
-
           ctx.save();
-          ctx.translate(dx, dy);
+          placeCell(cell);
           ctx.fillStyle = 'rgba(255, 0, 0, 0.55)';
           ctx.fill(cell.path);
           ctx.restore();
@@ -153,12 +159,8 @@ export function renderCanvas(ctx, layers, opts = {}) {
       const strokeColor = li === activeLayerIndex ? ACTIVE_GRID_COLOR : '#ccc';
 
       for (const cell of layer.cells) {
-        const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
-        const dx = d.dx + ox;
-        const dy = d.dy + oy;
-
         ctx.save();
-        ctx.translate(dx, dy);
+        placeCell(cell);
         ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 0.5;
         ctx.stroke(cell.path);

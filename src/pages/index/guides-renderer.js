@@ -13,6 +13,7 @@ import { resolveTransform } from '../../core/project.js';
 import { buildRuntimeLayers } from '../../core/layer-builder.js';
 import { renderCanvas, metricsLabelMargin } from '../../render/canvas-renderer.js';
 import { computeCacheScale } from '../../compose/glyph-cache.js';
+import { estimatePitch } from '../../core/orientation.js';
 import { GLYPH_SIZE } from './constants.js';
 
 export function createGuidesRenderer({ displayCanvas, displayCtx, state, deps }) {
@@ -108,6 +109,9 @@ export function createGuidesRenderer({ displayCanvas, displayCtx, state, deps })
         ...rc.transform,
         stretchAngle: state.global.stretchAngle ?? 0,
         stretchAmount: state.global.stretchAmount ?? 0,
+        // Live from global (rc.transform may be a stale local resolve).
+        scaleParallel: state.global.scaleParallel ?? 1,
+        scaleOrthogonal: state.global.scaleOrthogonal ?? 1,
       };
       renderTarget(displayCanvas, displayCtx, offCanvasL, offCtxL, {
         layers: rc.layers, transform, preview: true, showBackground: false, scale: state.scaleL,
@@ -115,7 +119,19 @@ export function createGuidesRenderer({ displayCanvas, displayCtx, state, deps })
       });
       return;
     }
-    const leftTransform = { ...rc.transform, stretchAmount: 0, stretchAngle: 0 };
+    // Guides view drops the stretch *displacement* (stretchAmount→0, and
+    // stretchAngle→0 so gap direction stays put) but DOES apply the per-cell
+    // orientation scale, measured against the real stretch direction via
+    // scaleRefAngle. Scale params are read live from global (rc.transform may be
+    // a stale local resolve). Painting hit-tests against the un-scaled cell.
+    const leftTransform = {
+      ...rc.transform,
+      stretchAmount: 0,
+      stretchAngle: 0,
+      scaleParallel: state.global.scaleParallel ?? 1,
+      scaleOrthogonal: state.global.scaleOrthogonal ?? 1,
+      scaleRefAngle: state.global.stretchAngle ?? 0,
+    };
     // When the base-image layer (下地) is active in the Pen panel, drop the grid
     // red highlight and emphasize the source image instead (bold image + faint
     // grids) so its placement is easy to adjust.
@@ -131,13 +147,55 @@ export function createGuidesRenderer({ displayCanvas, displayCtx, state, deps })
     });
   }
 
+  // Per-cell stroke tangent ticks, drawn on the display canvas in the same
+  // glyph→display mapping handlePaint uses (glyph centered at GLYPH_SIZE*scale).
+  // Manual overrides are red, auto (image/propagated) values blue scaled by
+  // coherence. Shown only in guides view while editing, and only for the active
+  // layer — the one being painted — so stacked layers don't overlap their ticks.
+  function drawOrientationTicks(rc) {
+    if (state.previewMode) return;
+    if (!state.showOrientation && state.currentTool !== 'orient') return;
+    const activeIdx = deps.isLocalContext() ? state.activeLocalLayerIdx : state.activeGlobalLayerIdx;
+    const layer = rc.layers[activeIdx];
+    if (!layer) return;
+    const scale = state.scaleL;
+    const dw = GLYPH_SIZE * scale;
+    const ox = (displayCanvas.width - dw) / 2;
+    const oy = (displayCanvas.height - dw) / 2;
+    const tick = estimatePitch(layer.cells) * 0.42; // half-length in glyph px
+    displayCtx.save();
+    displayCtx.lineWidth = 2;
+    displayCtx.lineCap = 'round';
+    for (const cell of layer.cells) {
+      if (!cell.filled || cell.orientation == null) continue;
+      const manual = cell.orientationSource === 'manual';
+      const coh = manual ? 1 : Math.max(0.15, Math.min(1, cell.coherence || 0));
+      const len = tick * (0.5 + 0.5 * coh) * scale;
+      const rad = (cell.orientation * Math.PI) / 180;
+      const cxp = ox + cell.center.x * scale;
+      const cyp = oy + cell.center.y * scale;
+      const dx = Math.cos(rad) * len;
+      const dy = Math.sin(rad) * len;
+      displayCtx.strokeStyle = manual
+        ? 'rgba(220,38,38,0.95)'
+        : `rgba(37,99,235,${0.35 + 0.5 * coh})`;
+      displayCtx.beginPath();
+      displayCtx.moveTo(cxp - dx, cyp - dy);
+      displayCtx.lineTo(cxp + dx, cyp + dy);
+      displayCtx.stroke();
+    }
+    displayCtx.restore();
+  }
+
   function redraw() {
     if (!state.selectedCharId) {
       clearDisplay(displayCanvas, displayCtx);
       return;
     }
-    renderLeft();
+    const rc = currentRender();
+    renderLeft(rc);
     deps.drawOverlay();
+    drawOrientationTicks(rc);
   }
 
   return {

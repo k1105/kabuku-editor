@@ -21,6 +21,7 @@ export function createToolbar(onToolChange) {
     const tools = [
       { id: 'paint', label: 'Paint', icon: 'paintbrush' },
       { id: 'erase', label: 'Erase', icon: 'eraser' },
+      { id: 'orient', label: 'Angle', icon: 'compass' },
     ];
 
     for (const tool of tools) {

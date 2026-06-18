@@ -7,6 +7,7 @@ import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
 import { getGrid } from '../grids/grid-plugin.js';
 import { autoMesh } from '../core/mesh.js';
+import { propagateOrientation, setCellOrientationManual } from '../core/orientation.js';
 import { uploadCharacterImage } from '../core/storage.js';
 import { renderCanvas, drawSourceImage } from '../render/canvas-renderer.js';
 import { createLayerPanel } from '../ui/layer-panel.js';
@@ -69,7 +70,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   let editingIndex = -1;   // which layout position is focused
   let editLayers = [];
   let activeEditLayerIdx = 0;  // layer being painted / shown in the grid params panel
-  let currentTool = 'paint';   // 'paint' | 'erase'
+  let currentTool = 'paint';   // 'paint' | 'erase' | 'orient'
   let editBgOpacity = 0.3;     // reference-image underlay opacity while editing
   let editZoom = 1;        // canvas re-render scale while editing (crisp, not CSS)
   let zoomAnim = null;     // in-flight FLIP transition (Web Animations API)
@@ -565,13 +566,46 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     if (cell && cell.filled !== paintValue) {
       cell.filled = paintValue;
       cell.manualOverride = true;
+      if (paintValue) {
+        // 案A: a freshly painted cell inherits its stroke angle from oriented
+        // neighbors (unless the user has manually overridden it).
+        const layer = editLayers[activeEditLayerIdx];
+        if (layer) propagateOrientation(layer.cells, cell);
+      }
       paintedThisGesture = true;
       redrawFocusGlyph();
     }
   }
 
+  // Orient tool: click a filled cell, type its stroke angle (degrees). Empty
+  // input clears the manual override so the next auto pass recomputes it.
+  function applyOrient(e) {
+    const cell = hitCell(canvasToGlyph(e));
+    if (!cell || !cell.filled) return;
+    const current = cell.orientation != null ? Math.round(cell.orientation) : '';
+    const input = prompt('このセルの角度（度・0=水平, 90=垂直）。空欄で自動に戻す:', String(current));
+    if (input === null) return;   // cancelled
+    const trimmed = input.trim();
+    if (trimmed === '') {
+      cell.orientation = null;
+      cell.coherence = 0;
+      cell.orientationSource = null;
+    } else {
+      const deg = Number(trimmed);
+      if (!Number.isFinite(deg)) return;
+      setCellOrientationManual(cell, deg);
+    }
+    redrawFocusGlyph();
+    saveEditingChar();
+    historyCommit('compose-orient');
+  }
+
   function onPaintDown(e) {
     if (!editingCharId) return;
+    if (currentTool === 'orient') { applyOrient(e); return; }
+    // Only the fill tools mutate cell.filled — guard against any other tool
+    // accidentally erasing (paintValue would otherwise be false).
+    if (currentTool !== 'paint' && currentTool !== 'erase') return;
     isPainting = true;
     paintedThisGesture = false;
     paintValue = currentTool === 'paint';   // fixed for the whole gesture
@@ -890,7 +924,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     });
     editPanel.appendChild(transformPanel.el);
 
-    // Tools (paint / erase)
+    // Tools (paint / erase / angle)
     const toolbar = createToolbar((tool) => { currentTool = tool; });
     editPanel.appendChild(toolbar.el);
 
