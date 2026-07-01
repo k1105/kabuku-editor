@@ -38,12 +38,6 @@ export const DEFAULT_FONT_INFO = {
 const DEFAULT_GLOBAL = {
   stretchAngle: 0,
   stretchAmount: 0,
-  // Per-cell scale driven by the angle between a cell's stroke orientation and
-  // the stretch direction: parallel cells → scaleParallel, orthogonal →
-  // scaleOrthogonal (lerp by なす角/90). 1.0/1.0 = identity (no visual change).
-  // Negatives are allowed (cells shrink through 0 then mirror).
-  scaleParallel: 1,
-  scaleOrthogonal: 1,
   baseGap: 20,
   gapDirectionWeight: 1,
   metaballStrength: 1,
@@ -52,8 +46,13 @@ const DEFAULT_GLOBAL = {
   // Default stroke width (KanjiVG 109-unit space) for kanjivg-sourced glyphs;
   // per-character overrides live on charData.kanjivgSource.strokeWidth.
   kanjivgStrokeWidth: 5.5,
+  // Per-cell scale driven by the angle between a cell's stroke orientation and
+  // the layer's stretch direction: parallel cells → scaleParallel, orthogonal
+  // → scaleOrthogonal (lerp by なす角/90). 1.0/1.0 = identity (no visual
+  // change). Negatives are allowed (cells shrink through 0 then mirror). Set
+  // per layer so each grid layer can scale independently.
   defaultLayers: [
-    { gridName: 'FibonacciGrid', gridParams: { count: 1000, scale: 20, dotRadius: 14, rotation: 228 }, name: 'FibonacciGrid' },
+    { gridName: 'FibonacciGrid', gridParams: { count: 1000, scale: 20, dotRadius: 14, rotation: 228 }, name: 'FibonacciGrid', scaleParallel: 1, scaleOrthogonal: 1 },
   ],
   fontMetrics: { ...DEFAULT_FONT_METRICS },
   fontInfo: { ...DEFAULT_FONT_INFO },
@@ -160,6 +159,16 @@ function ensureGlobalDefaults(g) {
   if (!g.fontMetrics) g.fontMetrics = { ...DEFAULT_FONT_METRICS };
   if (!g.fontInfo) g.fontInfo = { ...DEFAULT_FONT_INFO };
   if (g.kanjivgStrokeWidth === undefined) g.kanjivgStrokeWidth = DEFAULT_GLOBAL.kanjivgStrokeWidth;
+  // Migrate the old document-wide scaleParallel/scaleOrthogonal (pre per-layer
+  // scale) onto each layer that doesn't already have its own value.
+  if (g.scaleParallel !== undefined || g.scaleOrthogonal !== undefined) {
+    for (const layer of g.defaultLayers) {
+      if (layer.scaleParallel === undefined) layer.scaleParallel = g.scaleParallel ?? 1;
+      if (layer.scaleOrthogonal === undefined) layer.scaleOrthogonal = g.scaleOrthogonal ?? 1;
+    }
+    delete g.scaleParallel;
+    delete g.scaleOrthogonal;
+  }
   return g;
 }
 
@@ -651,8 +660,6 @@ export function resolveTransform(global, overrides) {
     metaballRadius: global.metaballRadius,
     stretchAngle: global.stretchAngle,
     stretchAmount: global.stretchAmount,
-    scaleParallel: global.scaleParallel ?? 1,
-    scaleOrthogonal: global.scaleOrthogonal ?? 1,
     ...overrides,
   };
 }
@@ -685,6 +692,8 @@ export function resolveCharacterLayers(global, charData) {
         : null,
       opacity: charOverride.opacity ?? globalLayer.opacity ?? 1,
       visible: charOverride.visible ?? globalLayer.visible ?? true,
+      scaleParallel: globalLayer.scaleParallel ?? 1,
+      scaleOrthogonal: globalLayer.scaleOrthogonal ?? 1,
     };
   });
 }

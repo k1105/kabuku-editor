@@ -42,6 +42,7 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
         const layer = ctx.globalLayers[idx];
         gridSelect.value = layer.gridPlugin.name;
         renderGridParamSliders();
+        renderScaleSliders();
         globalLayerPanel.update(ctx.globalLayers, ctx.activeGlobalLayerIdx);
         deps.redraw();
       },
@@ -55,6 +56,7 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
         globalLayerPanel.update(ctx.globalLayers, ctx.activeGlobalLayerIdx);
         if (ctx.globalLayers.length > 0) gridSelect.value = ctx.globalLayers[ctx.activeGlobalLayerIdx].gridPlugin.name;
         renderGridParamSliders();
+        renderScaleSliders();
         deps.saveGlobalLayers();
         deps.redraw();
         historyCommit('layer-delete');
@@ -69,6 +71,7 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
         ctx.activeGlobalLayerIdx = ctx.globalLayers.length - 1;
         globalLayerPanel.update(ctx.globalLayers, ctx.activeGlobalLayerIdx);
         renderGridParamSliders();
+        renderScaleSliders();
         deps.saveGlobalLayers();
         deps.redraw();
         historyCommit('layer-add');
@@ -101,6 +104,7 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
       layer.gridParams = { ...defaults, ...gd };
       layer.name = grid.name;
       renderGridParamSliders();
+      renderScaleSliders();
       globalLayerPanel.update(ctx.globalLayers, ctx.activeGlobalLayerIdx);
       deps.saveGlobalLayers({ propagateGridParams: true });
       deps.redraw();
@@ -138,6 +142,42 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
     }
     renderGridParamSliders();
 
+    // Per-cell orientation scale — a per-layer setting (each grid layer scales
+    // independently). The factor lerps by なす角(cell orientation vs stretch
+    // direction)/90: parallel cells → ∥, orthogonal → ⊥. 1.0/1.0 = no change;
+    // negatives invert/mirror.
+    const scaleGroup = document.createElement('div');
+    scaleGroup.className = 'param-group';
+    sidebarBody.appendChild(scaleGroup);
+    const SCALE_DEFS = [
+      { key: 'scaleParallel', label: 'Scale ∥ (平行)' },
+      { key: 'scaleOrthogonal', label: 'Scale ⊥ (直交)' },
+    ];
+
+    function renderScaleSliders() {
+      scaleGroup.innerHTML = '';
+      if (ctx.globalLayers.length === 0) return;
+      const layer = ctx.globalLayers[ctx.activeGlobalLayerIdx];
+      if (!layer) return;
+      const h = document.createElement('h3');
+      h.textContent = '角度スケール';
+      scaleGroup.appendChild(h);
+      for (const def of SCALE_DEFS) {
+        const { row } = createParamRow(def.label, {
+          min: -2, max: 3, step: 0.05,
+          value: layer[def.key] ?? 1,
+          onInput: (v) => {
+            layer[def.key] = v;
+            deps.saveGlobalLayers();
+            deps.redraw();
+          },
+          onChange: () => { deps.refreshAllThumbnails(); historyCommit('cell-scale'); },
+        });
+        scaleGroup.appendChild(row);
+      }
+    }
+    renderScaleSliders();
+
     // Transform (ctx.global)
     const transformDefs = [
       { key: 'baseGap', label: 'Gap', min: 0, max: 20, default: 0, step: 0.5 },
@@ -164,33 +204,6 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
       transformGroup.appendChild(row);
     }
     sidebarBody.appendChild(transformGroup);
-
-    // Per-cell orientation scale (global, applies to all glyphs + export). The
-    // factor lerps by なす角(cell orientation vs stretch direction)/90: parallel
-    // cells → ∥, orthogonal → ⊥. 1.0/1.0 = no change; negatives invert/mirror.
-    const scaleGroup = document.createElement('div');
-    scaleGroup.className = 'param-group';
-    const scaleTitle = document.createElement('h3');
-    scaleTitle.textContent = '角度スケール (全文字共通)';
-    scaleGroup.appendChild(scaleTitle);
-    const SCALE_DEFS = [
-      { key: 'scaleParallel', label: 'Scale ∥ (平行)' },
-      { key: 'scaleOrthogonal', label: 'Scale ⊥ (直交)' },
-    ];
-    for (const def of SCALE_DEFS) {
-      const { row } = createParamRow(def.label, {
-        min: -2, max: 3, step: 0.05,
-        value: ctx.global[def.key] ?? 1,
-        onInput: (v) => {
-          ctx.global[def.key] = v;
-          saveGlobal(ctx.global);
-          deps.redraw();
-        },
-        onChange: () => { deps.refreshAllThumbnails(); historyCommit('cell-scale'); },
-      });
-      scaleGroup.appendChild(row);
-    }
-    sidebarBody.appendChild(scaleGroup);
     // Font export moved to the Settings modal (gear icon in the header).
   }
 

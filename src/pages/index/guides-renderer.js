@@ -109,9 +109,6 @@ export function createGuidesRenderer({ displayCanvas, displayCtx, state, deps })
         ...rc.transform,
         stretchAngle: state.global.stretchAngle ?? 0,
         stretchAmount: state.global.stretchAmount ?? 0,
-        // Live from global (rc.transform may be a stale local resolve).
-        scaleParallel: state.global.scaleParallel ?? 1,
-        scaleOrthogonal: state.global.scaleOrthogonal ?? 1,
       };
       renderTarget(displayCanvas, displayCtx, offCanvasL, offCtxL, {
         layers: rc.layers, transform, preview: true, showBackground: false, scale: state.scaleL,
@@ -121,15 +118,13 @@ export function createGuidesRenderer({ displayCanvas, displayCtx, state, deps })
     }
     // Guides view drops the stretch *displacement* (stretchAmount→0, and
     // stretchAngle→0 so gap direction stays put) but DOES apply the per-cell
-    // orientation scale, measured against the real stretch direction via
-    // scaleRefAngle. Scale params are read live from global (rc.transform may be
-    // a stale local resolve). Painting hit-tests against the un-scaled cell.
+    // orientation scale (a per-layer setting carried on rc.layers), measured
+    // against the real stretch direction via scaleRefAngle. Painting
+    // hit-tests against the un-scaled cell.
     const leftTransform = {
       ...rc.transform,
       stretchAmount: 0,
       stretchAngle: 0,
-      scaleParallel: state.global.scaleParallel ?? 1,
-      scaleOrthogonal: state.global.scaleOrthogonal ?? 1,
       scaleRefAngle: state.global.stretchAngle ?? 0,
     };
     // When the base-image layer (下地) is active in the Pen panel, drop the grid

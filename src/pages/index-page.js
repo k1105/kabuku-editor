@@ -621,6 +621,8 @@ export function renderIndexPage(app) {
       layer.name = ld.name || gridPlugin.name;
       if (ld.opacity !== undefined) layer.opacity = ld.opacity;
       if (ld.visible !== undefined) layer.visible = ld.visible;
+      if (ld.scaleParallel !== undefined) layer.scaleParallel = ld.scaleParallel;
+      if (ld.scaleOrthogonal !== undefined) layer.scaleOrthogonal = ld.scaleOrthogonal;
       globalLayers.push(layer);
     }
     if (activeGlobalLayerIdx >= globalLayers.length) {
@@ -635,6 +637,8 @@ export function renderIndexPage(app) {
       name: layer.name,
       opacity: layer.opacity,
       visible: layer.visible,
+      scaleParallel: layer.scaleParallel ?? 1,
+      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
     }));
     // Policy: a global edit wins over per-char overrides. Visibility/opacity
     // overrides are always reconciled (matching values dropped). When

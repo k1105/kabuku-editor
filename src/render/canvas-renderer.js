@@ -45,12 +45,18 @@ export function renderCanvas(ctx, layers, opts = {}) {
   ctx.clearRect(0, 0, width, height);
 
   // Position a cell in the current ctx: displace its center, then (if the
-  // per-cell scale ≠ 1) scale its shape about its own center. Caller wraps in
-  // save()/restore() and then fill/stroke(cell.path).
-  function placeCell(cell) {
+  // per-cell scale ≠ 1) scale its shape about its own center. The scale
+  // range is a per-layer setting (each layer can scale independently); the
+  // reference angle/direction still comes from the shared transform.
+  // Caller wraps in save()/restore() and then fill/stroke(cell.path).
+  function placeCell(cell, layer) {
     const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
     ctx.translate(d.dx + ox, d.dy + oy);
-    const s = cellScaleFactor(cell, t);
+    const s = cellScaleFactor(cell, {
+      ...t,
+      scaleParallel: layer.scaleParallel ?? 1,
+      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
+    });
     if (s !== 1) {
       ctx.translate(cell.center.x, cell.center.y);
       ctx.scale(s, s);
@@ -67,7 +73,7 @@ export function renderCanvas(ctx, layers, opts = {}) {
       if (!cell.filled) continue;
 
       ctx.save();
-      placeCell(cell);
+      placeCell(cell, layer);
       ctx.fillStyle = '#000';
       ctx.fill(cell.path);
       ctx.restore();
@@ -143,7 +149,7 @@ export function renderCanvas(ctx, layers, opts = {}) {
           if (!cell.filled) continue;
 
           ctx.save();
-          placeCell(cell);
+          placeCell(cell, layer);
           ctx.fillStyle = 'rgba(255, 0, 0, 0.55)';
           ctx.fill(cell.path);
           ctx.restore();
@@ -160,7 +166,7 @@ export function renderCanvas(ctx, layers, opts = {}) {
 
       for (const cell of layer.cells) {
         ctx.save();
-        placeCell(cell);
+        placeCell(cell, layer);
         ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 0.5;
         ctx.stroke(cell.path);

@@ -35,6 +35,8 @@ export function buildRuntimeLayers(global, charData, glyphSize) {
     layer.name = rl.name;
     layer.opacity = rl.opacity;
     layer.visible = rl.visible;
+    layer.scaleParallel = rl.scaleParallel;
+    layer.scaleOrthogonal = rl.scaleOrthogonal;
     layer.gridParamOverrides = { ...rl.gridParamOverrides };
     regenerateCells(layer, glyphSize, glyphSize);
     if (rl.cells && rl.cells.length > 0) {

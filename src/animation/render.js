@@ -70,9 +70,8 @@ function transformFromParams(p, global) {
     gapDirectionWeight: p.gapDirectionWeight,
     metaballStrength: global.metaballStrength ?? 1,
     metaballRadius: p.metaballRadius,
-    // Per-cell orientation scale is not animatable — read from global.
-    scaleParallel: global.scaleParallel ?? 1,
-    scaleOrthogonal: global.scaleOrthogonal ?? 1,
+    // Per-cell orientation scale is a per-layer setting (not animatable) —
+    // read from each layer in renderGlyphOntoFrame, not here.
   };
 }
 
@@ -181,12 +180,20 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
   for (const layer of layers) {
     if (!layer.visible) continue;
     workCtx.globalAlpha = layer.opacity;
+    // Per-cell orientation scale is a per-layer setting; merge it into the
+    // shared transform for cellScaleFactor while displacement (stretch/gap)
+    // stays uniform across layers.
+    const layerTransform = {
+      ...charTransform,
+      scaleParallel: layer.scaleParallel ?? 1,
+      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
+    };
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
       const { dx: cdx, dy: cdy } = cellDisplacement(cell.center, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
       workCtx.save();
       workCtx.translate(cdx, cdy);
-      const cs = cellScaleFactor(cell, charTransform);
+      const cs = cellScaleFactor(cell, layerTransform);
       if (cs !== 1) {
         workCtx.translate(cell.center.x, cell.center.y);
         workCtx.scale(cs, cs);

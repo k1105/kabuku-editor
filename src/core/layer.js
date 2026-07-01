@@ -17,6 +17,8 @@ export function createLayer(gridPlugin, params = {}) {
     cells: [],
     opacity: 1.0,
     visible: true,
+    scaleParallel: 1,
+    scaleOrthogonal: 1,
   };
 }
 

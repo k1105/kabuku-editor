@@ -109,10 +109,15 @@ function buildGlyphPath(layers, transform, fontMetrics) {
 
   for (const layer of layers) {
     if (!layer.visible) continue;
+    const layerTransform = {
+      ...transform,
+      scaleParallel: layer.scaleParallel ?? 1,
+      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
+    };
     for (const cell of layer.cells) {
       if (!cell.filled) continue;
       const { dx, dy } = cellDisplacement(cell.center, transform, EM_SIZE, EM_SIZE, baselineY);
-      const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, transform));
+      const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, layerTransform));
       appendCellSubpath(path, geom, dx, dy, baselineY);
     }
   }

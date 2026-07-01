@@ -59,12 +59,19 @@ function placeCells(layer, width, height, opts) {
   const baselineY = (opts.fontMetrics?.baseline != null)
     ? height * opts.fontMetrics.baseline
     : height / 2;
+  // Per-cell orientation scale is a per-layer setting; merge it in for
+  // cellScaleFactor while displacement keeps using the shared transform.
+  const scaleT = {
+    ...t,
+    scaleParallel: layer.scaleParallel ?? 1,
+    scaleOrthogonal: layer.scaleOrthogonal ?? 1,
+  };
   const filled = layer.cells.filter(c => c.filled);
   return filled.map(cell => {
     const { dx, dy, pos } = cellDisplacement(cell.center, t, width, height, baselineY);
     // Per-cell orientation scale, baked into a scaled geometry so the export
     // matches the canvas renderer.
-    const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, t));
+    const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, scaleT));
     return { cell, geom, dx, dy, pos, radius: cellRadius(geom) };
   });
 }
