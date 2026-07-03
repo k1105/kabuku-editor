@@ -158,7 +158,8 @@ function geometryToSVG(geometry, dx = 0, dy = 0) {
   if (!geometry) return null;
   switch (geometry.type) {
     case 'rect': {
-      return `<rect x="${num(geometry.x + dx)}" y="${num(geometry.y + dy)}" width="${num(geometry.width)}" height="${num(geometry.height)}"/>`;
+      const rx = geometry.r > 0 ? ` rx="${num(geometry.r)}"` : '';
+      return `<rect x="${num(geometry.x + dx)}" y="${num(geometry.y + dy)}" width="${num(geometry.width)}" height="${num(geometry.height)}"${rx}/>`;
     }
     case 'circle': {
       return `<circle cx="${num(geometry.cx + dx)}" cy="${num(geometry.cy + dy)}" r="${num(geometry.r)}"/>`;

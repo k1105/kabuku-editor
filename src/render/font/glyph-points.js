@@ -3,6 +3,8 @@
  * point data: a list of {x, y, onCurve} per contour.
  *
  * - rect → 4 on-curve points
+ * - rect with corner radius `r` → 4 corner arcs of 2 quad segments each
+ *   (20 points), same arc quality as the circle case
  * - polygon → N on-curve points
  * - circle → 8 quadratic Bezier curves (8 on-curve + 8 off-curve = 16 points).
  *   Approximation error vs. true circle ≈ 0.027% — sufficient for type.
@@ -36,6 +38,35 @@ export function cellGeometryToContours(geometry, dx, dy, baselineY) {
 
   switch (geometry.type) {
     case 'rect': {
+      const r = Math.min(geometry.r || 0, geometry.width / 2, geometry.height / 2);
+      if (r > 0) {
+        const X0 = geometry.x + dx;
+        const X1 = X0 + geometry.width;
+        const yT = fy(geometry.y + dy);                    // higher fontY
+        const yB = fy(geometry.y + dy + geometry.height);  // lower fontY
+        // Corner arc centers, clockwise in Y-up starting from top-right.
+        // Each arc sweeps 90° (start → start−90°) as 2 quad segments;
+        // straight edges are implied between consecutive on-curve points.
+        const corners = [
+          { cx: X1 - r, cy: yT - r, start: 90 },   // top-right
+          { cx: X1 - r, cy: yB + r, start: 0 },    // bottom-right
+          { cx: X0 + r, cy: yB + r, start: -90 },  // bottom-left
+          { cx: X0 + r, cy: yT - r, start: 180 },  // top-left
+        ];
+        const pts = [];
+        for (const c of corners) {
+          for (let i = 0; i <= 4; i++) {
+            const a = ((c.start - i * 22.5) * Math.PI) / 180;
+            const rad = i % 2 === 0 ? r : r * KAPPA_QUAD;
+            pts.push({
+              x: round(c.cx + rad * Math.cos(a)),
+              y: round(c.cy + rad * Math.sin(a)),
+              onCurve: i % 2 === 0,
+            });
+          }
+        }
+        return [pts];
+      }
       const x0 = round(geometry.x + dx);
       const x1 = round(geometry.x + dx + geometry.width);
       const yTop = round(fy(geometry.y + dy));            // higher fontY
@@ -98,7 +129,7 @@ export function cellGeometryToContours(geometry, dx, dy, baselineY) {
  */
 export function cellPointCount(geometry) {
   if (!geometry) return 0;
-  if (geometry.type === 'rect') return 4;
+  if (geometry.type === 'rect') return geometry.r > 0 ? 20 : 4;
   if (geometry.type === 'circle') return CIRCLE_SEGMENTS * 2;
   if (geometry.type === 'polygon') return geometry.points?.length || 0;
   return 0;

@@ -79,7 +79,9 @@ export function scaleGeometryAboutCenter(geometry, center, s) {
       let width = geometry.width * s, height = geometry.height * s;
       if (width < 0) { x += width; width = -width; }
       if (height < 0) { y += height; height = -height; }
-      return { ...geometry, x, y, width, height };
+      const out = { ...geometry, x, y, width, height };
+      if (geometry.r > 0) out.r = Math.abs(geometry.r * s);
+      return out;
     }
     case 'circle':
       return { ...geometry, cx: sx(geometry.cx), cy: sy(geometry.cy), r: Math.abs(geometry.r * s) };
