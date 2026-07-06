@@ -1453,9 +1453,13 @@ select {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  height: 26px;
-  padding: 0 8px;
+  /* The BPM guide controls + zoom buttons can exceed a narrow timeline; wrap
+     onto a second line instead of crushing the buttons (their labels would
+     otherwise overflow the fixed 18px control height). */
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-height: 26px;
+  padding: 2px 8px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1471,6 +1475,10 @@ select {
   padding: 0 6px;
   font-size: 11px;
   line-height: 1;
+  /* Labels must never wrap inside the fixed-height button, and flex layout
+     must not shrink the button below its label width. */
+  white-space: nowrap;
+  flex-shrink: 0;
   color: var(--text-dim);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1692,6 +1700,101 @@ select {
   font-size: 10px;
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+/* === BPM beat guide === */
+
+/* Header control group (BPM / bar-1 offset / snap unit / snap toggle). Pushed
+   left with margin-right:auto so the zoom controls stay pinned right. */
+.anim-timeline-bpm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+}
+
+/* Fixed-size controls: the header wraps instead of shrinking them. */
+.anim-timeline-bpm > * {
+  flex-shrink: 0;
+}
+
+.anim-bpm-lbl {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.anim-bpm-input,
+.anim-bpm-offset,
+.anim-bpm-snap {
+  width: 64px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* The snap-unit dropdown must override the global `select { width:100%;
+   padding:6px 8px; }` rule and match the sibling inputs' 18px box. A custom
+   chevron replaces the native widget chrome, which ignores tight heights. */
+.anim-bpm-snap {
+  -webkit-appearance: none;
+  appearance: none;
+  padding: 0 16px 0 4px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'><path d='M1.5 2.75l2.5 2.5 2.5-2.5' fill='none' stroke='%23999999' stroke-width='1.2'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  cursor: pointer;
+}
+
+.anim-bpm-snapbtn.active {
+  color: #ffcc00;
+  border-color: rgba(255, 204, 0, 0.5);
+}
+
+.anim-timeline-bpm input:disabled,
+.anim-timeline-bpm select:disabled,
+.anim-timeline-bpm button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Beat/bar tick marks on the ruler — bottom-aligned so the seconds labels at
+   the top stay legible. Bar ticks are taller and carry the bar number. */
+.anim-beat-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+}
+
+.anim-beat-tick.bar {
+  height: 11px;
+  background: rgba(255, 204, 0, 0.45);
+}
+
+.anim-beat-tick.bar span {
+  position: absolute;
+  bottom: 1px;
+  left: 2px;
+  font-size: 9px;
+  color: rgba(255, 204, 0, 0.75);
+  white-space: nowrap;
+}
+
+/* Beat/bar grid lines behind the keyframe rows. */
+.anim-beatgrid-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
 }
 
 .anim-timeline-rows-inner {

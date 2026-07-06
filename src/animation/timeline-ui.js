@@ -120,6 +120,81 @@ export function createTimelineUI(animation, callbacks) {
     setZoom(pps() * factor, anchorX);
   }
 
+  // --- BPM beat guide -------------------------------------------------------
+  // When `animation.bpm` is set, a beat/bar grid is drawn over the ruler, the
+  // waveform lane and the rows, and time edits snap to the grid instead of to
+  // whole frames. Alt while dragging bypasses the beat snap.
+
+  /** Beat grid derived from the animation's bpm settings, or null (guide off). */
+  function beatGrid() {
+    const bpm = animation.bpm;
+    if (!(bpm > 0)) return null;
+    return {
+      spb: 60 / bpm, // seconds per beat
+      offset: animation.beatOffset || 0,
+      perBar: Math.max(1, Math.round(animation.beatsPerBar || 4)),
+    };
+  }
+
+  /** Active beat-snap step in seconds, or null (guide off / snap toggled off). */
+  function beatSnapStep() {
+    const g = beatGrid();
+    if (!g || animation.beatSnap === false) return null;
+    return g.spb * (animation.beatSnapDiv || 1);
+  }
+
+  /**
+   * Snap an absolute time: to the beat grid when it is active (and not
+   * bypassed via Alt), otherwise to whole frames — the pre-BPM behaviour.
+   */
+  function snapTime(rawT, bypassBeat) {
+    if (!bypassBeat) {
+      const step = beatSnapStep();
+      if (step) {
+        const g = beatGrid();
+        return g.offset + Math.round((rawT - g.offset) / step) * step;
+      }
+    }
+    const fps = animation.fps || 30;
+    return Math.round(rawT * fps) / fps;
+  }
+
+  /** Snap a time delta (group drag) to the beat step, else to whole frames. */
+  function snapDelta(delta, bypassBeat) {
+    const step = (!bypassBeat && beatSnapStep()) || 1 / (animation.fps || 30);
+    return Math.round(delta / step) * step;
+  }
+
+  /**
+   * Draw vertical beat/bar guide lines onto a 2d context whose x-axis is
+   * content space (used by the beat-grid canvas behind the rows and by the
+   * waveform lane). Density guards: beats disappear first as the zoom gets
+   * tight, then bars.
+   */
+  function drawBeatLines(c, h) {
+    const g = beatGrid();
+    if (!g) return;
+    const spbPx = g.spb * pps();
+    const showBeats = spbPx >= 5;
+    if (!showBeats && spbPx * g.perBar < 4) return;
+    c.save();
+    c.lineWidth = 1;
+    const startI = Math.ceil((0 - g.offset) / g.spb - 1e-6);
+    for (let i = startI; ; i++) {
+      const t = g.offset + i * g.spb;
+      if (t > animation.duration + 1e-6) break;
+      const isBar = ((i % g.perBar) + g.perBar) % g.perBar === 0;
+      if (!isBar && !showBeats) continue;
+      const x = Math.round(timeToX(t)) + 0.5;
+      c.strokeStyle = isBar ? 'rgba(255,204,0,0.22)' : 'rgba(255,255,255,0.07)';
+      c.beginPath();
+      c.moveTo(x, 0);
+      c.lineTo(x, h);
+      c.stroke();
+    }
+    c.restore();
+  }
+
   /**
    * Track keys to show, in a stable order: only params that actually hold
    * keyframes get a row (instead of the full fixed ANIMATED_PARAM_KEYS list),
@@ -475,6 +550,107 @@ export function createTimelineUI(animation, callbacks) {
   mkZoomBtn('全体', '全体表示（フィット）', () => setZoom(null));
   mkZoomBtn('＋', '拡大', () => zoomBy(1.4));
   mkZoomBtn('尺合わせ', '尺を内容に合わせる', () => fitDurationToContent());
+
+  // BPM guide controls: bpm / bar-1 offset / snap unit / snap toggle. Settings
+  // live on the animation object so they persist with the project. They are
+  // guide-only (no effect on rendered frames), hence onGuideChange — a persist
+  // that must NOT invalidate the frame cache.
+  const bpmCtl = document.createElement('div');
+  bpmCtl.className = 'anim-timeline-bpm';
+  const mkBpmLbl = (text) => {
+    const s = document.createElement('span');
+    s.className = 'anim-bpm-lbl';
+    s.textContent = text;
+    return s;
+  };
+
+  bpmCtl.appendChild(mkBpmLbl('BPM'));
+  const bpmInput = document.createElement('input');
+  bpmInput.type = 'number';
+  bpmInput.min = '1';
+  bpmInput.max = '999';
+  bpmInput.step = '0.1';
+  bpmInput.className = 'anim-bpm-input';
+  bpmInput.placeholder = '—';
+  bpmInput.title = 'BPM（空欄でビートガイドをオフ）';
+  bpmInput.addEventListener('change', () => {
+    const v = parseFloat(bpmInput.value);
+    animation.bpm = Number.isFinite(v) && v > 0 ? v : null;
+    callbacks.onGuideChange?.();
+    render();
+  });
+  bpmCtl.appendChild(bpmInput);
+
+  bpmCtl.appendChild(mkBpmLbl('頭'));
+  const beatOffsetInput = document.createElement('input');
+  beatOffsetInput.type = 'number';
+  beatOffsetInput.step = '0.01';
+  beatOffsetInput.className = 'anim-bpm-offset';
+  beatOffsetInput.title = '1小節1拍目の位置（秒）';
+  beatOffsetInput.addEventListener('change', () => {
+    const v = parseFloat(beatOffsetInput.value);
+    animation.beatOffset = Number.isFinite(v) ? v : 0;
+    callbacks.onGuideChange?.();
+    render();
+  });
+  bpmCtl.appendChild(beatOffsetInput);
+
+  const beatOffsetHereBtn = document.createElement('button');
+  beatOffsetHereBtn.className = 'anim-zoom-btn';
+  beatOffsetHereBtn.textContent = '頭=現在';
+  beatOffsetHereBtn.title = '再生ヘッドの位置を1小節1拍目にする';
+  beatOffsetHereBtn.addEventListener('click', () => {
+    animation.beatOffset = Math.round((callbacks.getCurrentTime?.() ?? 0) * 1000) / 1000;
+    callbacks.onGuideChange?.();
+    render();
+  });
+  bpmCtl.appendChild(beatOffsetHereBtn);
+
+  const beatSnapSel = document.createElement('select');
+  beatSnapSel.className = 'anim-bpm-snap';
+  beatSnapSel.title = 'スナップ単位';
+  for (const [val, label] of [['4', '1小節'], ['1', '1拍'], ['0.5', '1/2拍'], ['0.25', '1/4拍']]) {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = label;
+    beatSnapSel.appendChild(opt);
+  }
+  beatSnapSel.addEventListener('change', () => {
+    animation.beatSnapDiv = parseFloat(beatSnapSel.value) || 1;
+    callbacks.onGuideChange?.();
+  });
+  bpmCtl.appendChild(beatSnapSel);
+
+  const beatSnapBtn = document.createElement('button');
+  beatSnapBtn.className = 'anim-zoom-btn anim-bpm-snapbtn';
+  beatSnapBtn.textContent = 'スナップ';
+  beatSnapBtn.title = 'ビートスナップの ON/OFF（ドラッグ中は Alt で一時解除）';
+  beatSnapBtn.addEventListener('click', () => {
+    animation.beatSnap = animation.beatSnap === false;
+    syncBpmCtl();
+    callbacks.onGuideChange?.();
+  });
+  bpmCtl.appendChild(beatSnapBtn);
+
+  /** Reflect the animation's beat-guide state into the header controls.
+   *  Inputs being edited are left alone so typing isn't clobbered. */
+  function syncBpmCtl() {
+    const g = beatGrid();
+    if (document.activeElement !== bpmInput) {
+      bpmInput.value = animation.bpm > 0 ? String(animation.bpm) : '';
+    }
+    if (document.activeElement !== beatOffsetInput) {
+      beatOffsetInput.value = String(animation.beatOffset || 0);
+    }
+    beatSnapSel.value = String(animation.beatSnapDiv || 1);
+    beatSnapBtn.classList.toggle('active', !!g && animation.beatSnap !== false);
+    beatOffsetInput.disabled = !g;
+    beatOffsetHereBtn.disabled = !g;
+    beatSnapSel.disabled = !g;
+    beatSnapBtn.disabled = !g;
+  }
+
+  header.appendChild(bpmCtl);
   header.appendChild(zoomCtl);
 
   const body = document.createElement('div');
@@ -554,10 +730,9 @@ export function createTimelineUI(animation, callbacks) {
     e.stopPropagation(); // don't let the ruler seek
     const startX = e.clientX;
     const startDur = animation.duration;
-    const fps = animation.fps || 30;
     const onMove = (ev) => {
       const dt = xToTime(ev.clientX - startX);
-      const snapped = Math.round((startDur + dt) * fps) / fps;
+      const snapped = snapTime(startDur + dt, ev.altKey);
       animation.duration = Math.max(MIN_DURATION, snapped);
       callbacks.onChange?.();
       render();
@@ -790,6 +965,34 @@ export function createTimelineUI(animation, callbacks) {
       tick.appendChild(label);
       ruler.appendChild(tick);
     }
+    // Beat/bar tick marks (bottom-aligned so the seconds labels stay legible).
+    // Bar ticks carry the bar number once there's room for it; beat ticks
+    // appear only when beats are at least a few pixels apart.
+    const g = beatGrid();
+    if (g) {
+      const spbPx = g.spb * pps();
+      const barPx = spbPx * g.perBar;
+      const showBeats = spbPx >= 5;
+      const labelBars = barPx >= 26;
+      if (showBeats || barPx >= 4) {
+        const startI = Math.ceil((0 - g.offset) / g.spb - 1e-6);
+        for (let i = startI; ; i++) {
+          const t = g.offset + i * g.spb;
+          if (t > dur + 1e-6) break;
+          const isBar = ((i % g.perBar) + g.perBar) % g.perBar === 0;
+          if (!isBar && !showBeats) continue;
+          const tick = document.createElement('div');
+          tick.className = 'anim-beat-tick' + (isBar ? ' bar' : '');
+          tick.style.left = timeToX(t) + 'px';
+          if (isBar && labelBars) {
+            const lbl = document.createElement('span');
+            lbl.textContent = String(Math.floor(i / g.perBar) + 1);
+            tick.appendChild(lbl);
+          }
+          ruler.appendChild(tick);
+        }
+      }
+    }
     // End-of-composition handle: a draggable marker at the duration. Dragging
     // resizes the comp (auto-grow / trim); double-click fits it to content.
     ruler.appendChild(durationHandle);
@@ -885,7 +1088,6 @@ export function createTimelineUI(animation, callbacks) {
         const trackWidth = rect.width;
         const startX = e.clientX;
         const startTime = kf.time;
-        const fps = animation.fps || 30;
         let moved = false;
 
         const onMove = (ev) => {
@@ -894,8 +1096,7 @@ export function createTimelineUI(animation, callbacks) {
           if (Math.abs(dx) > 2) moved = true;
           if (!moved) return;
           const rawT = startTime + xToTime(dx);
-          const snapped = Math.round(rawT * fps) / fps;
-          const t = Math.max(0, snapped);
+          const t = Math.max(0, snapTime(rawT, ev.altKey));
           growDurationTo(t);
           kf.time = t;
           (animation.textTrack || []).sort((a, b) => a.time - b.time);
@@ -931,6 +1132,22 @@ export function createTimelineUI(animation, callbacks) {
 
     const { tops, total } = computeRowLayout();
     rowsInner.style.height = total + 'px';
+
+    // Beat-grid backdrop: appended first so the rows (and their keyframes)
+    // stack above it; pointer-events:none keeps all interaction intact.
+    if (beatGrid() && total > 0) {
+      const bc = document.createElement('canvas');
+      bc.className = 'anim-beatgrid-canvas';
+      const dpr = window.devicePixelRatio || 1;
+      bc.style.width = w + 'px';
+      bc.style.height = total + 'px';
+      bc.width = Math.max(1, Math.floor(w * dpr));
+      bc.height = Math.max(1, Math.floor(total * dpr));
+      const c = bc.getContext('2d');
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawBeatLines(c, total);
+      rowsInner.appendChild(bc);
+    }
 
     for (const key of activeKeys()) {
       if (key === TEXT_KEY) {
@@ -1027,7 +1244,6 @@ export function createTimelineUI(animation, callbacks) {
             const trackWidth = rect.width;
             const startX = e.clientX;
             const dur = animation.duration;
-            const fps = animation.fps || 30;
             const items = selectedKfs.map((s) => {
               const track2 = animation.tracks[s.key];
               const f = track2 ? findKeyframeAt(track2, s.time) : null;
@@ -1044,7 +1260,7 @@ export function createTimelineUI(animation, callbacks) {
               if (trackWidth <= 0) return;
               const dx = ev.clientX - startX;
               let delta = (dx / trackWidth) * dur;
-              delta = Math.round(delta * fps) / fps;
+              delta = snapDelta(delta, ev.altKey);
               delta = Math.max(dtMin, Math.min(dtMax, delta));
               const tracks = new Set();
               for (const it of items) { it.kf.time = it.startTime + delta; tracks.add(it.track); }
@@ -1090,9 +1306,7 @@ export function createTimelineUI(animation, callbacks) {
             let newT = dragStartTime;
             if (!(ev.shiftKey && isExpanded)) {
               const rawT = dragStartTime + xToTime(dx);
-              const fps = animation.fps || 30;
-              const snapped = Math.round(rawT * fps) / fps;
-              newT = Math.max(0, snapped);
+              newT = Math.max(0, snapTime(rawT, ev.altKey));
               growDurationTo(newT); // comp end yields instead of clamping
             }
             const idx = setKeyframeTime(track, currentIndex, newT);
@@ -1210,6 +1424,10 @@ export function createTimelineUI(animation, callbacks) {
     c.fillStyle = 'rgba(74,158,255,0.10)';
     c.fillRect(startX, 0, clipW, h);
 
+    // Beat guide behind the peaks — the main aid for aligning beatOffset (and
+    // the clip itself) with the music.
+    drawBeatLines(c, h);
+
     const peaks = audio.peaks;
     const n = peaks.length;
     const mid = h / 2;
@@ -1289,6 +1507,7 @@ export function createTimelineUI(animation, callbacks) {
   }
 
   function render() {
+    syncBpmCtl();
     renderRuler();
     renderLabels();
     renderWaveform();
@@ -1340,15 +1559,24 @@ export function createTimelineUI(animation, callbacks) {
   });
 
   // Seek by clicking ruler (the only area from which the playhead can be scrubbed).
+  // With the beat guide active the playhead snaps to the beat grid (Alt for a
+  // free scrub); without it seeking stays continuous as before.
   ruler.addEventListener('mousedown', (e) => {
     if (clearSelection()) renderRows();
     const rect = ruler.getBoundingClientRect();
-    const t = xToTime(e.clientX - rect.left, rect.width);
-    callbacks.onSeek?.(Math.max(0, Math.min(animation.duration, t)));
+    const seekAt = (clientX, alt) => {
+      let t = xToTime(clientX - rect.left);
+      const step = alt ? null : beatSnapStep();
+      if (step) {
+        const g = beatGrid();
+        t = g.offset + Math.round((t - g.offset) / step) * step;
+      }
+      callbacks.onSeek?.(Math.max(0, Math.min(animation.duration, t)));
+    };
+    seekAt(e.clientX, e.altKey);
 
     const onMove = (ev) => {
-      const t2 = xToTime(ev.clientX - rect.left, rect.width);
-      callbacks.onSeek?.(Math.max(0, Math.min(animation.duration, t2)));
+      seekAt(ev.clientX, ev.altKey);
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);

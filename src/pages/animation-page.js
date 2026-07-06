@@ -97,6 +97,12 @@ export function renderAnimationPage(app) {
   if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
   // Guide audio (lyric-video editing) — null until a file is imported.
   if (animation.audio === undefined) animation.audio = null;
+  // Back-fill the BPM beat guide (music-synced editing) on older animations.
+  if (animation.bpm === undefined) animation.bpm = null;
+  if (animation.beatOffset == null) animation.beatOffset = 0;
+  if (animation.beatsPerBar == null) animation.beatsPerBar = 4;
+  if (animation.beatSnap == null) animation.beatSnap = true;
+  if (animation.beatSnapDiv == null) animation.beatSnapDiv = 1;
 
   // Grid param sliders, grouped by default layer (one sub-section per layer).
   // The flattened def list is used for baseValues seeding + timeline labels.
@@ -684,6 +690,10 @@ export function renderAnimationPage(app) {
       if (playing) syncAudioToTime(true);
     },
     onChange: () => { persist(); markDirty(); syncTextArea(); commitHistory('keyframe-edit'); },
+    // Beat-guide settings (BPM / offset / snap) changed in the timeline
+    // header. Display + snapping only — rendered frames are unaffected, so
+    // persist without markDirty (keeping the frame cache alive).
+    onGuideChange: () => { persist(); updateTimeDisplay(); },
     getCurrentTime: () => currentTime,
     labelFor: (key) => trackLabelMap[key] || key,
     // Dragging the waveform clip re-times the audio offset; persist + reflect
@@ -752,7 +762,19 @@ export function renderAnimationPage(app) {
   }
 
   function updateTimeDisplay() {
-    timeDisplay.textContent = `${currentTime.toFixed(2)}s / ${animation.duration.toFixed(2)}s`;
+    let text = `${currentTime.toFixed(2)}s / ${animation.duration.toFixed(2)}s`;
+    // Musical position readout when the BPM guide is on. Bar/beat are 1-based;
+    // before the beat offset the bar number can drop to 0 or below, which is a
+    // truthful "pre-roll" readout, so it's left as-is.
+    if (animation.bpm > 0) {
+      const spb = 60 / animation.bpm;
+      const perBar = Math.max(1, Math.round(animation.beatsPerBar || 4));
+      const beats = (currentTime - (animation.beatOffset || 0)) / spb;
+      const bar = Math.floor(beats / perBar) + 1;
+      const beat = ((beats % perBar) + perBar) % perBar + 1;
+      text += ` | ${bar}小節 ${beat.toFixed(1)}拍`;
+    }
+    timeDisplay.textContent = text;
   }
 
   // === Playback ===

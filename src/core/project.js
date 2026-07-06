@@ -115,6 +115,14 @@ export function createDefaultAnimation() {
     // Shape: { url, name, duration, offset, gain, peaks }. Not included in the
     // rendered/exported output — it is an editing reference only.
     audio: null,
+    // BPM beat guide (music-synced editing). Null bpm = guide off; the
+    // timeline then falls back to plain frame snapping. beatOffset (s) places
+    // bar 1 / beat 1; beatSnapDiv is the snap unit in beats (4 = one 4/4 bar).
+    bpm: null,
+    beatOffset: 0,
+    beatsPerBar: 4,
+    beatSnap: true,
+    beatSnapDiv: 1,
     baseValues,
   };
 }
