@@ -1,20 +1,29 @@
 /**
- * AnimationProject store backed by Firestore.
+ * AnimationProject store backed by Firestore + Cloud Storage.
  *
- *   /animationProjects/{id}                meta + animation data + snapshot global
- *   /animationProjects/{id}/characters/{charId}   snapshot of font project chars
+ *   /animationProjects/{id}          Firestore: meta + animation data + snapshot global
+ *   animationProjects/{id}/snapshot-{ts}.json.gz
+ *                                    Storage: gzipped JSON of the font project chars
+ *
+ * The character snapshot lives in ONE Storage object instead of a Firestore
+ * subcollection: heavy typesets used to blow the 10 MiB batched-write limit
+ * mid-copy and leave a glyph-less (all-tofu) project behind. Projects created
+ * before this change still carry a `characters` subcollection; boot falls back
+ * to reading it, and refreshSnapshotFromOrigin migrates them to Storage.
  *
  * Each animation project is independent: it carries its own frozen copy of a
  * font project (snapshot). Use refreshSnapshotFromOrigin() to re-pull the
  * latest FontProject state.
  */
 import {
-  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
-  writeBatch, serverTimestamp, addDoc, query, orderBy,
+  collection, doc, getDoc, getDocs, setDoc, updateDoc,
+  writeBatch, serverTimestamp, query, orderBy,
 } from 'firebase/firestore';
-import { getDb } from './firebase.js';
+import { ref as storageRef, uploadBytes, getBytes, deleteObject } from 'firebase/storage';
+import { gzipSync, gunzipSync, strToU8, strFromU8 } from 'fflate';
+import { getDb, getBucket } from './firebase.js';
 import { userInfo } from './auth.js';
-import { fetchFontProjectSnapshot, createDefaultAnimation, ANIMATED_PARAM_KEYS, stripUndefined, charIdToDocId, docIdToCharId } from './project.js';
+import { fetchFontProjectSnapshot, createDefaultAnimation, ANIMATED_PARAM_KEYS, stripUndefined, docIdToCharId } from './project.js';
 import { createChangeBus, createDebouncedWriter } from './store-utils.js';
 
 const WRITE_DEBOUNCE_MS = 1500;
@@ -112,15 +121,58 @@ export async function unloadAnimationProject() {
   _metaDirty = false;
 }
 
+// =========================================================================
+// Character snapshot blob (Cloud Storage)
+// =========================================================================
+function snapshotBlobPath(projectId) {
+  return `animationProjects/${projectId}/snapshot-${Date.now()}.json.gz`;
+}
+
+async function uploadSnapshotBlob(path, characters) {
+  const json = JSON.stringify({ version: 1, characters: stripUndefined(characters) });
+  const bytes = gzipSync(strToU8(json));
+  await uploadBytes(storageRef(getBucket(), path), bytes, { contentType: 'application/gzip' });
+}
+
+async function downloadSnapshotBlob(path) {
+  const buf = await getBytes(storageRef(getBucket(), path));
+  const json = strFromU8(gunzipSync(new Uint8Array(buf)));
+  const parsed = JSON.parse(json);
+  if (!parsed || typeof parsed.characters !== 'object' || parsed.characters === null) {
+    throw new Error('スナップショットの形式が不正です');
+  }
+  return parsed.characters;
+}
+
+async function deleteSnapshotBlobQuiet(path) {
+  if (!path) return;
+  try {
+    await deleteObject(storageRef(getBucket(), path));
+  } catch (e) {
+    // Best-effort cleanup — a stale blob is harmless.
+    console.warn('Failed to delete snapshot blob:', path, e);
+  }
+}
+
+/** Load snapshot characters: Storage blob first, legacy subcollection fallback. */
+async function loadSnapshotCharacters(projectId, meta) {
+  if (meta.snapshotPath) {
+    return await downloadSnapshotBlob(meta.snapshotPath);
+  }
+  const db = getDb();
+  const charsSnap = await getDocs(collection(db, 'animationProjects', projectId, 'characters'));
+  const characters = {};
+  for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
+  return characters;
+}
+
 export async function bootAnimationProject(projectId) {
   if (_apId && _apId !== projectId) await flushNow();
   const db = getDb();
   const metaSnap = await getDoc(doc(db, 'animationProjects', projectId));
   if (!metaSnap.exists()) throw new Error(`Animation project not found: ${projectId}`);
   const meta = metaSnap.data();
-  const charsSnap = await getDocs(collection(db, 'animationProjects', projectId, 'characters'));
-  const characters = {};
-  for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
+  const characters = await loadSnapshotCharacters(projectId, meta);
   _ap = {
     id: projectId,
     name: meta.name || 'Untitled',
@@ -128,6 +180,7 @@ export async function bootAnimationProject(projectId) {
     fontProjectName: meta.fontProjectName || '',
     snapshotAt: meta.snapshotAt || null,
     snapshotGlobal: meta.snapshotGlobal || null,
+    snapshotPath: meta.snapshotPath || null,
     characters,
     animation: meta.animation || createDefaultAnimation(),
   };
@@ -140,6 +193,10 @@ export async function bootAnimationProject(projectId) {
 function scheduleWrite() {
   _writer.schedule();
 }
+
+// Last flush error we alerted about — debounced retries of the same failure
+// shouldn't alert on every edit.
+let _lastReportedFlushError = null;
 
 export async function flushNow() {
   _writer.cancel();
@@ -161,8 +218,16 @@ export async function flushNow() {
     await setDoc(doc(db, 'animationProjects', _apId), patch, { merge: true });
     _animDirty = false;
     _metaDirty = false;
+    _lastReportedFlushError = null;
   } catch (e) {
+    // Dirty flags stay set (they are only cleared on success above), so the
+    // unsaved indicator keeps showing — but tell the user too instead of
+    // failing silently.
     console.error('Failed to flush animation project:', e);
+    if (_lastReportedFlushError !== e.message) {
+      _lastReportedFlushError = e.message;
+      if (typeof alert === 'function') alert(`Animation の保存に失敗しました: ${e.message}`);
+    }
   }
   // Tell unsaved-indicator UIs to refresh now that the dirty flags changed.
   notifyChange();
@@ -184,7 +249,8 @@ export async function listAnimationProjects() {
 
 /**
  * Create a new AnimationProject snapshotting the given FontProject.
- * Writes meta doc + character subcollection in batches.
+ * Uploads the character snapshot to Storage first, then writes the meta doc —
+ * so a failure at any point leaves no half-created (all-tofu) project behind.
  */
 export async function createAnimationProject({ name, fontProjectId }) {
   if (!fontProjectId) throw new Error('fontProjectId is required to snapshot a typeset');
@@ -192,38 +258,31 @@ export async function createAnimationProject({ name, fontProjectId }) {
   const user = userInfo();
   const fp = await fetchFontProjectSnapshot(fontProjectId);
 
-  // 1) Create the meta doc
+  // Reserve a doc id locally (no write yet) so the blob path can include it.
+  const metaRef = doc(collection(db, 'animationProjects'));
+  const snapshotPath = snapshotBlobPath(metaRef.id);
+  await uploadSnapshotBlob(snapshotPath, fp.characters);
+
   const metaData = {
     name: name || 'Untitled Animation',
     fontProjectId,
     fontProjectName: fp.name,
     snapshotAt: serverTimestamp(),
     snapshotGlobal: stripUndefined(fp.global),
+    snapshotPath,
     animation: stripUndefined(createDefaultAnimation()),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     createdBy: user,
     lastEditor: user,
   };
-  const ref = await addDoc(collection(db, 'animationProjects'), metaData);
-
-  // 2) Write characters in batches (Firestore caps batch at 500 ops)
-  await writeCharactersInBatches(ref.id, fp.characters);
-  return ref.id;
-}
-
-async function writeCharactersInBatches(animationProjectId, characters) {
-  const db = getDb();
-  const entries = Object.entries(characters);
-  while (entries.length > 0) {
-    const chunk = entries.splice(0, 450);
-    const batch = writeBatch(db);
-    for (const [cid, cd] of chunk) {
-      if (cid === '') continue;
-      batch.set(doc(db, 'animationProjects', animationProjectId, 'characters', charIdToDocId(cid)), stripUndefined(cd));
-    }
-    await batch.commit();
+  try {
+    await setDoc(metaRef, metaData);
+  } catch (e) {
+    await deleteSnapshotBlobQuiet(snapshotPath);
+    throw e;
   }
+  return metaRef.id;
 }
 
 export async function renameAnimationProject(projectId, newName) {
@@ -236,6 +295,9 @@ export async function renameAnimationProject(projectId, newName) {
 
 export async function deleteAnimationProject(projectId) {
   const db = getDb();
+  // Snapshot blob first (its path lives on the meta doc we're about to delete).
+  const metaSnap = await getDoc(doc(db, 'animationProjects', projectId));
+  if (metaSnap.exists()) await deleteSnapshotBlobQuiet(metaSnap.data().snapshotPath);
   const charsSnap = await getDocs(collection(db, 'animationProjects', projectId, 'characters'));
   const ops = [...charsSnap.docs.map(d => d.ref), doc(db, 'animationProjects', projectId)];
   while (ops.length > 0) {
@@ -248,8 +310,8 @@ export async function deleteAnimationProject(projectId) {
 
 /**
  * Update which FontProject this AnimationProject is linked to, without
- * pulling a new snapshot. The character subcollection and snapshotGlobal
- * keep the previously-snapshotted state until the user explicitly refreshes.
+ * pulling a new snapshot. The character snapshot and snapshotGlobal keep the
+ * previously-snapshotted state until the user explicitly refreshes.
  */
 export async function setLinkedFontProject(projectId, fontProjectId, fontProjectName) {
   if (!projectId) throw new Error('No animation project specified');
@@ -267,8 +329,9 @@ export async function setLinkedFontProject(projectId, fontProjectId, fontProject
 }
 
 /**
- * Re-snapshot from the origin FontProject. Overwrites snapshotGlobal and
- * the characters subcollection with the current state of the FontProject.
+ * Re-snapshot from the origin FontProject. Uploads a fresh Storage blob,
+ * points the meta doc at it, then cleans up the old blob and any legacy
+ * characters subcollection (migrating pre-Storage projects in the process).
  * Keeps the AnimationProject's animation data untouched.
  */
 export async function refreshSnapshotFromOrigin(projectId = _apId) {
@@ -281,25 +344,39 @@ export async function refreshSnapshotFromOrigin(projectId = _apId) {
   if (!meta.fontProjectId) throw new Error('This animation has no linked font project to refresh from');
   const fp = await fetchFontProjectSnapshot(meta.fontProjectId);
 
-  // Delete old characters
-  const oldCharsSnap = await getDocs(collection(db, 'animationProjects', projectId, 'characters'));
-  const ops = oldCharsSnap.docs.map(d => d.ref);
-  while (ops.length > 0) {
-    const chunk = ops.splice(0, 450);
-    const batch = writeBatch(db);
-    for (const ref of chunk) batch.delete(ref);
-    await batch.commit();
+  // New blob first, meta switch second — a failure in between leaves the
+  // project on its old, still-valid snapshot.
+  const snapshotPath = snapshotBlobPath(projectId);
+  await uploadSnapshotBlob(snapshotPath, fp.characters);
+  try {
+    await setDoc(metaRef, {
+      snapshotAt: serverTimestamp(),
+      snapshotGlobal: stripUndefined(fp.global),
+      snapshotPath,
+      fontProjectName: fp.name,
+      updatedAt: serverTimestamp(),
+      lastEditor: userInfo() || null,
+    }, { merge: true });
+  } catch (e) {
+    await deleteSnapshotBlobQuiet(snapshotPath);
+    throw e;
   }
+  await deleteSnapshotBlobQuiet(meta.snapshotPath);
 
-  // Write new
-  await writeCharactersInBatches(projectId, fp.characters);
-  await setDoc(metaRef, {
-    snapshotAt: serverTimestamp(),
-    snapshotGlobal: stripUndefined(fp.global),
-    fontProjectName: fp.name,
-    updatedAt: serverTimestamp(),
-    lastEditor: userInfo() || null,
-  }, { merge: true });
+  // Drop the legacy characters subcollection (no longer read once
+  // snapshotPath is set). Best-effort: leftovers are ignored by boot.
+  try {
+    const oldCharsSnap = await getDocs(collection(db, 'animationProjects', projectId, 'characters'));
+    const ops = oldCharsSnap.docs.map(d => d.ref);
+    while (ops.length > 0) {
+      const chunk = ops.splice(0, 450);
+      const batch = writeBatch(db);
+      for (const ref of chunk) batch.delete(ref);
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn('Failed to clean up legacy characters subcollection:', e);
+  }
 
   // If the refreshed project is the active one, reload in-memory state
   if (_apId === projectId) {

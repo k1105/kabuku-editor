@@ -16,7 +16,8 @@ import {
 import { getDb } from './firebase.js';
 import { currentUser, userInfo } from './auth.js';
 import { getAllGrids } from '../grids/grid-plugin.js';
-import { createChangeBus, createDebouncedWriter } from './store-utils.js';
+import { createChangeBus, createDebouncedWriter, chunkOpsBySize, estimateDocBytes, FIRESTORE_MAX_DOC_BYTES } from './store-utils.js';
+import { encodeCellsV2 } from './cell-codec.js';
 
 const VERSION = 8;
 const WRITE_DEBOUNCE_MS = 1500;
@@ -312,6 +313,18 @@ function scheduleWrite() {
  * Flush any pending writes immediately. Called before nav-away / unload.
  * Splits across multiple write batches when needed (Firestore caps at 500 ops).
  */
+// Remember the last save error we surfaced so debounced retries of the same
+// failure don't alert on every keystroke.
+let _lastReportedSaveError = null;
+
+function reportSaveError(message, error) {
+  console.error(message, error ?? '');
+  const key = `${message}:${error?.message || ''}`;
+  if (_lastReportedSaveError === key) return;
+  _lastReportedSaveError = key;
+  if (typeof alert === 'function') alert(message);
+}
+
 export async function flushNow() {
   _writer.cancel();
   if (!_fp || !_fpId) return;
@@ -319,64 +332,104 @@ export async function flushNow() {
   const db = getDb();
   const lastEditor = userInfo() || null;
 
-  // Build a flat op list, then chunk into <= 450 ops per batch.
+  // Snapshot + clear the dirty state up front so edits made while the awaits
+  // below are in flight re-dirty independently. On failure the unsent cids are
+  // merged back so the unsaved indicator keeps telling the truth.
+  const metaWasDirty = _metaDirty;
+  const dirtyCids = [..._dirtyChars];
+  const deletedCids = [..._deletedChars];
+  _metaDirty = false;
+  _dirtyChars.clear();
+  _deletedChars.clear();
+
+  // Build a flat op list (with per-doc size estimates), then chunk into
+  // batches that respect Firestore's op-count and request-size limits.
   const ops = [];
-  if (_metaDirty) {
+  if (metaWasDirty) {
+    const data = {
+      name: _fp.name || 'Untitled',
+      global: stripUndefined(_fp.global),
+      version: _fp.version || VERSION,
+      updatedAt: serverTimestamp(),
+      lastEditor,
+    };
     ops.push({
       kind: 'set',
+      cid: null,
       ref: doc(db, 'fontProjects', _fpId),
-      data: {
-        name: _fp.name || 'Untitled',
-        global: stripUndefined(_fp.global),
-        version: _fp.version || VERSION,
-        updatedAt: serverTimestamp(),
-        lastEditor,
-      },
+      data,
       options: { merge: true },
+      bytes: estimateDocBytes(data.global),
     });
   }
-  for (const cid of _dirtyChars) {
+  const oversized = [];
+  for (const cid of dirtyCids) {
     const cd = _fp.characters[cid];
     if (!cd) continue;
     // An empty id is not a real glyph (e.g. an image whose filename had no
     // stem); skip it. Every other id — including punctuation like '/' or '.' —
     // is encoded into a valid Firestore doc id.
     if (cid === '') continue;
+    const data = stripUndefined(cd);
+    const bytes = estimateDocBytes(data);
+    if (bytes > FIRESTORE_MAX_DOC_BYTES) {
+      // Firestore rejects docs over 1 MiB — sending it would sink the whole
+      // batch. Keep the char dirty and tell the user which glyph is the problem.
+      oversized.push(cid);
+      _dirtyChars.add(cid);
+      continue;
+    }
     ops.push({
       kind: 'set',
+      cid,
       ref: doc(db, 'fontProjects', _fpId, 'characters', charIdToDocId(cid)),
-      data: stripUndefined(cd),
+      data,
+      bytes,
     });
   }
-  for (const cid of _deletedChars) {
+  for (const cid of deletedCids) {
     if (cid === '') continue;
     ops.push({
       kind: 'delete',
+      cid,
       ref: doc(db, 'fontProjects', _fpId, 'characters', charIdToDocId(cid)),
     });
   }
-  _metaDirty = false;
-  _dirtyChars.clear();
-  _deletedChars.clear();
-
-  try {
-    while (ops.length > 0) {
-      const chunk = ops.splice(0, 450);
-      const batch = writeBatch(db);
-      for (const op of chunk) {
-        if (op.kind === 'set') {
-          if (op.options) batch.set(op.ref, op.data, op.options);
-          else batch.set(op.ref, op.data);
-        } else if (op.kind === 'delete') {
-          batch.delete(op.ref);
-        }
-      }
-      await batch.commit();
-    }
-  } catch (e) {
-    console.error('Failed to flush font project:', e);
+  if (oversized.length > 0) {
+    reportSaveError(`保存できない文字があります（1 MiB 超過）: ${oversized.join(' ')}\nセル数を減らすか画像を差し替えてください。`);
   }
-  // Dirty flags were cleared above; tell unsaved-indicator UIs to refresh.
+
+  let failed = false;
+  const chunks = chunkOpsBySize(ops);
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const batch = writeBatch(db);
+    for (const op of chunk) {
+      if (op.kind === 'set') {
+        if (op.options) batch.set(op.ref, op.data, op.options);
+        else batch.set(op.ref, op.data);
+      } else if (op.kind === 'delete') {
+        batch.delete(op.ref);
+      }
+    }
+    try {
+      await batch.commit();
+    } catch (e) {
+      // Restore the dirty state of this chunk and everything not yet sent so
+      // nothing is silently lost; the debounced writer will retry on next edit.
+      for (const op of chunks.slice(i).flat()) {
+        if (op.cid === null) _metaDirty = true;
+        else if (op.kind === 'set') _dirtyChars.add(op.cid);
+        else _deletedChars.add(op.cid);
+      }
+      reportSaveError(`Typeset の保存に失敗しました: ${e.message}`, e);
+      failed = true;
+      break;
+    }
+  }
+  // A clean save re-arms the alert so a future recurrence is reported again.
+  if (!failed && oversized.length === 0) _lastReportedSaveError = null;
+  // Tell unsaved-indicator UIs to refresh now that the dirty flags changed.
   notifyChange();
 }
 
@@ -698,29 +751,15 @@ export function resolveCharacterLayers(global, charData) {
       cells: (!charOverride.gridName || charOverride.gridName === globalLayer.gridName)
         ? (charOverride.cells || null)
         : null,
+      cellsV2: (!charOverride.gridName || charOverride.gridName === globalLayer.gridName)
+        ? (charOverride.cellsV2 || null)
+        : null,
       opacity: charOverride.opacity ?? globalLayer.opacity ?? 1,
       visible: charOverride.visible ?? globalLayer.visible ?? true,
       scaleParallel: globalLayer.scaleParallel ?? 1,
       scaleOrthogonal: globalLayer.scaleOrthogonal ?? 1,
     };
   });
-}
-
-function compactCell(c) {
-  const out = {
-    center: {
-      x: Math.round(c.center?.x ?? 0),
-      y: Math.round(c.center?.y ?? 0),
-    },
-  };
-  if (c.filled) out.filled = true;
-  if (c.manualOverride) out.manualOverride = true;
-  if (c.orientation != null) {
-    out.orientation = Math.round(c.orientation * 10) / 10;
-    out.coherence = Math.round((c.coherence ?? 0) * 100) / 100;
-    if (c.orientationSource) out.orientationSource = c.orientationSource;
-  }
-  return out;
 }
 
 /** Serialize runtime layers to per-character overrides */
@@ -732,10 +771,9 @@ export function serializeLayerOverrides(layers, global) {
     const out = {
       gridName: globalLayer.gridName,
       gridParamOverrides: overrides,
-      cells: layer.cells
-        .filter(c => c.filled || c.manualOverride)
-        .map(c => compactCell(c)),
     };
+    const v2 = encodeCellsV2(layer.cells, layer.gridParams);
+    if (v2) out.cellsV2 = v2;
     const gOpacity = globalLayer.opacity ?? 1;
     const gVisible = globalLayer.visible ?? true;
     if (layer.opacity !== gOpacity) out.opacity = layer.opacity;
