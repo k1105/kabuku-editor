@@ -24,7 +24,11 @@ export function createChangeBus() {
 // 1 MiB per document, 10 MiB per API request (= per batched write). Chunks
 // stay well under both so a heavy typeset can't take a whole batch down.
 export const FIRESTORE_MAX_DOC_BYTES = 1048576;
-export const BATCH_MAX_BYTES = 8 * 1024 * 1024;
+// estimateDocBytes measures plain JSON, but the SDK sends each value wrapped
+// in its proto-JSON form ({"integerValue":"1234"}), which inflates the
+// integer-array-heavy cellsV2 payloads ~4-5x on the wire. 1.5 MiB of JSON
+// estimate keeps the worst-case request under the 10 MiB API limit.
+export const BATCH_MAX_BYTES = 1.5 * 1024 * 1024;
 export const BATCH_MAX_OPS = 450;
 
 /** Approximate Firestore payload size of a document body, in bytes. */
