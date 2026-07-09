@@ -1924,6 +1924,34 @@ select {
   color: #c79bff;
 }
 
+/* Per-param stopwatch toggle (AE-style) — enables/disables keyframing.
+   Sits in the param-row badge slot, left of the label. */
+.anim-kf-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-dim);
+  opacity: 0.45;
+  cursor: pointer;
+  font-size: 13px;
+}
+.anim-kf-toggle:hover {
+  opacity: 1;
+  color: var(--text);
+}
+/* Keyframing on: keyframe-blue, matching the timeline curve colour. */
+.anim-kf-toggle.active {
+  opacity: 1;
+  color: #4a9eff;
+}
+
 /* Rubber-band marquee drawn while dragging over the empty track area to
    box-select keyframes. */
 .anim-select-box {

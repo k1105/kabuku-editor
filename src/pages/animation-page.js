@@ -401,10 +401,36 @@ export function renderAnimationPage(app) {
   const { group: paramsGroup, body: paramsBody } = createCollapsibleGroup('Animated Parameters');
 
   const sliderInputs = {}; // key -> { api, def }
+  const kfToggles = {}; // key -> stopwatch <button>
+
+  // AE-style stopwatch state: a param is "keyframed" iff its track holds
+  // keyframes. While off, slider edits only move the constant baseValue.
+  function isKeyframed(key) {
+    return (animation.tracks[key] || []).length > 0;
+  }
+
+  /** Sync every stopwatch button with its track's keyframed state. */
+  function refreshKfToggles() {
+    for (const [key, btn] of Object.entries(kfToggles)) {
+      const on = isKeyframed(key);
+      btn.classList.toggle('active', on);
+      btn.title = on
+        ? 'キーフレームを無効にする（全キーフレームを削除）'
+        : 'キーフレームを有効にする（現在時刻にキーフレームを追加）';
+    }
+  }
 
   function addAnimatedSliders(parent, defs) {
     for (const def of defs) {
       const initial = sampleAnimation(animation, currentTime)[def.key];
+
+      // Stopwatch toggle (AE-style) — sits left of the label via the badge slot.
+      const kfBtn = document.createElement('button');
+      kfBtn.type = 'button';
+      kfBtn.className = 'anim-kf-toggle';
+      const kfIcon = document.createElement('iconify-icon');
+      kfIcon.setAttribute('icon', 'lucide:timer');
+      kfBtn.appendChild(kfIcon);
 
       const { row, api } = createParamRow(def.label, {
         min: def.min, max: def.max, step: def.step,
@@ -414,19 +440,44 @@ export function renderAnimationPage(app) {
           redrawFast(overrideWith(def.key, v));
         },
         onChange: (v) => {
-          // Tracks are created lazily — a param gets a timeline row only once
-          // it holds a keyframe (see track cleanup above).
-          if (!animation.tracks[def.key]) animation.tracks[def.key] = [];
-          upsertKeyframe(animation.tracks[def.key], currentTime, v);
+          if (isKeyframed(def.key)) {
+            upsertKeyframe(animation.tracks[def.key], currentTime, v);
+          } else {
+            // Stopwatch off: the edit re-bases the constant value, no keyframe.
+            animation.baseValues[def.key] = v;
+          }
           persist();
           markDirty();
           timeline.render();
           redrawPreview();
         },
-      });
+      }, { badge: kfBtn });
       parent.appendChild(row);
 
+      kfBtn.addEventListener('click', () => {
+        if (isKeyframed(def.key)) {
+          const track = animation.tracks[def.key];
+          if (track.length > 1 && !window.confirm(
+            `${def.label} のキーフレーム（${track.length}個）をすべて削除しますか？`)) {
+            return;
+          }
+          // Freeze the value visible right now as the new constant.
+          animation.baseValues[def.key] = api.getValue();
+          delete animation.tracks[def.key];
+        } else {
+          if (!animation.tracks[def.key]) animation.tracks[def.key] = [];
+          upsertKeyframe(animation.tracks[def.key], currentTime, api.getValue());
+        }
+        persist();
+        markDirty();
+        timeline.render();
+        refreshKfToggles();
+        redrawPreview();
+        commitHistory('keyframe-toggle');
+      });
+
       sliderInputs[def.key] = { api, def };
+      kfToggles[def.key] = kfBtn;
     }
   }
 
@@ -689,7 +740,9 @@ export function renderAnimationPage(app) {
       redrawPreview();
       if (playing) syncAudioToTime(true);
     },
-    onChange: () => { persist(); markDirty(); syncTextArea(); commitHistory('keyframe-edit'); },
+    // refreshKfToggles: deleting a track's last keyframe in the timeline flips
+    // that param's stopwatch back off.
+    onChange: () => { persist(); markDirty(); syncTextArea(); refreshKfToggles(); commitHistory('keyframe-edit'); },
     // Beat-guide settings (BPM / offset / snap) changed in the timeline
     // header. Display + snapping only — rendered frames are unaffected, so
     // persist without markDirty (keeping the frame cache alive).
@@ -750,6 +803,7 @@ export function renderAnimationPage(app) {
 
   function updateSlidersFromTime() {
     syncTextArea();
+    refreshKfToggles();
     const p = sampleAnimation(animation, currentTime);
     for (const key of Object.keys(sliderInputs)) {
       const ref = sliderInputs[key];
