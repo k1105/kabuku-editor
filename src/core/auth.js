@@ -13,24 +13,28 @@ const subscribers = new Set();
 /**
  * Returns the current user when Auth has reported its initial state.
  * Resolves to `null` if no user is signed in. Idempotent: subsequent calls
- * reuse the same promise and never attach an extra Firebase listener.
+ * reuse the same readiness promise and never attach an extra Firebase
+ * listener — but always resolve with the *latest* user, so a sign-in that
+ * happened after the initial state (e.g. via the login screen) is seen
+ * without a page reload.
  */
 export function waitForAuth() {
-  if (_readyPromise) return _readyPromise;
-  const auth = getFirebaseAuth();
-  _readyPromise = new Promise((resolve) => {
-    let resolved = false;
-    onAuthStateChanged(auth, (user) => {
-      _currentUser = user;
-      if (!resolved) {
-        resolved = true;
-        resolve(user);
-        return;
-      }
-      for (const fn of subscribers) fn(user);
+  if (!_readyPromise) {
+    const auth = getFirebaseAuth();
+    _readyPromise = new Promise((resolve) => {
+      let resolved = false;
+      onAuthStateChanged(auth, (user) => {
+        _currentUser = user;
+        if (!resolved) {
+          resolved = true;
+          resolve();
+          return;
+        }
+        for (const fn of subscribers) fn(user);
+      });
     });
-  });
-  return _readyPromise;
+  }
+  return _readyPromise.then(() => _currentUser);
 }
 
 export function currentUser() {
