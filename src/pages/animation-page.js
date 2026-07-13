@@ -7,6 +7,7 @@ import {
 } from '../core/animation-project.js';
 import { RENDER_SIZE } from '../compose/glyph-cache.js';
 import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime, sampleText, upsertTextKeyframe, activeTextKeyframe } from '../animation/animation.js';
+import { attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint } from '../compose/char-kerning.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
 import { renderFrames, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
@@ -95,6 +96,8 @@ export function renderAnimationPage(app) {
   // Back-fill the step-keyframed text track for animations created before it
   // existed.
   if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
+  // Back-fill per-character kerning (em units) on older animations.
+  if (!Array.isArray(animation.charKerning)) animation.charKerning = [];
   // Guide audio (lyric-video editing) — null until a file is imported.
   if (animation.audio === undefined) animation.audio = null;
   // Back-fill the BPM beat guide (music-synced editing) on older animations.
@@ -346,8 +349,12 @@ export function renderAnimationPage(app) {
     // Edit the source that governs the current time: the active keyframe when
     // the playhead sits in its hold region, else the base text.
     const active = activeTextKeyframe(animation, currentTime);
-    if (active) active.value = textarea.value;
-    else animation.text = textarea.value;
+    const oldText = active ? active.value : (animation.text || '');
+    // Keep per-character kerning glued to its characters across the edit.
+    const remapped = remapCharKerning(oldText, textarea.value,
+      active ? active.charKerning : animation.charKerning);
+    if (active) { active.value = textarea.value; active.charKerning = remapped; }
+    else { animation.text = textarea.value; animation.charKerning = remapped; }
     persist();
     markDirty();
     // Keep the timeline's keyframe label in sync while editing a keyframe's text
@@ -357,7 +364,11 @@ export function renderAnimationPage(app) {
   });
 
   textKfBtn.addEventListener('click', () => {
-    upsertTextKeyframe(animation.textTrack, currentTime, textarea.value);
+    // A freshly stamped keyframe inherits the governing source's per-character
+    // kerning so the look doesn't jump at the keyframe boundary.
+    const prevKern = getGoverningKerning();
+    const kf = upsertTextKeyframe(animation.textTrack, currentTime, textarea.value);
+    if (!Array.isArray(kf.charKerning)) kf.charKerning = [...prevKern];
     persist();
     markDirty();
     timeline.render();
@@ -367,6 +378,42 @@ export function renderAnimationPage(app) {
   });
 
   textBody.appendChild(textarea);
+
+  // Per-character kerning (em units, additive to the 字間 slider): Option+←→
+  // at the caret nudges the gap between the surrounding characters; a selection
+  // nudges every gap inside it. Stored on the governing text source (base text
+  // or active text keyframe) so it follows text keyframes, and in em so it
+  // scales with Font Size.
+  function getGoverningKerning() {
+    const active = activeTextKeyframe(animation, currentTime);
+    const kern = active ? active.charKerning : animation.charKerning;
+    return Array.isArray(kern) ? kern : [];
+  }
+  function setGoverningKerning(next) {
+    const active = activeTextKeyframe(animation, currentTime);
+    if (active) active.charKerning = next;
+    else animation.charKerning = next;
+  }
+  // Rapid keypresses collapse into one history entry.
+  let kernHistoryTimer = null;
+  let kernHint = null; // created after mainArea exists
+  attachCharKerningKeys(textarea, {
+    getKerning: () => getGoverningKerning(),
+    setKerning: (next) => setGoverningKerning(next),
+    onAdjust: (indices, next) => {
+      persist();
+      markDirty();
+      redrawPreview();
+      kernHint?.show(kernHintText(textarea.value, indices, next));
+      clearTimeout(kernHistoryTimer);
+      kernHistoryTimer = setTimeout(() => commitHistory('char-kerning'), 600);
+    },
+  });
+
+  const kernHelp = document.createElement('p');
+  kernHelp.className = 'kern-help';
+  kernHelp.textContent = '⌥+←→: カーソル位置の字間を調整（Shiftで大きく）';
+  textBody.appendChild(kernHelp);
 
   const modeRow = document.createElement('div');
   modeRow.className = 'param-row';
@@ -666,6 +713,7 @@ export function renderAnimationPage(app) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   mainArea.appendChild(canvas);
+  kernHint = createKernHint(mainArea);
 
   // --- View toolbar (above timeline): zoom (left) + transport (centered) ---
   const viewToolbar = document.createElement('div');
@@ -888,6 +936,8 @@ export function renderAnimationPage(app) {
   // Detach on hashchange so we don't leak across pages
   window.addEventListener('hashchange', function detach() {
     document.removeEventListener('keydown', onKeyDown);
+    clearTimeout(kernHistoryTimer);
+    kernHint?.destroy();
     settings.destroy();
     timeline.destroy?.();
     preview.destroy();
@@ -983,7 +1033,7 @@ export function renderAnimationPage(app) {
     pickAndApplyJson(async (data) => {
       // Merge with defaults to ensure all tracks exist
       const base = createDefaultAnimation();
-      const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) }, textTrack: Array.isArray(data.textTrack) ? data.textTrack : [], audio: data.audio ?? null };
+      const merged = { ...base, ...data, tracks: { ...base.tracks, ...(data.tracks || {}) }, baseValues: { ...base.baseValues, ...(data.baseValues || {}) }, textTrack: Array.isArray(data.textTrack) ? data.textTrack : [], charKerning: Array.isArray(data.charKerning) ? data.charKerning : [], audio: data.audio ?? null };
       animation = merged;
       saveAnimation(animation);
       // Make sure the imported state is persisted before we reload, otherwise
@@ -1017,6 +1067,7 @@ export function renderAnimationPage(app) {
   function refresh() {
     if (!animation) return;
     if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
+    if (!Array.isArray(animation.charKerning)) animation.charKerning = [];
     if (animation.audio === undefined) animation.audio = null;
     // Re-prime the guide-audio player after an undo/redo (the clip may have
     // been added/removed/changed by the snapshot).

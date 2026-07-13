@@ -112,6 +112,10 @@ export function createDefaultAnimation() {
     // Step-keyframed text changes (no interpolation): { time, value:string }[].
     // Empty until the user stamps a text keyframe.
     textTrack: [],
+    // Per-character kerning for the base text, in em units (indexed by
+    // code-point position; see compose/char-kerning.js). Each text keyframe
+    // carries its own `charKerning` so adjustments follow the text variant.
+    charKerning: [],
     // Guide audio for lyric-video editing. Null until a file is imported.
     // Shape: { url, name, duration, offset, gain, peaks }. Not included in the
     // rendered/exported output — it is an editing reference only.

@@ -1,6 +1,7 @@
 import { ANIMATED_PARAM_KEYS } from '../core/project.js';
 import { EASING_NAMES, EASING_TO_BEZIER, sampleBezierSegment } from './interpolation.js';
 import { removeKeyframe, setKeyframeTime, findKeyframeAt, ensureBezierHandles, clampTrackHandles, collectKeyframeTimes } from './animation.js';
+import { remapCharKerning } from '../compose/char-kerning.js';
 
 const ROW_HEIGHT = 22;
 const ROW_HEIGHT_EXPANDED = 90;
@@ -1020,6 +1021,8 @@ export function createTimelineUI(animation, callbacks) {
   function editTextKeyframe(kf) {
     const v = window.prompt(`Text @ ${kf.time.toFixed(2)}s`, kf.value);
     if (v == null) return; // cancelled
+    // Keep this keyframe's per-character kerning glued to its characters.
+    kf.charKerning = remapCharKerning(kf.value, v, kf.charKerning);
     kf.value = v;
     callbacks.onChange?.();
     render();

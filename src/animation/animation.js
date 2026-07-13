@@ -115,6 +115,20 @@ export function sampleText(animation, time) {
   return active ? active.value : (animation.text || '');
 }
 
+/**
+ * Per-character kerning (em units, see compose/char-kerning.js) follows the
+ * text with hold semantics: each text source (the base text and every text
+ * keyframe) carries its own `charKerning` array, so kerning stays glued to the
+ * text variant it was adjusted on. Returns null when the governing source has
+ * no adjustments. The stored array is returned by reference so renderFrames'
+ * paramsEqual reuse (identity compare) still detects unchanged frames.
+ */
+export function sampleCharKerning(animation, time) {
+  const active = activeTextKeyframe(animation, time);
+  const kern = active ? active.charKerning : animation.charKerning;
+  return Array.isArray(kern) && kern.length > 0 ? kern : null;
+}
+
 export function setKeyframeTime(track, index, newTime) {
   if (index < 0 || index >= track.length) return index;
   track[index].time = newTime;
@@ -155,6 +169,9 @@ export function sampleAnimation(animation, time) {
   // params object so computeLayout — the single layout entry point — picks up
   // the time-varying text without needing a second sampling call.
   out.text = sampleText(animation, time);
+  // Per-character kerning follows the governing text source (same hold
+  // semantics); carried alongside text for the same reason.
+  out.charKerning = sampleCharKerning(animation, time);
   return out;
 }
 

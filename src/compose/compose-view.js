@@ -2,6 +2,7 @@ import { resolveTransform, saveCharacter, serializeLayerOverrides } from '../cor
 import { stretchMatrix } from '../core/transform-math.js';
 import { commit as historyCommit } from '../core/history.js';
 import { layoutText } from './text-layout.js';
+import { attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint } from './char-kerning.js';
 import { computeCacheScale, RENDER_SIZE } from './glyph-cache.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
@@ -56,6 +57,9 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   let fontSize = 64;
   let textBoxWidth = 800;
   let kerning = 0;
+  // Per-character kerning in em units (additive to the Kerning slider, scales
+  // with Font Size) — adjusted via Option+←→ in the textarea.
+  let charKerning = [];
   let lineHeight = 1.5;
   let writingMode = 'horizontal';
   // stretchAngle / stretchAmount live on `global` and are shared with the
@@ -112,11 +116,26 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   textarea.className = 'compose-textarea';
   textarea.value = inputText;
   textarea.addEventListener('input', () => {
+    // Keep per-character kerning glued to its characters across the edit.
+    charKerning = remapCharKerning(inputText, textarea.value, charKerning);
     inputText = textarea.value;
     redraw();
   });
+  attachCharKerningKeys(textarea, {
+    getKerning: () => charKerning,
+    setKerning: (next) => { charKerning = next; },
+    onAdjust: (indices, next) => {
+      redraw();
+      kernHint.show(kernHintText(inputText, indices, next));
+    },
+  });
   textGroup.appendChild(textTitle);
   textGroup.appendChild(textarea);
+
+  const kernHelp = document.createElement('p');
+  kernHelp.className = 'kern-help';
+  kernHelp.textContent = '⌥+←→: カーソル位置の字間を調整（Shiftで大きく）';
+  textGroup.appendChild(kernHelp);
 
   // Batch-create any glyphs referenced by the composition text that don't yet
   // exist in the project, rasterizing each from a Google Font and auto-meshing
@@ -252,6 +271,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   centerEl.appendChild(canvas);
+  const kernHint = createKernHint(centerEl);
 
   // === Rendering (shared layout) ===
 
@@ -265,7 +285,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   function computeLayout() {
     const charIds = new Set(Object.keys(project.characters));
     const positions = layoutText(inputText, charIds, {
-      fontSize, textBoxWidth, kerning, lineHeight, writingMode,
+      fontSize, textBoxWidth, kerning, charKerning, lineHeight, writingMode,
     });
     const cacheScale = totalCacheScale(getTransform());
     const drawSize = fontSize * cacheScale;
@@ -1154,6 +1174,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   function destroy() {
     document.removeEventListener('keydown', onEditKey);
     window.removeEventListener('mouseup', onPaintUp);
+    kernHint.destroy();
   }
   window.addEventListener('hashchange', function onHashChange() {
     if (editingCharId) closeEditor();

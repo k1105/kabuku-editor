@@ -14,6 +14,10 @@ const WHITESPACE = new Set([' ', '　', '\t']);
  * @param {number} opts.kerning - extra spacing in pixels
  * @param {number} opts.lineHeight - multiplier on fontSize for line/column spacing
  * @param {'horizontal'|'vertical'} opts.writingMode
+ * @param {number[]} [opts.charKerning] - per-character extra advance in EM
+ *   units (fraction of fontSize), indexed by code-point position in `text`
+ *   (newlines consume an index). Added on top of the global `kerning`, and
+ *   scales with fontSize so per-pair adjustments survive size changes.
  * @returns {Array<{char: string, charId: string, x: number, y: number, missing: boolean}>}
  */
 export function layoutText(text, availableCharIds, opts) {
@@ -23,16 +27,20 @@ export function layoutText(text, availableCharIds, opts) {
     kerning = 0,
     lineHeight = 1.5,
     writingMode = 'horizontal',
+    charKerning = null,
   } = opts;
 
   const step = fontSize + kerning;
   const lineStep = fontSize * lineHeight;
   const result = [];
+  const advanceAt = (i) => step + (charKerning ? fontSize * (charKerning[i] || 0) : 0);
 
+  let i = -1;
   if (writingMode === 'vertical') {
     let x = 0;
     let y = 0;
     for (const char of text) {
+      i++;
       if (char === '\n') {
         x -= lineStep;
         y = 0;
@@ -43,7 +51,7 @@ export function layoutText(text, availableCharIds, opts) {
         y = 0;
       }
       result.push({ char, charId: char, x, y, missing: !availableCharIds.has(char) && !WHITESPACE.has(char) });
-      y += step;
+      y += advanceAt(i);
     }
     // Shift all positions so the rightmost column is at x=0
     if (result.length > 0) {
@@ -54,6 +62,7 @@ export function layoutText(text, availableCharIds, opts) {
     let x = 0;
     let y = 0;
     for (const char of text) {
+      i++;
       if (char === '\n') {
         x = 0;
         y += lineStep;
@@ -64,7 +73,7 @@ export function layoutText(text, availableCharIds, opts) {
         y += lineStep;
       }
       result.push({ char, charId: char, x, y, missing: !availableCharIds.has(char) && !WHITESPACE.has(char) });
-      x += step;
+      x += advanceAt(i);
     }
   }
 

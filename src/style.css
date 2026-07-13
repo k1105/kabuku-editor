@@ -876,6 +876,29 @@ input[type="range"]:active::-moz-range-thumb { background: var(--accent); transf
   line-height: 1.6;
 }
 
+/* Shortcut hint under the compose/animation textareas (per-char kerning). */
+.kern-help {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* Transient per-character kerning readout over the canvas area. */
+.kern-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 10;
+}
+
 .compose-canvas-area {
   flex: 1;
   position: relative;

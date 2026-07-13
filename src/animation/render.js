@@ -87,6 +87,9 @@ export function computeLayout(params, animation, charIds, global) {
     // compose page still wraps via its own finite textBoxWidth.)
     textBoxWidth: Infinity,
     kerning: params.kerning,
+    // Per-character kerning (em units) rides along with the sampled text; the
+    // fallback mirrors the text fallback for callers passing raw params.
+    charKerning: params.charKerning !== undefined ? params.charKerning : animation.charKerning,
     lineHeight: params.lineHeight,
     writingMode: animation.writingMode,
   });
