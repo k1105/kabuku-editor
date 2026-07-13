@@ -2222,11 +2222,15 @@ select {
 }
 .project-list-page {
   flex: 1;
+  /* Without min-height:0 the flex item grows with its content, so long
+     project lists stretched the page instead of scrolling inside the cards. */
+  min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 24px;
   padding: 32px;
-  overflow: auto;
+  overflow: hidden;
 }
 .project-col {
   background: var(--surface);

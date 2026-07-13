@@ -101,6 +101,8 @@ const TRANSLATIONS = {
   "All layers": "全レイヤー",
   "All (ZIP)": "全て (ZIP)",
   Filename: "ファイル名",
+  "Family Name": "ファミリー名",
+  "Style Name": "スタイル名",
   Cancel: "キャンセル",
   "Angle (deg)": "角度 (度)",
   "Note: metaball effect is not applied in variable fonts.": "注：バリアブルフォントではメタボール効果は適用されません。",

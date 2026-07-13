@@ -131,6 +131,12 @@ function customTextRow() {
   return { row, input };
 }
 
+/** Collapse whitespace for PostScript-style names used in filenames. */
+const psName = (s) => String(s || '').replace(/\s+/g, '');
+
+/** Compact number label: 2.00 → "2", 2.50 → "2.5". */
+const trimNum = (v) => String(parseFloat(Number(v).toFixed(2)));
+
 // ─── Specific dialogs ──────────────────────────────────────────────────────
 
 /**
@@ -179,77 +185,99 @@ export function svgExportDialog({ defaultFilename, hasActiveLayer = true }) {
 }
 
 /**
- * Static font dialog: pick Stretch + Angle, then filename.
+ * Static font dialog: pick family/style names + Stretch/Angle, then filename.
  *
- * @returns {Promise<{stretchAmount: number, stretchAngle: number, filename: string} | null>}
+ * The family/style names go into the font's name table, so each export can be
+ * installed and recognized as a distinct typeface (filename alone doesn't
+ * matter to the OS). Style name follows the sliders (Regular when no stretch)
+ * and the filename follows family/style — each stops auto-updating once the
+ * user edits it directly.
+ *
+ * @returns {Promise<{familyName: string, styleName: string, stretchAmount: number, stretchAngle: number, filename: string} | null>}
  */
-export function staticFontDialog({ defaultFilename, defaultStretch = 0, defaultAngle = 0 }) {
+export function staticFontDialog({ defaultFamilyName = 'Kabuku', defaultStretch = 0, defaultAngle = 0 }) {
   return openModal('Static Font Export', (body) => {
-    // Stretch slider
-    const sRow = document.createElement('div');
-    sRow.className = 'row';
-    const sLabel = document.createElement('label');
-    sLabel.textContent = 'Stretch';
+    const famInput = document.createElement('input');
+    famInput.type = 'text';
+    famInput.value = defaultFamilyName;
+    body.appendChild(labeledRow('Family Name', famInput).row);
+
     const sApi = createSliderInput({
       min: 0, max: 10, step: 0.05,
       value: defaultStretch,
       formatter: (v) => v.toFixed(2),
+      onInput: () => sync(),
+      onChange: () => sync(),
     });
-    sRow.appendChild(sLabel);
-    sRow.appendChild(sApi.slider);
-    sRow.appendChild(sApi.valueInput);
-    body.appendChild(sRow);
+    body.appendChild(labeledRow('Stretch', sApi.slider, sApi.valueInput).row);
 
-    // Angle slider
-    const aRow = document.createElement('div');
-    aRow.className = 'row';
-    const aLabel = document.createElement('label');
-    aLabel.textContent = 'Angle (deg)';
     const aApi = createSliderInput({
       min: 0, max: 180, step: 1,
       value: defaultAngle,
       hardMin: 0, hardMax: 180,
+      onInput: () => sync(),
+      onChange: () => sync(),
     });
-    aRow.appendChild(aLabel);
-    aRow.appendChild(aApi.slider);
-    aRow.appendChild(aApi.valueInput);
-    body.appendChild(aRow);
+    body.appendChild(labeledRow('Angle (deg)', aApi.slider, aApi.valueInput).row);
 
-    const nRow = document.createElement('div');
-    nRow.className = 'row';
-    const nLabel = document.createElement('label');
-    nLabel.textContent = 'Filename';
+    const styInput = document.createElement('input');
+    styInput.type = 'text';
+    body.appendChild(labeledRow('Style Name', styInput).row);
+
     const nInput = document.createElement('input');
     nInput.type = 'text';
-    nInput.value = defaultFilename;
-    nRow.appendChild(nLabel);
-    nRow.appendChild(nInput);
-    body.appendChild(nRow);
+    body.appendChild(labeledRow('Filename', nInput).row);
 
-    return () => ({
-      stretchAmount: sApi.getValue(),
-      stretchAngle: aApi.getValue(),
-      filename: nInput.value || defaultFilename,
-    });
+    let styleEdited = false;
+    let nameEdited = false;
+    const autoStyle = () => {
+      const s = sApi.getValue();
+      return s === 0 ? 'Regular' : `Stretch${trimNum(s)} Angle${trimNum(aApi.getValue())}`;
+    };
+    function sync() {
+      if (!styleEdited) styInput.value = autoStyle();
+      if (!nameEdited) {
+        nInput.value = `${psName(famInput.value) || 'Kabuku'}-${psName(styInput.value) || 'Regular'}.otf`;
+      }
+    }
+    famInput.addEventListener('input', sync);
+    styInput.addEventListener('input', () => { styleEdited = true; sync(); });
+    nInput.addEventListener('input', () => { nameEdited = true; });
+    sync();
+
+    return () => {
+      const familyName = famInput.value.trim() || defaultFamilyName;
+      const styleName = styInput.value.trim() || autoStyle();
+      return {
+        familyName,
+        styleName,
+        stretchAmount: sApi.getValue(),
+        stretchAngle: aApi.getValue(),
+        filename: nInput.value || `${psName(familyName)}-${psName(styleName)}.otf`,
+      };
+    };
   });
 }
 
 /**
- * Variable font dialog: pick angle (or "All"), then filename.
+ * Variable font dialog: pick family name + angle (or "All"), then filename.
+ *
+ * The family name goes into the fonts' name tables so each export installs
+ * as a distinct typeface. The filename follows the family/angle selection
+ * until the user edits it directly.
  *
  * @param {Object} opts
  * @param {number[]} opts.angles - selectable angles
- * @param {string} opts.defaultFilenameSingle - filename pattern for single .ttf
- *   ($ANGLE will be replaced with the chosen angle)
- * @param {string} opts.defaultFilenameAll - filename for "All" .zip
- * @returns {Promise<{mode: 'single'|'all', angle?: number, filename: string} | null>}
+ * @param {string} [opts.defaultFamilyName]
+ * @returns {Promise<{mode: 'single'|'all', angle?: number, familyName: string, filename: string} | null>}
  */
-export function variableFontDialog({ angles, defaultFilenameSingle, defaultFilenameAll }) {
+export function variableFontDialog({ angles, defaultFamilyName = 'Kabuku' }) {
   return openModal('Variable Font Export', (body) => {
-    const aRow = document.createElement('div');
-    aRow.className = 'row';
-    const aLabel = document.createElement('label');
-    aLabel.textContent = 'Angle';
+    const famInput = document.createElement('input');
+    famInput.type = 'text';
+    famInput.value = defaultFamilyName;
+    body.appendChild(labeledRow('Family Name', famInput).row);
+
     const aSel = document.createElement('select');
     for (const a of angles) {
       const o = document.createElement('option');
@@ -260,9 +288,7 @@ export function variableFontDialog({ angles, defaultFilenameSingle, defaultFilen
     allOpt.value = 'all'; allOpt.textContent = 'All (ZIP)';
     aSel.appendChild(allOpt);
     aSel.value = 'all';
-    aRow.appendChild(aLabel);
-    aRow.appendChild(aSel);
-    body.appendChild(aRow);
+    body.appendChild(labeledRow('Angle', aSel).row);
 
     // Note: metaball is a raster post-process and isn't preserved in VF outlines.
     const note = document.createElement('div');
@@ -270,29 +296,30 @@ export function variableFontDialog({ angles, defaultFilenameSingle, defaultFilen
     note.textContent = t('Note: metaball effect is not applied in variable fonts.');
     body.appendChild(note);
 
-    const nRow = document.createElement('div');
-    nRow.className = 'row';
-    const nLabel = document.createElement('label');
-    nLabel.textContent = 'Filename';
     const nInput = document.createElement('input');
     nInput.type = 'text';
-    const updateName = () => {
-      if (aSel.value === 'all') nInput.value = defaultFilenameAll;
-      else nInput.value = defaultFilenameSingle.replace('$ANGLE', aSel.value);
+    body.appendChild(labeledRow('Filename', nInput).row);
+
+    let nameEdited = false;
+    const autoName = () => {
+      const fam = psName(famInput.value) || 'Kabuku';
+      return aSel.value === 'all' ? `${fam}-VF-Family.zip` : `${fam}-Angle${aSel.value}.ttf`;
     };
-    aSel.addEventListener('change', updateName);
-    updateName();
-    nRow.appendChild(nLabel);
-    nRow.appendChild(nInput);
-    body.appendChild(nRow);
+    const sync = () => { if (!nameEdited) nInput.value = autoName(); };
+    famInput.addEventListener('input', sync);
+    aSel.addEventListener('change', sync);
+    nInput.addEventListener('input', () => { nameEdited = true; });
+    sync();
 
     return () => {
+      const familyName = famInput.value.trim() || defaultFamilyName;
       const v = aSel.value;
-      if (v === 'all') return { mode: 'all', filename: nInput.value || defaultFilenameAll };
+      if (v === 'all') return { mode: 'all', familyName, filename: nInput.value || autoName() };
       return {
         mode: 'single',
         angle: parseFloat(v),
-        filename: nInput.value || defaultFilenameSingle.replace('$ANGLE', v),
+        familyName,
+        filename: nInput.value || autoName(),
       };
     };
   });

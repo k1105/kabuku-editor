@@ -287,23 +287,6 @@ export function createSidebarPanels({ sidebarBody, ctx, deps }) {
     const toolbar = createToolbar((tool) => { ctx.currentTool = tool; deps.redraw(); });
     sidebarBody.appendChild(toolbar.el);
 
-    // Orientation overlay toggle
-    const orientLabel = document.createElement('label');
-    orientLabel.style.display = 'flex';
-    orientLabel.style.alignItems = 'center';
-    orientLabel.style.gap = '6px';
-    orientLabel.style.marginTop = '6px';
-    const orientCb = document.createElement('input');
-    orientCb.type = 'checkbox';
-    orientCb.checked = ctx.showOrientation;
-    orientCb.addEventListener('change', () => {
-      ctx.showOrientation = orientCb.checked;
-      deps.redraw();
-    });
-    orientLabel.appendChild(orientCb);
-    orientLabel.appendChild(document.createTextNode('角度オーバーレイ'));
-    toolbar.el.appendChild(orientLabel);
-
     // Per-layer baseline = the layer's own gridParams in ctx.global.defaultLayers
     // (NOT ctx.global.gridDefaults, which is the per-grid-type fallback). This is
     // what overrides are diffed against, so the override badge is accurate.

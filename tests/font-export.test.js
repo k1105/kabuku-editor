@@ -82,6 +82,29 @@ describe('buildVariableTTF', () => {
   });
 });
 
+describe('name テーブルの識別性', () => {
+  it('fontInfo の familyName / styleName が name テーブルに反映される', () => {
+    const proj = fixtureProject();
+    proj.global.fontInfo = { familyName: 'My Face', styleName: 'Stretch2 Angle45' };
+    const { font } = buildFont(proj);
+    expect(font.names.fontFamily.en).toBe('My Face');
+    expect(font.names.fontSubfamily.en).toBe('Stretch2 Angle45');
+    // OS はこれらから導出される fullName / postScriptName でも識別する
+    expect(font.names.fullName.en).toBe('My Face Stretch2 Angle45');
+    expect(font.names.postScriptName.en).toBe('MyFaceStretch2Angle45');
+  });
+
+  it('familyName が違えば VF のバイト列も変わる', () => {
+    const projA = fixtureProject();
+    projA.global.fontInfo = { familyName: 'FaceA' };
+    const projB = fixtureProject();
+    projB.global.fontInfo = { familyName: 'FaceB' };
+    const a = buildVariableTTF(projA, { angle: 45 }).binary;
+    const b = buildVariableTTF(projB, { angle: 45 }).binary;
+    expect(sha256(a)).not.toBe(sha256(b));
+  });
+});
+
 describe('buildFont (static OTF)', () => {
   it('グリフのパスデータがスナップショットと一致する', () => {
     const { font, skipped } = buildFont(fixtureProject(), {

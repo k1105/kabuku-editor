@@ -5,7 +5,7 @@
  * `project` and `global` are the page's live references — the page mutates
  * them in place across undo/redo, so reading them lazily here stays in sync.
  */
-import { loadProject, saveProject, flushNow as flushProjectNow } from '../../core/project.js';
+import { loadProject, saveProject, saveGlobal, flushNow as flushProjectNow } from '../../core/project.js';
 import { buildFontBytes } from '../../render/font-exporter.js';
 import { buildVariableTTF, buildVariableFontFamilyZip, DEFAULT_FAMILY_ANGLES } from '../../render/font/vf-builder.js';
 import { staticFontDialog, variableFontDialog } from '../../ui/export-dialog.js';
@@ -81,20 +81,43 @@ export function setupIndexSettings({ project, global, headerActions }) {
     });
   }
 
-  function fontFamilyName() {
-    return (global.fontInfo?.familyName || 'Kabuku').replace(/\s+/g, '');
+  function currentFamilyName() {
+    return global.fontInfo?.familyName || 'Kabuku';
+  }
+
+  // Remember the chosen family name as the project's font name so the next
+  // export defaults to it.
+  function persistFamilyName(familyName) {
+    if (!familyName || familyName === global.fontInfo?.familyName) return;
+    global.fontInfo = { ...(global.fontInfo || {}), familyName };
+    saveGlobal(global);
+  }
+
+  // Shallow-copy the project with name-table overrides so per-export values
+  // (e.g. a transient style name) don't leak into the live project state.
+  function projectWithFontInfo(proj, overrides) {
+    return {
+      ...proj,
+      global: {
+        ...proj.global,
+        fontInfo: { ...(proj.global.fontInfo || {}), ...overrides },
+      },
+    };
   }
 
   async function doStaticFontExport() {
-    const familyName = fontFamilyName();
     const result = await staticFontDialog({
-      defaultFilename: `${familyName}-Regular.otf`,
+      defaultFamilyName: currentFamilyName(),
       defaultStretch: global.stretchAmount || 0,
       defaultAngle: global.stretchAngle || 0,
     });
     if (!result) return;
+    persistFamilyName(result.familyName);
     try {
-      const proj = loadProject();
+      const proj = projectWithFontInfo(loadProject(), {
+        familyName: result.familyName,
+        styleName: result.styleName,
+      });
       const { bytes, skipped } = buildFontBytes(proj, {
         transform: {
           stretchAmount: result.stretchAmount,
@@ -114,15 +137,14 @@ export function setupIndexSettings({ project, global, headerActions }) {
   }
 
   async function doVariableFontExport() {
-    const familyName = fontFamilyName();
     const result = await variableFontDialog({
       angles: DEFAULT_FAMILY_ANGLES,
-      defaultFilenameSingle: `${familyName}-Angle$ANGLE.ttf`,
-      defaultFilenameAll: `${familyName}-VF-Family.zip`,
+      defaultFamilyName: currentFamilyName(),
     });
     if (!result) return;
+    persistFamilyName(result.familyName);
     try {
-      const proj = loadProject();
+      const proj = projectWithFontInfo(loadProject(), { familyName: result.familyName });
       if (result.mode === 'all') {
         const { zip, skipped, fileCount } = buildVariableFontFamilyZip(proj);
         const ok = await saveFile(zip, result.filename, 'application/zip');

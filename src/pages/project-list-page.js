@@ -12,12 +12,14 @@ import {
   createFontProject,
   renameFontProject,
   deleteFontProject,
+  duplicateFontProject,
 } from "../core/project.js";
 import {
   listAnimationProjects,
   createAnimationProject,
   renameAnimationProject,
   deleteAnimationProject,
+  duplicateAnimationProject,
 } from "../core/animation-project.js";
 
 function formatTimestamp(ts) {
@@ -30,6 +32,25 @@ function formatTimestamp(ts) {
 function formatEditor(meta) {
   const e = meta.lastEditor || meta.createdBy;
   return e?.name || "";
+}
+
+/** Shared Duplicate action button for project cards. */
+function duplicateButton(item, duplicateFn, refresh) {
+  const btn = iconButton("copy", "Duplicate", {title: "Duplicate"});
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const name = prompt("複製後の名前", `${item.name || "Untitled"} copy`);
+    if (!name) return;
+    btn.disabled = true;
+    try {
+      await duplicateFn(item.id, name.trim());
+      await refresh();
+    } catch (err) {
+      alert(`複製に失敗しました: ${err.message}`);
+      btn.disabled = false;
+    }
+  });
+  return btn;
 }
 
 export async function renderProjectListPage(app) {
@@ -165,6 +186,7 @@ function createFontProjectCard(item, refresh) {
     }
   });
   actions.appendChild(renameBtn);
+  actions.appendChild(duplicateButton(item, duplicateFontProject, refresh));
   actions.appendChild(delBtn);
   li.appendChild(actions);
   return li;
@@ -289,6 +311,7 @@ function createAnimationCard(item, refresh) {
     }
   });
   actions.appendChild(renameBtn);
+  actions.appendChild(duplicateButton(item, duplicateAnimationProject, refresh));
   actions.appendChild(delBtn);
   li.appendChild(actions);
   return li;

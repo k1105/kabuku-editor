@@ -677,6 +677,57 @@ export async function deleteFontProject(projectId) {
   }
 }
 
+/**
+ * Copy a font project (meta doc + characters subcollection) into a new
+ * project. Character docs are written first and the meta doc last, so a
+ * failure mid-copy never leaves a half-copied project visible in the list;
+ * already-written character docs are cleaned up best-effort.
+ *
+ * Base images in Storage are shared by reference (imagePath) — project
+ * deletion never removes them, so the copy stays valid on its own.
+ */
+export async function duplicateFontProject(projectId, newName) {
+  const db = getDb();
+  const user = userInfo();
+  const src = await fetchFontProjectSnapshot(projectId);
+  const metaRef = doc(collection(db, 'fontProjects'));
+
+  const ops = [];
+  for (const [cid, cd] of Object.entries(src.characters)) {
+    if (cid === '') continue;
+    const data = stripUndefined(cd);
+    ops.push({
+      ref: doc(db, 'fontProjects', metaRef.id, 'characters', charIdToDocId(cid)),
+      data,
+      bytes: estimateDocBytes(data),
+    });
+  }
+  try {
+    for (const chunk of chunkOpsBySize(ops)) {
+      const batch = writeBatch(db);
+      for (const op of chunk) batch.set(op.ref, op.data);
+      await batch.commit();
+    }
+    await setDoc(metaRef, {
+      name: newName || `${src.name} copy`,
+      global: stripUndefined(src.global),
+      version: src.version,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: user,
+      lastEditor: user,
+    });
+  } catch (e) {
+    try {
+      await deleteFontProject(metaRef.id);
+    } catch (cleanupErr) {
+      console.warn('Failed to clean up partially duplicated project:', cleanupErr);
+    }
+    throw e;
+  }
+  return metaRef.id;
+}
+
 /** Fetch a font project's full state without making it active (for snapshots). */
 export async function fetchFontProjectSnapshot(projectId) {
   const db = getDb();

@@ -285,6 +285,47 @@ export async function createAnimationProject({ name, fontProjectId }) {
   return metaRef.id;
 }
 
+/**
+ * Copy an animation project: meta doc, animation data, and character
+ * snapshot. The snapshot blob is re-uploaded under the new project's path
+ * (never shared) because deleteAnimationProject removes a project's blob —
+ * a shared blob would break the surviving copy. Blob first, meta doc last,
+ * so a failure leaves no half-created project behind.
+ */
+export async function duplicateAnimationProject(projectId, newName) {
+  const db = getDb();
+  const user = userInfo();
+  const metaSnap = await getDoc(doc(db, 'animationProjects', projectId));
+  if (!metaSnap.exists()) throw new Error(`Animation project not found: ${projectId}`);
+  const meta = metaSnap.data();
+  const characters = await loadSnapshotCharacters(projectId, meta);
+
+  const metaRef = doc(collection(db, 'animationProjects'));
+  const snapshotPath = snapshotBlobPath(metaRef.id);
+  await uploadSnapshotBlob(snapshotPath, characters);
+
+  const metaData = {
+    name: newName || `${meta.name || 'Untitled Animation'} copy`,
+    fontProjectId: meta.fontProjectId || null,
+    fontProjectName: meta.fontProjectName || '',
+    snapshotAt: meta.snapshotAt || null,
+    snapshotGlobal: meta.snapshotGlobal || null,
+    snapshotPath,
+    animation: stripUndefined(meta.animation || createDefaultAnimation()),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    createdBy: user,
+    lastEditor: user,
+  };
+  try {
+    await setDoc(metaRef, metaData);
+  } catch (e) {
+    await deleteSnapshotBlobQuiet(snapshotPath);
+    throw e;
+  }
+  return metaRef.id;
+}
+
 export async function renameAnimationProject(projectId, newName) {
   const db = getDb();
   await updateDoc(doc(db, 'animationProjects', projectId), {
