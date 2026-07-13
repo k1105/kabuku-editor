@@ -2267,6 +2267,9 @@ select {
 .project-card {
   display: flex;
   align-items: stretch;
+  /* Keep full height inside the scrollable list — without this, flex squeezes
+     the cards to fit instead of letting the list scroll. */
+  flex-shrink: 0;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
