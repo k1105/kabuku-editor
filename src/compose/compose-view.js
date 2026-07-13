@@ -2,7 +2,10 @@ import { resolveTransform, saveCharacter, serializeLayerOverrides } from '../cor
 import { stretchMatrix } from '../core/transform-math.js';
 import { commit as historyCommit } from '../core/history.js';
 import { layoutText } from './text-layout.js';
-import { attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint } from './char-kerning.js';
+import {
+  attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint,
+  kernIndicesForSelection, kernCaretSegments, drawKernCaretSegments, attachKernCaretTracking,
+} from './char-kerning.js';
 import { computeCacheScale, RENDER_SIZE } from './glyph-cache.js';
 import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { createLayer, regenerateCells } from '../core/layer.js';
@@ -128,6 +131,17 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
       redraw();
       kernHint.show(kernHintText(inputText, indices, next));
     },
+  });
+  // Canvas caret marking the gap ⌥+←→ adjusts. Follows the textarea caret
+  // while it's focused; redraw() reads the live selection, so tracking only
+  // needs to trigger a redraw when the caret actually moved.
+  function kernCaretKey() {
+    if (document.activeElement !== textarea) return '';
+    return `${textarea.selectionStart}:${textarea.selectionEnd}`;
+  }
+  let drawnKernCaretKey = '';
+  const detachKernCaret = attachKernCaretTracking(textarea, () => {
+    if (kernCaretKey() !== drawnKernCaretKey) redraw();
   });
   textGroup.appendChild(textTitle);
   textGroup.appendChild(textarea);
@@ -432,7 +446,19 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
       ctx.drawImage(cached, gx - drawOffset, gy - drawOffset, drawSize, drawSize);
     }
 
+    drawKernCaret(layout, Z);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  // Caret over the gap the textarea caret targets (adjustable via ⌥+←→),
+  // drawn only while the textarea is focused. Records what it drew so caret
+  // tracking can skip redundant redraws.
+  function drawKernCaret(layout, zoom) {
+    drawnKernCaretKey = kernCaretKey();
+    if (!drawnKernCaretKey) return;
+    const indices = kernIndicesForSelection(inputText, textarea.selectionStart, textarea.selectionEnd);
+    const segs = kernCaretSegments(inputText, indices, layout.positions, fontSize, writingMode);
+    drawKernCaretSegments(ctx, segs, layout.offX, layout.offY, 2 / zoom);
   }
 
   /** Lightweight preview: source images with stretch transform, same layout as redraw */
@@ -1174,6 +1200,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   function destroy() {
     document.removeEventListener('keydown', onEditKey);
     window.removeEventListener('mouseup', onPaintUp);
+    detachKernCaret();
     kernHint.destroy();
   }
   window.addEventListener('hashchange', function onHashChange() {

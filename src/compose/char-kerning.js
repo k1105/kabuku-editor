@@ -98,6 +98,70 @@ export function attachCharKerningKeys(textarea, { getKerning, setKerning, onAdju
   });
 }
 
+/**
+ * Caret line segments (layout-space) marking the gaps a kerning adjustment
+ * targets, so the canvas shows WHERE ⌥+←→ will act. `indices` are kern gap
+ * indices (from kernIndicesForSelection), `positions` a layoutText result
+ * (which skips '\n' entries — the mapping accounts for that). A gap whose two
+ * glyphs were wrapped onto different lines/columns gets its caret at the
+ * following glyph's leading edge instead of a midpoint.
+ */
+export function kernCaretSegments(text, indices, positions, fontSize, writingMode = 'horizontal') {
+  if (indices.length === 0 || positions.length === 0) return [];
+  // code-point index -> positions index ('\n' consumes an index but has no position)
+  const posIndex = [];
+  let j = 0;
+  for (const ch of text) posIndex.push(ch === '\n' ? -1 : j++);
+  const overshoot = fontSize * 0.08;
+  const out = [];
+  for (const i of indices) {
+    const a = positions[posIndex[i]];
+    const b = positions[posIndex[i + 1]];
+    if (!a || !b) continue;
+    if (writingMode === 'vertical') {
+      if (a.x === b.x) {
+        const y = (a.y + fontSize + b.y) / 2;
+        out.push({ x1: a.x - overshoot, y1: y, x2: a.x + fontSize + overshoot, y2: y });
+      } else {
+        out.push({ x1: b.x - overshoot, y1: b.y, x2: b.x + fontSize + overshoot, y2: b.y });
+      }
+    } else {
+      if (a.y === b.y) {
+        const x = (a.x + fontSize + b.x) / 2;
+        out.push({ x1: x, y1: a.y - overshoot, x2: x, y2: a.y + fontSize + overshoot });
+      } else {
+        out.push({ x1: b.x, y1: b.y - overshoot, x2: b.x, y2: b.y + fontSize + overshoot });
+      }
+    }
+  }
+  return out;
+}
+
+/** Stroke caret segments onto a canvas context (offset into canvas space). */
+export function drawKernCaretSegments(ctx, segments, offX, offY, lineWidth = 2) {
+  if (segments.length === 0) return;
+  ctx.save();
+  ctx.strokeStyle = '#2563eb';
+  ctx.lineWidth = lineWidth;
+  for (const s of segments) {
+    ctx.beginPath();
+    ctx.moveTo(offX + s.x1, offY + s.y1);
+    ctx.lineTo(offX + s.x2, offY + s.y2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * Call `refresh` whenever the textarea's caret/selection/focus state may have
+ * changed, so the view can re-place the canvas caret. Returns a detach fn.
+ */
+export function attachKernCaretTracking(textarea, refresh) {
+  const events = ['focus', 'blur', 'keyup', 'mouseup', 'input', 'select'];
+  for (const ev of events) textarea.addEventListener(ev, refresh);
+  return () => { for (const ev of events) textarea.removeEventListener(ev, refresh); };
+}
+
 /** Human-readable summary of an adjustment, e.g. 「あ」「い」 +0.04em. */
 export function kernHintText(text, indices, kern) {
   const cps = [...text];

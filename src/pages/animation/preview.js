@@ -12,6 +12,7 @@ import { sampleAnimation } from '../../animation/animation.js';
 import { computeFrameCacheShape, createFrameRenderer, computeLayout, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../../animation/render.js';
 import { stretchMatrix } from '../../core/transform-math.js';
 import { RENDER_SIZE } from '../../compose/glyph-cache.js';
+import { kernIndicesForSelection, kernCaretSegments, drawKernCaretSegments } from '../../compose/char-kerning.js';
 
 export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps }) {
   const { project, global, charIds, sourceImageCache } = env;
@@ -111,6 +112,40 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     ctx.strokeRect(gx, gy, size, size);
   }
 
+  // === Kerning caret overlay ===
+  // While the Text textarea is focused, a caret marks the gap ⌥+←→ adjusts on
+  // the on-screen canvas. Drawn AFTER frames are blitted, so cached/exported
+  // frames stay clean. `deps.getKernCaretSelection()` returns the textarea's
+  // live {selStart, selEnd} (or null when unfocused).
+  let drawnKernCaretKey = '';
+  function kernCaretKey() {
+    const sel = deps.getKernCaretSelection?.();
+    return sel ? `${sel.selStart}:${sel.selEnd}` : '';
+  }
+  function drawKernCaretOverlay(p, layout) {
+    drawnKernCaretKey = kernCaretKey();
+    if (!drawnKernCaretKey) return;
+    const sel = deps.getKernCaretSelection();
+    const text = p.text != null ? p.text : (state.animation.text || '');
+    const indices = kernIndicesForSelection(text, sel.selStart, sel.selEnd);
+    const segs = kernCaretSegments(text, indices, layout.positions, p.fontSize, state.animation.writingMode);
+    if (segs.length === 0) return;
+    const cacheW = state.frameCache.width;
+    const cacheH = state.frameCache.height;
+    const dx = Math.floor((cacheW - layout.cw) / 2);
+    const dy = Math.floor((cacheH - layout.ch) / 2);
+    const dist = p.cameraDistance != null ? p.cameraDistance : 1;
+    ctx.save();
+    applyCameraTransform(ctx, cacheW, cacheH, p);
+    drawKernCaretSegments(ctx, segs, dx + layout.pad, dy + layout.pad, 2 / dist);
+    ctx.restore();
+  }
+  /** Redraw only if the textarea caret moved since the last draw (caret
+   *  tracking calls this on every focus/keyup/click — most are no-ops). */
+  function refreshKernCaret() {
+    if (kernCaretKey() !== drawnKernCaretKey) redrawPreview();
+  }
+
   /** Apply camera transform (pan + rotation + zoom) around the canvas center. */
   function applyCameraTransform(targetCtx, cw, ch, p) {
     const cx = cw / 2;
@@ -154,7 +189,8 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     off.width = cacheW;
     off.height = cacheH;
     const octx = off.getContext('2d');
-    getFrameRenderer().renderInto(octx, params, layoutFor(params));
+    const layout = layoutFor(params);
+    getFrameRenderer().renderInto(octx, params, layout);
 
     // Cache at the current time slot (only when empty — Render-button frames
     // win over scrub-time captures, though both paths now produce identical
@@ -170,6 +206,7 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     canvas.width = cacheW;
     canvas.height = cacheH;
     ctx.drawImage(off, 0, 0);
+    drawKernCaretOverlay(params, layout);
   }
 
   /** Fast preview using source images. Draws into the same uniform cache
@@ -212,6 +249,7 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
       ctx.restore();
     }
     ctx.restore();
+    drawKernCaretOverlay(p, layout);
   }
 
   function getCachedFrameAt(time) {
@@ -236,6 +274,12 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     const cached = getCachedFrameAt(state.currentTime);
     if (cached) {
       drawCachedFrame(cached);
+      // Cached frames never contain the caret — overlay it on-screen only.
+      drawnKernCaretKey = kernCaretKey();
+      if (drawnKernCaretKey) {
+        const p = sampleAnimation(state.animation, state.currentTime);
+        drawKernCaretOverlay(p, layoutFor(p));
+      }
       return;
     }
     const params = sampleAnimation(state.animation, state.currentTime);
@@ -263,6 +307,7 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     redrawPreview,
     overrideWith,
     isFrameCacheComplete,
+    refreshKernCaret,
     /** Detach the view ResizeObserver (call on page teardown). */
     destroy: () => viewResizeObserver.disconnect(),
   };

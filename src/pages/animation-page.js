@@ -7,7 +7,7 @@ import {
 } from '../core/animation-project.js';
 import { RENDER_SIZE } from '../compose/glyph-cache.js';
 import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyframeTime, sampleText, upsertTextKeyframe, activeTextKeyframe } from '../animation/animation.js';
-import { attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint } from '../compose/char-kerning.js';
+import { attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint, attachKernCaretTracking } from '../compose/char-kerning.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
 import { renderFrames, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../animation/render.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
@@ -409,6 +409,11 @@ export function renderAnimationPage(app) {
       kernHistoryTimer = setTimeout(() => commitHistory('char-kerning'), 600);
     },
   });
+  // Canvas caret marking the gap ⌥+←→ adjusts, following the textarea caret
+  // while it's focused. The preview reads the live selection at draw time
+  // (deps.getKernCaretSelection); tracking only nudges it to redraw when the
+  // caret actually moved.
+  const detachKernCaret = attachKernCaretTracking(textarea, () => preview?.refreshKernCaret());
 
   const kernHelp = document.createElement('p');
   kernHelp.className = 'kern-help';
@@ -841,6 +846,11 @@ export function renderAnimationPage(app) {
     deps: {
       updateFrameCacheIndicator: (fc) => timeline?.updateFrameCacheIndicator?.(fc),
       markDirty: () => markDirty(),
+      // Live textarea caret/selection for the kerning-caret overlay (null when
+      // the textarea isn't focused → no caret drawn).
+      getKernCaretSelection: () => (document.activeElement === textarea
+        ? { selStart: textarea.selectionStart, selEnd: textarea.selectionEnd }
+        : null),
     },
   });
   // Hoisted wrappers — callbacks declared above this point call these.
@@ -937,6 +947,7 @@ export function renderAnimationPage(app) {
   window.addEventListener('hashchange', function detach() {
     document.removeEventListener('keydown', onKeyDown);
     clearTimeout(kernHistoryTimer);
+    detachKernCaret();
     kernHint?.destroy();
     settings.destroy();
     timeline.destroy?.();

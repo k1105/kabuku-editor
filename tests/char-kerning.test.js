@@ -3,6 +3,7 @@ import {
   kernIndicesForSelection,
   applyKernDelta,
   remapCharKerning,
+  kernCaretSegments,
 } from '../src/compose/char-kerning.js';
 import { layoutText } from '../src/compose/text-layout.js';
 import { sampleCharKerning, sampleAnimation, upsertTextKeyframe } from '../src/animation/animation.js';
@@ -90,6 +91,63 @@ describe('kernIndicesForSelection', () => {
   it('サロゲートペアを含むテキストでもコードポイント単位で数える', () => {
     // '𩸽' は UTF-16 で2単位。キャレットがその直後 (UTF-16 offset 2) にある場合
     expect(kernIndicesForSelection('𩸽あ', 2, 2)).toEqual([0]);
+  });
+});
+
+describe('kernCaretSegments', () => {
+  const layout = (text, opts = {}) => layoutText(text, chars(...text.replace(/\n/g, '')), {
+    fontSize: 100, textBoxWidth: Infinity, kerning: 0,
+    lineHeight: 1.0, writingMode: 'horizontal', ...opts,
+  });
+
+  it('横書き: 間隙の中点に縦線が出る', () => {
+    const pos = layout('あい');
+    const segs = kernCaretSegments('あい', [0], pos, 100, 'horizontal');
+    expect(segs).toHaveLength(1);
+    expect(segs[0].x1).toBe(100); // (0+100 + 100) / 2
+    expect(segs[0].x2).toBe(100);
+    expect(segs[0].y1).toBeLessThan(0);       // 少しはみ出す
+    expect(segs[0].y2).toBeGreaterThan(100);
+  });
+
+  it('横書き: 字間調整分だけ中点がずれる', () => {
+    const pos = layout('あい', { charKerning: [0.5] });
+    const segs = kernCaretSegments('あい', [0], pos, 100, 'horizontal');
+    expect(segs[0].x1).toBe(125); // (100 + 150) / 2
+  });
+
+  it('改行を含むテキストでもコードポイント index が位置に対応する', () => {
+    // 'あ\nいう' — kern index 2 は 'い''う' の間
+    const pos = layout('あ\nいう');
+    const segs = kernCaretSegments('あ\nいう', [2], pos, 100, 'horizontal');
+    expect(segs).toHaveLength(1);
+    expect(segs[0].x1).toBe(100);   // 2行目の 'い'(x=0) と 'う'(x=100) の中点
+    expect(segs[0].y1).toBeLessThan(200); // 2行目 (y=100)
+    expect(segs[0].y2).toBeGreaterThan(100);
+  });
+
+  it('折り返しで行が分かれた間隙は次文字の先頭に出る', () => {
+    // Box 幅 150 → 'い' が2行目へ折り返す
+    const pos = layout('あい', { textBoxWidth: 150 });
+    const segs = kernCaretSegments('あい', [0], pos, 100, 'horizontal');
+    expect(segs[0].x1).toBe(0);
+    expect(segs[0].y1).toBeLessThan(100);
+    expect(segs[0].y2).toBeGreaterThan(200);
+  });
+
+  it('縦書き: 間隙の中点に横線が出る', () => {
+    const pos = layout('あい', { writingMode: 'vertical' });
+    const segs = kernCaretSegments('あい', [0], pos, 100, 'vertical');
+    expect(segs).toHaveLength(1);
+    expect(segs[0].y1).toBe(100);
+    expect(segs[0].y2).toBe(100);
+    expect(segs[0].x1).toBeLessThan(0);
+    expect(segs[0].x2).toBeGreaterThan(100);
+  });
+
+  it('対象なしなら空', () => {
+    const pos = layout('あい');
+    expect(kernCaretSegments('あい', [], pos, 100, 'horizontal')).toEqual([]);
   });
 });
 
