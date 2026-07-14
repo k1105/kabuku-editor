@@ -68,6 +68,13 @@ export function createTimelineUI(animation, callbacks) {
   // Clicking a label toggles membership.
   const expandedRows = new Set();
 
+  // Per-row value ranges frozen for the duration of a handle drag. While a
+  // handle is dragged the range would otherwise re-fit every frame (handles
+  // count toward the auto-fit extent), visually shifting the keyframe the
+  // user expects to stay put — and desyncing the cursor→value mapping from
+  // the display. Cleared on mouseup, when the axis re-fits once.
+  const frozenValueRanges = new Map();
+
   // --- Horizontal zoom + scroll (AE-style: time→pixels is governed by a zoom
   // factor, NOT by the total duration). `pxPerSecond === null` means "fit": the
   // whole duration is scaled to fill the viewport (the original behaviour). Once
@@ -415,6 +422,8 @@ export function createTimelineUI(animation, callbacks) {
       const span = range.max - range.min;
       if (e.altKey) kf.handleMode = 'broken';
       selectedKfs = [{ key, time: kf.time }];
+      // Freeze this row's value axis for the whole drag (see frozenValueRanges).
+      frozenValueRanges.set(key, range);
 
       const onMove = (ev) => {
         if (trackWidth <= 0) return;
@@ -447,6 +456,8 @@ export function createTimelineUI(animation, callbacks) {
       const onUp = () => {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        frozenValueRanges.delete(key);
+        render(); // re-fit the axis once, now that the drag is over
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -1185,7 +1196,8 @@ export function createTimelineUI(animation, callbacks) {
         // Realise bezier handles for this track (idempotent migration) so the
         // editor has handles to draw and drag.
         ensureBezierHandles(track);
-        valueRange = computeValueRange(track, animation.baseValues?.[key]);
+        valueRange = frozenValueRanges.get(key)
+          || computeValueRange(track, animation.baseValues?.[key]);
         curveCanvas = document.createElement('canvas');
         curveCanvas.className = 'anim-curve-canvas';
         row.appendChild(curveCanvas);
