@@ -1,4 +1,4 @@
-import { resolveTransform, saveCharacter, serializeLayerOverrides } from '../core/project.js';
+import { resolveTransform, saveCharacter, saveGlobal, serializeLayerOverrides } from '../core/project.js';
 import { stretchMatrix } from '../core/transform-math.js';
 import { commit as historyCommit } from '../core/history.js';
 import { layoutText } from './text-layout.js';
@@ -19,6 +19,7 @@ import { createParamsPanel, createTransformPanel } from '../ui/params-panel.js';
 import { createToolbar } from '../ui/toolbar.js';
 import { createStretchControl } from '../ui/preview-controls.js';
 import { createParamRow } from '../ui/param-row.js';
+import { addColorField } from '../ui/color-field.js';
 import { ensureFontLoaded, renderCharToContext } from '../render/font/font-import.js';
 import { fileToDataURL, loadImage } from '../utils/file-io.js';
 import { createSourceImageLoader } from './source-image.js';
@@ -232,6 +233,34 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
 
   sidebarEl.appendChild(typoGroup);
 
+  // Colors — canvas background and glyph fill, persisted on `global` so the
+  // composition keeps its palette across sessions. Live-preview on every
+  // picker input; the debounced saveGlobal write coalesces the drag.
+  const colorsGroup = document.createElement('div');
+  colorsGroup.className = 'param-group';
+  const colorsTitle = document.createElement('h3');
+  colorsTitle.textContent = 'Colors';
+  colorsGroup.appendChild(colorsTitle);
+
+  const bgColorInput = addColorField(colorsGroup, 'Background',
+    global.composeBgColor || '#ffffff',
+    (v) => {
+      global.composeBgColor = v;
+      saveGlobal(global);
+      applyComposeBg();
+      redraw();
+    });
+  const textColorInput = addColorField(colorsGroup, 'Text',
+    global.composeTextColor || '#000000',
+    (v) => {
+      global.composeTextColor = v;
+      saveGlobal(global);
+      stretchedGlyphCache.clear();   // glyph color is baked into cached bitmaps
+      redraw();
+    });
+
+  sidebarEl.appendChild(colorsGroup);
+
   // Stretch controls — shared with the index page via `global`.
   const stretchGroup = document.createElement('div');
   stretchGroup.className = 'param-group';
@@ -286,6 +315,13 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   const ctx = canvas.getContext('2d');
   centerEl.appendChild(canvas);
   const kernHint = createKernHint(centerEl);
+
+  // Keep the viewport area around the canvas on the same background as the
+  // canvas itself (the CSS default is white).
+  function applyComposeBg() {
+    centerEl.style.background = global.composeBgColor || '#fff';
+  }
+  applyComposeBg();
 
   // === Rendering (shared layout) ===
 
@@ -369,7 +405,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
     canvas.width = Math.ceil(layout.cw * zoom);
     canvas.height = Math.ceil(layout.ch * zoom);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = global.composeBgColor || '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(zoom, 0, 0, zoom, 0, 0);  // draw in unscaled layout coords
   }
@@ -406,6 +442,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
       glyphSize: RENDER_SIZE,
       preview: true,
       fontMetrics: global?.fontMetrics,
+      fillColor: global.composeTextColor,
     });
     stretchedGlyphCache.set(charId, off);
     return off;
@@ -549,6 +586,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
       glyphSize: RENDER,
       preview: false,           // cell outlines + glyph boundary as guides
       fontMetrics: global.fontMetrics,
+      fillColor: global.composeTextColor,
       backgroundImage: bg,
       backgroundOpacity: editBgOpacity,
       imageTransform: {
@@ -563,7 +601,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   // editZoom, so (gx, gy) are unscaled layout coordinates.
   function drawFocusGlyph(gx, gy) {
     renderEditOff();
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = global.composeBgColor || '#fff';
     ctx.fillRect(gx, gy, fontSize, fontSize);
     ctx.drawImage(editOff, gx, gy, fontSize, fontSize);
     ctx.strokeStyle = '#2563eb';
@@ -868,7 +906,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   // are hidden so the panel reads like the character editor's per-glyph panel.
   function setComposeControlsVisible(visible) {
     const display = visible ? '' : 'none';
-    for (const g of [textGroup, typoGroup, stretchGroup, transformGroup]) g.style.display = display;
+    for (const g of [textGroup, typoGroup, colorsGroup, stretchGroup, transformGroup]) g.style.display = display;
   }
 
   // --- Per-glyph editing panel ---
@@ -1216,6 +1254,9 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   function invalidate() {
     stretchedGlyphCache.clear();
     stretchControl.syncFromGlobal();
+    bgColorInput.value = global.composeBgColor || '#ffffff';
+    textColorInput.value = global.composeTextColor || '#000000';
+    applyComposeBg();
     for (const cid of Object.keys(project.characters)) {
       if (!sourceImageCache.has(cid)) getSourceImage(cid);
     }

@@ -2,6 +2,22 @@ import { applyMetaballFilter } from '../transform/metaball.js';
 import { cellDisplacement, cellScaleFactor } from './transform-utils.js';
 
 /**
+ * Recolor everything currently drawn on the canvas to `color` via a
+ * source-in fill. The metaball filter rewrites every pixel to opaque black
+ * (its alpha mask is brightness-based), so glyph color can't be applied at
+ * fill time — cells are always drawn black, then tinted here after the
+ * filter. Callers must invoke this while the canvas holds only cell fills.
+ */
+export function tintFills(ctx, color) {
+  if (!color || color === '#000' || color === '#000000') return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-in';
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.restore();
+}
+
+/**
  * Render layers to canvas.
  *
  * Drawing order:
@@ -86,6 +102,10 @@ export function renderCanvas(ctx, layers, opts = {}) {
   if (t.metaballRadius > 0) {
     applyMetaballFilter(ctx, t.metaballRadius, 100);
   }
+
+  // Glyph fill color — applied after the filter (which forces black), while
+  // the canvas holds only the cell fills.
+  tintFills(ctx, opts.fillColor);
 
   // Emphasized: the base image is drawn at full opacity, which would otherwise
   // bury the cell fills. Snapshot the fill mask and clear it so the image draws

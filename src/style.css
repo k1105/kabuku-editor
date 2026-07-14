@@ -996,6 +996,22 @@ select {
   border-color: var(--accent);
 }
 
+/* Color swatch inputs (Colors groups in compose sidebar / animation settings) */
+.param-row input[type="color"] {
+  flex: 0 0 48px;
+  height: 26px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.param-row input[type="color"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* Danger action: full-width, red text. Used for "Delete Glyph" at the
    bottom of the local sidebar. */
 .danger-btn {

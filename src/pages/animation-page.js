@@ -26,6 +26,7 @@ import { createPreviewRenderer } from './animation/preview.js';
 import { createPlayback } from './animation/playback.js';
 import { createAudioPanel } from './animation/audio-panel.js';
 import { addNumberField } from './animation/form-utils.js';
+import { addColorField } from '../ui/color-field.js';
 import { createTypefaceLinkControl } from './animation/typeface-link.js';
 
 const ANIMATED_SLIDER_DEFS = [
@@ -106,6 +107,9 @@ export function renderAnimationPage(app) {
   if (animation.beatsPerBar == null) animation.beatsPerBar = 4;
   if (animation.beatSnap == null) animation.beatSnap = true;
   if (animation.beatSnapDiv == null) animation.beatSnapDiv = 1;
+  // Back-fill frame colors on animations created before they were configurable.
+  if (!animation.bgColor) animation.bgColor = '#ffffff';
+  if (!animation.textColor) animation.textColor = '#000000';
 
   // Grid param sliders, grouped by default layer (one sub-section per layer).
   // The flattened def list is used for baseValues seeding + timeline labels.
@@ -224,6 +228,7 @@ export function renderAnimationPage(app) {
   // of when they're built below.
   const sfTypeface = makeSettingsGroup('Typeface');
   const sfCanvas = makeSettingsGroup('Canvas');
+  const sfColors = makeSettingsGroup('Colors');
   const sfMovie = makeSettingsGroup('Duration & FPS');
   const sfProject = makeSettingsGroup('Project Data');
   const sfLanguage = makeSettingsGroup('Language');
@@ -598,6 +603,16 @@ export function renderAnimationPage(app) {
     animation.canvasHeight = Math.max(1, Math.round(v));
     persist(); markDirty(); applyDisplayZoom(); redrawPreview(); commitHistory('canvas-size');
   });
+
+  // Frame colors (background / glyph fill). Applied inside render.js's
+  // renderInto, so preview and PNG/GIF export pick them up together.
+  // Live-preview on every picker input; commit history when the picker closes.
+  const bgColorInput = addColorField(sfColors, 'Background', animation.bgColor,
+    (v) => { animation.bgColor = v; persist(); markDirty(); redrawPreview(); },
+    () => { commitHistory('bg-color'); });
+  const textColorInput = addColorField(sfColors, 'Text', animation.textColor,
+    (v) => { animation.textColor = v; persist(); markDirty(); redrawPreview(); },
+    () => { commitHistory('text-color'); });
 
   const durationInput = addNumberField(sfMovie, 'Duration (s)', animation.duration, 0.5, 120, 0.5, (v) => {
     animation.duration = v;
@@ -1093,6 +1108,8 @@ export function renderAnimationPage(app) {
     refreshTextKfBtn();
     hBtn.classList.toggle('active', animation.writingMode === 'horizontal');
     vBtn.classList.toggle('active', animation.writingMode === 'vertical');
+    bgColorInput.value = animation.bgColor || '#ffffff';
+    textColorInput.value = animation.textColor || '#000000';
     if (animation.duration != null && currentTime > animation.duration) {
       currentTime = animation.duration;
     }

@@ -5,7 +5,7 @@ import { buildRuntimeLayers } from '../core/layer-builder.js';
 import { getGrid } from '../grids/grid-plugin.js';
 import { autoMesh } from '../core/mesh.js';
 import { loadImageCached } from '../core/image-cache.js';
-import { drawSourceImage } from '../render/canvas-renderer.js';
+import { drawSourceImage, tintFills } from '../render/canvas-renderer.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
@@ -164,7 +164,7 @@ function applyCameraTo(ctx, cam) {
  * frame-rectangle clip (cells that would land outside the un-zoomed frame are
  * still drawn, instead of being clamped at the work-canvas edge).
  */
-function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layers, charTransform, global, cam) {
+function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layers, charTransform, global, cam, fillColor) {
   workCtx.clearRect(0, 0, workCanvas.width, workCanvas.height);
 
   const baselineLocalY = (global?.fontMetrics?.baseline != null)
@@ -218,6 +218,10 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
   if (blur > 0) {
     applyMetaballFilter(workCtx, blur, 100);
   }
+
+  // Glyph fill color — applied after the filter (which forces black), while
+  // the work canvas holds only this glyph's cell fills.
+  tintFills(workCtx, fillColor);
 
   octx.drawImage(workCanvas, 0, 0);
 }
@@ -366,7 +370,7 @@ export function createFrameRenderer(animation, ctx) {
   const workCtx = workCanvas.getContext('2d');
 
   function renderInto(octx, params, layout) {
-    octx.fillStyle = '#fff';
+    octx.fillStyle = animation.bgColor || '#fff';
     octx.fillRect(0, 0, width, height);
 
     // Center the content within the fixed frame.
@@ -407,7 +411,7 @@ export function createFrameRenderer(animation, ctx) {
       const charTransform = resolveTransform({ ...global, ...transform }, charData?.transformOverrides || {});
       const layers = effectiveLayers(pos.charId, params);
       if (!layers) continue;
-      renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, params.fontSize, layers, charTransform, global, cam);
+      renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, params.fontSize, layers, charTransform, global, cam, animation.textColor);
     }
   }
 

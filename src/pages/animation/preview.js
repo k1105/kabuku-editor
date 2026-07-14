@@ -100,7 +100,7 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
   function prepareCanvas(cw, ch) {
     canvas.width = cw;
     canvas.height = ch;
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = state.animation.bgColor || '#fff';
     ctx.fillRect(0, 0, cw, ch);
   }
 
@@ -262,7 +262,7 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
   function drawCachedFrame(frame) {
     canvas.width = frame.width;
     canvas.height = frame.height;
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = state.animation.bgColor || '#fff';
     ctx.fillRect(0, 0, frame.width, frame.height);
     ctx.drawImage(frame, 0, 0);
   }

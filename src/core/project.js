@@ -57,6 +57,9 @@ const DEFAULT_GLOBAL = {
   ],
   fontMetrics: { ...DEFAULT_FONT_METRICS },
   fontInfo: { ...DEFAULT_FONT_INFO },
+  // Compose (組版) view colors — canvas background and glyph fill.
+  composeBgColor: '#ffffff',
+  composeTextColor: '#000000',
 };
 
 export const ANIMATED_PARAM_KEYS = [
@@ -108,6 +111,10 @@ export function createDefaultAnimation() {
     writingMode: 'horizontal',
     canvasWidth: 1920,
     canvasHeight: 1080,
+    // Frame background and glyph fill colors (applied in render.js, so
+    // preview and PNG/GIF export share them).
+    bgColor: '#ffffff',
+    textColor: '#000000',
     tracks: initialTracks(baseValues),
     // Step-keyframed text changes (no interpolation): { time, value:string }[].
     // Empty until the user stamps a text keyframe.
@@ -172,6 +179,8 @@ function ensureGlobalDefaults(g) {
   if (!g.fontMetrics) g.fontMetrics = { ...DEFAULT_FONT_METRICS };
   if (!g.fontInfo) g.fontInfo = { ...DEFAULT_FONT_INFO };
   if (g.kanjivgStrokeWidth === undefined) g.kanjivgStrokeWidth = DEFAULT_GLOBAL.kanjivgStrokeWidth;
+  if (g.composeBgColor === undefined) g.composeBgColor = DEFAULT_GLOBAL.composeBgColor;
+  if (g.composeTextColor === undefined) g.composeTextColor = DEFAULT_GLOBAL.composeTextColor;
   // Migrate the old document-wide scaleParallel/scaleOrthogonal (pre per-layer
   // scale) onto each layer that doesn't already have its own value.
   if (g.scaleParallel !== undefined || g.scaleOrthogonal !== undefined) {
