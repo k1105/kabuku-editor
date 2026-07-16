@@ -1,4 +1,5 @@
 import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
+import { connectorQuads } from './grid-connect.js';
 
 /**
  * Export a single layer to SVG.
@@ -67,13 +68,24 @@ function placeCells(layer, width, height, opts) {
     scaleOrthogonal: layer.scaleOrthogonal ?? 1,
   };
   const filled = layer.cells.filter(c => c.filled);
-  return filled.map(cell => {
+  const placed = filled.map(cell => {
     const { dx, dy, pos } = cellDisplacement(cell.center, t, width, height, baselineY);
     // Per-cell orientation scale, baked into a scaled geometry so the export
     // matches the canvas renderer.
     const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, scaleT));
     return { cell, geom, dx, dy, pos, radius: cellRadius(geom) };
   });
+  // Grid connect bridges, emitted as polygon placements (already displaced,
+  // so dx/dy stay 0) — matches the canvas renderer's bridge quads.
+  for (const q of connectorQuads(layer, t, width, height, baselineY)) {
+    const geom = { type: 'polygon', points: q.points };
+    let cx = 0, cy = 0;
+    for (const p of q.points) { cx += p.x; cy += p.y; }
+    cx /= q.points.length;
+    cy /= q.points.length;
+    placed.push({ cell: null, geom, dx: 0, dy: 0, pos: { x: cx, y: cy }, radius: cellRadius(geom) });
+  }
+  return placed;
 }
 
 /**

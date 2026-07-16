@@ -571,7 +571,13 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
       { ...global, baseGap, gapDirectionWeight, metaballRadius },
       cd?.transformOverrides || {}
     );
-    return { ...t, stretchAmount: 0, stretchAngle: 0, baseGap: 0, gapDirectionWeight: 0 };
+    // scaleRefAngle keeps direction-dependent rendering (per-cell orientation
+    // scale, grid connect) measured against the real stretch direction even
+    // though the displacement itself is dropped — same as the guides editor.
+    return {
+      ...t, stretchAmount: 0, stretchAngle: 0, baseGap: 0, gapDirectionWeight: 0,
+      scaleRefAngle: global.stretchAngle ?? 0,
+    };
   }
 
   // Render the focused glyph (un-stretched, with blur + guides) into the

@@ -40,6 +40,7 @@ const TRANSLATIONS = {
   Count: "個数",
   Scale: "倍率",
   "Grid Size": "升目の大きさ",
+  "Grid Connect": "グリッド接続",
   Seed: "種",
   Relaxation: "緩和",
   Gap: "スペーシング",

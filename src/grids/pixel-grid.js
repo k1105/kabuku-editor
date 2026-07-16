@@ -8,6 +8,8 @@ export const PixelGrid = {
     return [
       { key: 'gridSize', label: 'Grid Size', min: 4, max: 128, default: 32, step: 1 },
       { key: 'roundness', label: 'Roundness (□0–○1)', min: 0, max: 1, default: 0, step: 0.01 },
+      // Bridge consecutive filled cells orthogonal to the stretch direction (0=off, 1=on).
+      { key: 'connect', label: 'Grid Connect', min: 0, max: 1, default: 0, step: 1 },
     ];
   },
 

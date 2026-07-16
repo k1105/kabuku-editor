@@ -1,5 +1,6 @@
 import { applyMetaballFilter } from '../transform/metaball.js';
 import { cellDisplacement, cellScaleFactor } from './transform-utils.js';
+import { connectorQuads, fillQuad } from './grid-connect.js';
 
 /**
  * Recolor everything currently drawn on the canvas to `color` via a
@@ -92,6 +93,17 @@ export function renderCanvas(ctx, layers, opts = {}) {
       placeCell(cell, layer);
       ctx.fillStyle = '#000';
       ctx.fill(cell.path);
+      ctx.restore();
+    }
+
+    // Grid connect: bridge consecutive filled cells orthogonal to the
+    // stretch direction so each run reads as one continuous segment.
+    const quads = connectorQuads(layer, t, glyphSize, glyphSize, baselineLocalY);
+    if (quads.length > 0) {
+      ctx.save();
+      ctx.translate(ox, oy);
+      ctx.fillStyle = '#000';
+      for (const q of quads) fillQuad(ctx, q.points);
       ctx.restore();
     }
   }

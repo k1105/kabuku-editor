@@ -10,6 +10,7 @@ import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
 import { cellDisplacement, cellScaleFactor } from '../render/transform-utils.js';
+import { connectorQuads, fillQuad } from '../render/grid-connect.js';
 import { sampleAnimation } from './animation.js';
 
 // Threshold for per-frame auto-mesh of animated-grid glyphs. Matches the
@@ -206,6 +207,12 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
       workCtx.fill(cell.path);
       workCtx.restore();
     }
+    // Grid connect: bridge consecutive filled cells orthogonal to the
+    // stretch direction so each run reads as one continuous segment.
+    workCtx.fillStyle = '#000';
+    for (const q of connectorQuads(layer, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY)) {
+      fillQuad(workCtx, q.points);
+    }
   }
   workCtx.globalAlpha = 1;
   workCtx.restore();
@@ -357,7 +364,9 @@ export function createFrameRenderer(animation, ctx) {
       }
       const cells = dynamicCellsFor(charId, idx, gl.gridName, effParams);
       if (!cells) return layer;
-      return { ...layer, cells };
+      // Carry the frame's effective params so param-dependent rendering
+      // (e.g. grid connect) matches the cells actually generated.
+      return { ...layer, gridParams: effParams, cells };
     });
   }
 

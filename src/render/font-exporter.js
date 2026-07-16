@@ -1,5 +1,6 @@
 import opentype from 'opentype.js';
 import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
+import { connectorQuads } from './grid-connect.js';
 import { resolveTransform } from '../core/project.js';
 import { EM_SIZE, fontVerticalMetrics, glyphName, collectGlyphEntries } from './font/glyph-collect.js';
 
@@ -119,6 +120,11 @@ function buildGlyphPath(layers, transform, fontMetrics) {
       const { dx, dy } = cellDisplacement(cell.center, transform, EM_SIZE, EM_SIZE, baselineY);
       const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, layerTransform));
       appendCellSubpath(path, geom, dx, dy, baselineY);
+    }
+    // Grid connect bridges (already displaced → dx/dy = 0), so the exported
+    // glyph matches the canvas renderer's connected segments.
+    for (const q of connectorQuads(layer, transform, EM_SIZE, EM_SIZE, baselineY)) {
+      appendCellSubpath(path, { type: 'polygon', points: q.points }, 0, 0, baselineY);
     }
   }
   return path;
