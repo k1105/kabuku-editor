@@ -1,30 +1,28 @@
 /**
  * Gyro preview page (#/preview/{fontProjectId}) — a read-only, mobile-first
- * viewer: pick a typeset, tilt the device, and the text stretches toward the
- * tilt direction (stretchAngle/stretchAmount driven by DeviceOrientation).
+ * viewer: pick a typeset, tilt the device, and the gyro drives the typeface's
+ * own deformation parameters (stretchAngle / stretchAmount).
  *
- * Rendering strategy: glyphs are rasterized ONCE per charId with stretch
- * zeroed (only bounded params — gap/blur — baked in), then stretch is applied
- * every frame as a draw-time affine on the cached bitmap. This is the
- * approximation documented in glyph-cache.js (cells squash into ellipses
- * instead of repositioning), but it's the only way to track the gyro at 60fps
- * — baking stretch like compose-view does costs a 1024px renderCanvas per
- * glyph per change.
+ * Rendering goes through createFrameRenderer (animation/render.js) — the same
+ * per-frame pipeline the animation page scrubs with: per-cell displacement
+ * along the stretch direction, per-layer scaleParallel/scaleOrthogonal, grid
+ * connect and metaball blur are all live. This is real parameter-space
+ * deformation, not an affine squash of a cached bitmap.
  *
  * The project is loaded via fetchFontProjectSnapshot: no store, no edit lock,
  * no autosave — this page can never write.
  */
-import { fetchFontProjectSnapshot, resolveTransform } from '../core/project.js';
-import { buildRuntimeLayers } from '../core/layer-builder.js';
-import { renderCanvas } from '../render/canvas-renderer.js';
-import { computeCacheScale, RENDER_SIZE } from '../compose/glyph-cache.js';
+import { fetchFontProjectSnapshot } from '../core/project.js';
+import { createFrameRenderer } from '../animation/render.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
-import { stretchMatrix } from '../core/transform-math.js';
 
-const PAD = 16;            // CSS-px margin the layout is fitted into
+const PAD = 32;            // render-frame padding in device px
 const MAX_AMOUNT = 1.5;    // stretchAmount at full tilt (slider range is 0–2)
 const TILT_RANGE = 45;     // degrees of tilt that map to full stretch
 const SMOOTHING = 0.12;    // per-frame lerp factor toward the gyro target
+// Full-fidelity rendering (per-cell paths + blur per glyph per frame) is fill
+// rate bound — cap the backing store so phones keep an interactive rate.
+const MAX_CANVAS_PIXELS = 1_500_000;
 
 export async function renderPreviewPage(app, fontProjectId) {
   let project;
@@ -90,104 +88,89 @@ export async function renderPreviewPage(app, fontProjectId) {
   controls.appendChild(gyroBtn);
   page.appendChild(controls);
 
-  // --- Glyph cache (unstretched, colors baked) ------------------------------
-  // charId -> { bmp, cacheScale } | null
-  const cache = new Map();
-  function getGlyph(charId) {
-    if (cache.has(charId)) return cache.get(charId);
-    const charData = project.characters[charId];
-    let entry = null;
-    if (charData) {
-      const t = resolveTransform(global, charData.transformOverrides || {});
-      const cacheT = { ...t, stretchAmount: 0, stretchAngle: 0 };
-      const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
-      if (layers.length > 0) {
-        const cacheScale = computeCacheScale(cacheT);
-        const off = document.createElement('canvas');
-        off.width = off.height = Math.ceil(RENDER_SIZE * cacheScale);
-        renderCanvas(off.getContext('2d'), layers, {
-          transform: cacheT,
-          glyphSize: RENDER_SIZE,
-          preview: true,
-          fontMetrics: global?.fontMetrics,
-          fillColor: global.composeTextColor,
-        });
-        entry = { bmp: off, cacheScale };
-      }
-    }
-    cache.set(charId, entry);
-    return entry;
-  }
-
-  // --- Layout ----------------------------------------------------------------
-  let fontSize = Number(sizeInput.value);
-  let positions = [];
-  let fitScale = 1;
-  let offX = 0;
-  let offY = 0;
+  // --- Renderer + layout -----------------------------------------------------
+  // The frame renderer captures its canvas dimensions at creation (frame +
+  // work canvas), so it's rebuilt on resize. Its per-char runtime-layer cache
+  // is rebuilt too — acceptable, resize/rotation is rare.
+  let renderer = null;
+  let layout = null;
   let dirty = true;
-  const dpr = window.devicePixelRatio || 1;
 
-  function relayout() {
+  function rebuildRenderer() {
     const cssW = wrap.clientWidth;
     const cssH = wrap.clientHeight;
     if (cssW === 0 || cssH === 0) return;
+    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (cssW * cssH * dpr * dpr > MAX_CANVAS_PIXELS) {
+      dpr = Math.sqrt(MAX_CANVAS_PIXELS / (cssW * cssH));
+    }
     canvas.width = Math.round(cssW * dpr);
     canvas.height = Math.round(cssH * dpr);
-    positions = layoutText(textarea.value, charIdSet, {
-      fontSize,
-      textBoxWidth: Math.max(fontSize, cssW - PAD * 2),
+    // Synthetic single-frame "animation": fixed frame the size of our canvas,
+    // compose colors, no tracks (→ no per-frame auto-mesh path).
+    renderer = createFrameRenderer({
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      bgColor: global.composeBgColor || '#fff',
+      textColor: global.composeTextColor,
+      text: '',
+      tracks: {},
+    }, { project, global });
+    relayout();
+  }
+
+  /** Layout in device px. Wraps at the canvas width and shrinks fontSize once
+   *  when the block overflows, so the whole text fits the frame. Shape matches
+   *  what renderInto() expects ({positions, pad, cw, ch}). */
+  function relayout() {
+    if (!renderer) return;
+    const availW = canvas.width - PAD * 2;
+    const availH = canvas.height - PAD * 2;
+    const requested = Number(sizeInput.value) * (canvas.width / wrap.clientWidth);
+    const layoutAt = (fs) => layoutText(textarea.value, charIdSet, {
+      fontSize: fs,
+      textBoxWidth: Math.max(fs, availW),
       kerning: 0,
       lineHeight: 1.4,
       writingMode: 'horizontal',
     });
-    const bounds = layoutBounds(positions, fontSize);
-    fitScale = Math.min(
+    let fontSize = requested;
+    let positions = layoutAt(fontSize);
+    let bounds = layoutBounds(positions, fontSize);
+    const fit = Math.min(
       1,
-      (cssW - PAD * 2) / Math.max(1, bounds.width),
-      (cssH - PAD * 2) / Math.max(1, bounds.height),
+      availW / Math.max(1, bounds.width),
+      availH / Math.max(1, bounds.height),
     );
-    offX = (cssW - bounds.width * fitScale) / 2;
-    offY = (cssH - bounds.height * fitScale) / 2;
+    if (fit < 1) {
+      fontSize = Math.max(8, fontSize * fit);
+      positions = layoutAt(fontSize);
+      bounds = layoutBounds(positions, fontSize);
+    }
+    layout = {
+      positions,
+      pad: PAD,
+      cw: bounds.width + PAD * 2,
+      ch: bounds.height + PAD * 2,
+      fontSize,
+    };
     dirty = true;
   }
 
   // --- Draw ------------------------------------------------------------------
-  const baselineRatio = global.fontMetrics?.baseline ?? 0.5;
-
   function draw(angleDeg, amount) {
-    const { a, b, d } = stretchMatrix(angleDeg, amount);
-    const halfW = fontSize / 2;
-    const above = fontSize * baselineRatio;
-    const s = dpr * fitScale;
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = global.composeBgColor || '#fff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    for (const pos of positions) {
-      // Stretch pivots on the row baseline center, matching compose-view.
-      const tx = dpr * (offX + (pos.x + halfW) * fitScale);
-      const ty = dpr * (offY + (pos.y + above) * fitScale);
-      ctx.setTransform(s * a, s * b, s * b, s * d, tx, ty);
-
-      if (pos.missing) {
-        ctx.strokeStyle = '#bbb';
-        ctx.lineWidth = 1 / fitScale;
-        ctx.strokeRect(-halfW, -above, fontSize, fontSize);
-        continue;
-      }
-      const entry = getGlyph(pos.charId);
-      if (!entry) continue;
-      const drawSize = fontSize * entry.cacheScale;
-      const drawOffset = (drawSize - fontSize) / 2;
-      ctx.drawImage(
-        entry.bmp,
-        -halfW - drawOffset, -above - drawOffset,
-        drawSize, drawSize,
-      );
-    }
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (!renderer || !layout) return;
+    renderer.renderInto(ctx, {
+      fontSize: layout.fontSize,
+      // The gyro drives the typeface's own deformation parameters; everything
+      // else keeps the project's saved global values (per-char overrides are
+      // still resolved inside renderInto).
+      stretchAngle: angleDeg,
+      stretchAmount: amount,
+      baseGap: global.baseGap ?? 0,
+      gapDirectionWeight: global.gapDirectionWeight ?? 0,
+      metaballRadius: global.metaballRadius ?? 8,
+    }, layout);
   }
 
   // --- Tilt state + animation loop -------------------------------------------
@@ -267,12 +250,9 @@ export async function renderPreviewPage(app, fontProjectId) {
 
   // --- Controls --------------------------------------------------------------
   textarea.addEventListener('input', relayout);
-  sizeInput.addEventListener('input', () => {
-    fontSize = Number(sizeInput.value);
-    relayout();
-  });
+  sizeInput.addEventListener('input', relayout);
 
-  const ro = new ResizeObserver(relayout);
+  const ro = new ResizeObserver(rebuildRenderer);
   ro.observe(wrap);
 
   // --- Teardown on navigation --------------------------------------------
@@ -283,10 +263,10 @@ export async function renderPreviewPage(app, fontProjectId) {
     window.removeEventListener('deviceorientation', onOrientation);
     ro.disconnect();
     cancelAnimationFrame(rafId);
-    cache.clear();
+    renderer = null;
   }
   window.addEventListener('hashchange', destroy);
 
-  relayout();
+  rebuildRenderer();
   frame();
 }
