@@ -159,6 +159,13 @@ function createFontProjectCard(item, refresh) {
 
   const actions = document.createElement("div");
   actions.className = "project-card-actions";
+  const previewBtn = iconButton("preview", "Preview", {
+    title: "Preview (ジャイロで変形)",
+  });
+  previewBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    location.hash = `#/preview/${item.id}`;
+  });
   const renameBtn = iconButton("paintbrush", "Rename", {title: "Rename"});
   renameBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -185,6 +192,7 @@ function createFontProjectCard(item, refresh) {
       alert(err.message);
     }
   });
+  actions.appendChild(previewBtn);
   actions.appendChild(renameBtn);
   actions.appendChild(duplicateButton(item, duplicateFontProject, refresh));
   actions.appendChild(delBtn);

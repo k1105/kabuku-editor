@@ -2,6 +2,7 @@ import 'iconify-icon';
 import { renderIndexPage } from './pages/index-page.js';
 import { renderAnimationPage } from './pages/animation-page.js';
 import { renderProjectListPage } from './pages/project-list-page.js';
+import { renderPreviewPage } from './pages/preview-page.js';
 import { startAutoTranslate, createLangToggle } from './ui/i18n.js';
 import {
   loadProject, bootFontProject, unloadFontProject, flushNow as flushFontNow,
@@ -29,6 +30,8 @@ import { acquireEditLock, releaseEditLock, checkEditLock } from './core/edit-loc
  *   #/font/{id}            → font edit page (a.k.a. index-page; Compose lives
  *                            inside it as a sidebar panel)
  *   #/animation/{id}       → animation page
+ *   #/preview/{id}         → read-only gyro preview of a font project
+ *                            (mobile-first; no edit lock, no history)
  *
  * The old #/font/{id}/compose route is rewritten to the font edit page so
  * stale bookmarks still resolve (Compose was merged into the editor).
@@ -44,6 +47,9 @@ function getRoute() {
   }
   if ((m = hash.match(/^#\/animation\/([^/]+)\/?$/))) {
     return { page: 'animation', animationProjectId: decodeURIComponent(m[1]) };
+  }
+  if ((m = hash.match(/^#\/preview\/([^/]+)\/?$/))) {
+    return { page: 'preview', fontProjectId: decodeURIComponent(m[1]) };
   }
   return { page: 'list' };
 }
@@ -137,6 +143,20 @@ async function render() {
     _activePageRefresh = null;
     await renderProjectListPage(app);
     injectLangToggle(app);
+    return;
+  }
+
+  if (route.page === 'preview') {
+    showLoading(app, 'Loading preview...');
+    // Read-only viewer: release any project/lock state like the list page
+    // does — the page fetches its own snapshot and never writes.
+    await unloadFontProject();
+    await unloadAnimationProject();
+    await setActiveLock(null, null);
+    resetAnimationHistory();
+    _activeRoute = route;
+    _activePageRefresh = null;
+    await renderPreviewPage(app, route.fontProjectId);
     return;
   }
 
