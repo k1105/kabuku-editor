@@ -2623,9 +2623,19 @@ select {
   padding: 8px;
   line-height: 1.3;
 }
-.preview-size {
-  width: 90px;
+.preview-slider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   flex-shrink: 0;
+}
+.preview-slider span {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.preview-slider input {
+  width: 80px;
 }
 .preview-gyro-btn {
   flex-shrink: 0;

@@ -17,7 +17,7 @@ import { createFrameRenderer } from '../animation/render.js';
 import { layoutText, layoutBounds } from '../compose/text-layout.js';
 
 const PAD = 32;            // render-frame padding in device px
-const MAX_AMOUNT = 1.5;    // stretchAmount at full tilt (slider range is 0–2)
+const DEFAULT_MAX_AMOUNT = 2; // stretchAmount at full tilt (adjustable in the UI)
 const TILT_RANGE = 45;     // degrees of tilt that map to full stretch
 const SMOOTHING = 0.12;    // per-frame lerp factor toward the gyro target
 // Full-fidelity rendering (per-cell paths + blur per glyph per frame) is fill
@@ -78,13 +78,28 @@ export async function renderPreviewPage(app, fontProjectId) {
   sizeInput.min = '24';
   sizeInput.max = '200';
   sizeInput.value = '72';
-  sizeInput.className = 'preview-size';
+  const stretchInput = document.createElement('input');
+  stretchInput.type = 'range';
+  stretchInput.min = '0';
+  stretchInput.max = '6';
+  stretchInput.step = '0.1';
+  stretchInput.value = String(DEFAULT_MAX_AMOUNT);
   const gyroBtn = document.createElement('button');
   gyroBtn.type = 'button';
   gyroBtn.className = 'preview-gyro-btn';
   gyroBtn.textContent = 'ジャイロ開始';
+  const labeledSlider = (input, text) => {
+    const label = document.createElement('label');
+    label.className = 'preview-slider';
+    const caption = document.createElement('span');
+    caption.textContent = text;
+    label.appendChild(caption);
+    label.appendChild(input);
+    return label;
+  };
   controls.appendChild(textarea);
-  controls.appendChild(sizeInput);
+  controls.appendChild(labeledSlider(sizeInput, 'サイズ'));
+  controls.appendChild(labeledSlider(stretchInput, '変形量'));
   controls.appendChild(gyroBtn);
   page.appendChild(controls);
 
@@ -191,7 +206,7 @@ export async function renderPreviewPage(app, fontProjectId) {
     dirty = false;
     const mag = Math.min(1, Math.hypot(current.x, current.y));
     const angle = ((Math.atan2(current.y, current.x) * 180) / Math.PI + 360) % 180;
-    draw(angle, mag * MAX_AMOUNT);
+    draw(angle, mag * Number(stretchInput.value));
   }
 
   // --- Gyro ------------------------------------------------------------------
@@ -251,6 +266,7 @@ export async function renderPreviewPage(app, fontProjectId) {
   // --- Controls --------------------------------------------------------------
   textarea.addEventListener('input', relayout);
   sizeInput.addEventListener('input', relayout);
+  stretchInput.addEventListener('input', () => { dirty = true; });
 
   const ro = new ResizeObserver(rebuildRenderer);
   ro.observe(wrap);
