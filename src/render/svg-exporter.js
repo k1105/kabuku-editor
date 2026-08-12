@@ -41,6 +41,56 @@ ${indent(body, '    ')}
   return wrapSVG(groups.join('\n'), bbox);
 }
 
+/**
+ * Inner SVG markup for one glyph's visible layers (no <svg> wrapper), in
+ * glyph-local coordinates [0, glyphSize]. Returns '' when nothing is drawn.
+ * Shared by the compose-view composition export, which places the same glyph
+ * at multiple positions and caches this body per character.
+ * @param {Object[]} layers
+ * @param {number} glyphSize - glyph box width/height
+ * @param {Object} [opts] - { transform, fontMetrics, fill }
+ */
+export function renderGlyphBody(layers, glyphSize, opts = {}) {
+  const visible = layers.filter(l => l.visible);
+  const glyphOpts = { transform: opts.transform, fontMetrics: opts.fontMetrics };
+  const placedPerLayer = visible.map(l => placeCells(l, glyphSize, glyphSize, glyphOpts));
+  const blur = (opts.transform?.metaballRadius) || 0;
+  const bbox = computeBBox(placedPerLayer.map(p => ({ placed: p, blur })), glyphSize, glyphSize);
+
+  const groups = [];
+  for (let i = 0; i < visible.length; i++) {
+    const body = renderLayerBody(placedPerLayer[i], bbox, blur, opts.fill);
+    if (!body) continue;
+    groups.push(`<g opacity="${visible[i].opacity}">\n${indent(body, '  ')}\n</g>`);
+  }
+  return groups.join('\n');
+}
+
+/**
+ * Export a composed text layout to a single SVG.
+ * @param {Object[]} placements - [{ body, x, y, scale }] where `body` is
+ *   renderGlyphBody() markup in glyph-local coords, placed at (x, y) in
+ *   composition coords and scaled by `scale`.
+ * @param {Object} opts - { width, height, background } (composition px;
+ *   background rect omitted when falsy)
+ */
+export function exportCompositionToSVG(placements, { width, height, background } = {}) {
+  const parts = [];
+  if (background) {
+    parts.push(`  <rect width="${num(width)}" height="${num(height)}" fill="${background}"/>`);
+  }
+  for (const p of placements) {
+    if (!p.body) continue;
+    parts.push(`  <g transform="translate(${num(p.x)} ${num(p.y)}) scale(${numPrecise(p.scale)})">
+${indent(p.body, '    ')}
+  </g>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${num(width)}" height="${num(height)}" viewBox="0 0 ${num(width)} ${num(height)}">
+${parts.join('\n')}
+</svg>`;
+}
+
 function wrapSVG(body, bbox) {
   const w = bbox.maxX - bbox.minX;
   const h = bbox.maxY - bbox.minY;
@@ -154,16 +204,16 @@ function geometryExtent(g, dx, dy) {
  * empty. If blurRadius > 0, emits a vector metaball isocontour instead of
  * individual cell shapes.
  */
-function renderLayerBody(placed, bbox, blurRadius) {
+function renderLayerBody(placed, bbox, blurRadius, fill = '#000') {
   if (placed.length === 0) return '';
   if (blurRadius > 0) {
-    return renderMetaballPath(placed, bbox, blurRadius);
+    return renderMetaballPath(placed, bbox, blurRadius, fill);
   }
   const shapes = placed
     .map(({ geom, dx, dy }) => geometryToSVG(geom, dx, dy))
     .filter(Boolean);
   if (shapes.length === 0) return '';
-  return `<g fill="#000">\n${shapes.map(s => '  ' + s).join('\n')}\n</g>`;
+  return `<g fill="${fill}">\n${shapes.map(s => '  ' + s).join('\n')}\n</g>`;
 }
 
 function geometryToSVG(geometry, dx = 0, dy = 0) {
@@ -211,6 +261,12 @@ function num(v) {
   return Math.round(v * 100) / 100;
 }
 
+/** Higher-precision number for scale factors, where 2 decimals would drift
+ *  (e.g. fontSize 64 / glyph 1024 = 0.0625). */
+function numPrecise(v) {
+  return Math.round(v * 1e6) / 1e6;
+}
+
 // ─── Vector metaball via marching squares ───────────────────────────────────
 
 /**
@@ -219,7 +275,7 @@ function num(v) {
  * blur filter, then tracing the 50% brightness isoline with marching squares.
  * Coordinates are emitted in glyph-local units so they align with viewBox.
  */
-function renderMetaballPath(placed, bbox, blurRadius) {
+function renderMetaballPath(placed, bbox, blurRadius, fill = '#000') {
   const bw = Math.max(1, Math.ceil(bbox.maxX - bbox.minX));
   const bh = Math.max(1, Math.ceil(bbox.maxY - bbox.minY));
 
@@ -325,7 +381,7 @@ function renderMetaballPath(placed, bbox, blurRadius) {
 
   const polylines = linkSegments(segments);
   const d = polylines.map(toPathData).join(' ');
-  return `<g fill="#000" fill-rule="evenodd">\n  <path d="${d}"/>\n</g>`;
+  return `<g fill="${fill}" fill-rule="evenodd">\n  <path d="${d}"/>\n</g>`;
 }
 
 /** Stamp a cell's geometry onto a 2D context for offscreen rasterization. */

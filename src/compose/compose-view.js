@@ -21,7 +21,8 @@ import { createStretchControl } from '../ui/preview-controls.js';
 import { createParamRow } from '../ui/param-row.js';
 import { addColorField } from '../ui/color-field.js';
 import { ensureFontLoaded, renderCharToContext } from '../render/font/font-import.js';
-import { fileToDataURL, loadImage } from '../utils/file-io.js';
+import { renderGlyphBody, exportCompositionToSVG } from '../render/svg-exporter.js';
+import { fileToDataURL, loadImage, saveFile } from '../utils/file-io.js';
 import { createSourceImageLoader } from './source-image.js';
 
 /**
@@ -299,6 +300,66 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   );
 
   sidebarEl.appendChild(transformGroup);
+
+  // Export — composed text as a single SVG, matching the canvas (per-char
+  // transform overrides, stretch, gap, metaball, colors).
+  const exportGroup = document.createElement('div');
+  exportGroup.className = 'param-group';
+  const exportTitle = document.createElement('h3');
+  exportTitle.textContent = 'Export';
+  exportGroup.appendChild(exportTitle);
+
+  const svgExportBtn = document.createElement('button');
+  svgExportBtn.className = 'tool-btn';
+  svgExportBtn.textContent = 'SVG Export';
+  svgExportBtn.addEventListener('click', exportComposedSVG);
+  exportGroup.appendChild(svgExportBtn);
+
+  sidebarEl.appendChild(exportGroup);
+
+  async function exportComposedSVG() {
+    try {
+      const layout = computeLayout();
+      const scale = fontSize / RENDER_SIZE;
+      const fill = global.composeTextColor || '#000000';
+      const bodyCache = new Map();   // charId -> glyph-local SVG markup
+      const placements = [];
+      for (const pos of layout.positions) {
+        if (pos.missing || !project.characters[pos.charId]) continue;
+        let body = bodyCache.get(pos.charId);
+        if (body === undefined) {
+          const charData = project.characters[pos.charId];
+          const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
+          const charTransform = resolveTransform(
+            { ...global, baseGap, gapDirectionWeight, metaballRadius },
+            charData.transformOverrides || {}
+          );
+          body = renderGlyphBody(layers, RENDER_SIZE, {
+            transform: charTransform,
+            fontMetrics: global.fontMetrics,
+            fill,
+          });
+          bodyCache.set(pos.charId, body);
+        }
+        if (!body) continue;
+        placements.push({ body, x: layout.offX + pos.x, y: layout.offY + pos.y, scale });
+      }
+      if (placements.length === 0) {
+        alert('書き出せるグリフがありません。');
+        return;
+      }
+      const svg = exportCompositionToSVG(placements, {
+        width: layout.cw,
+        height: layout.ch,
+        background: global.composeBgColor || '#ffffff',
+      });
+      const base = inputText.replace(/[\\/:*?"<>|\s]+/g, '').slice(0, 12) || 'composition';
+      await saveFile(svg, `${base}.svg`, 'image/svg+xml');
+    } catch (e) {
+      console.error(e);
+      alert(`SVG export failed: ${e.message}`);
+    }
+  }
 
   // Per-glyph layer/grid editing panel — populated only while a glyph is
   // focused (in-place editing). Sits at the top of the sidebar so the active
@@ -912,7 +973,7 @@ export function createComposeView({ project, global, onCharEdited, onCharsAdded 
   // are hidden so the panel reads like the character editor's per-glyph panel.
   function setComposeControlsVisible(visible) {
     const display = visible ? '' : 'none';
-    for (const g of [textGroup, typoGroup, colorsGroup, stretchGroup, transformGroup]) g.style.display = display;
+    for (const g of [textGroup, typoGroup, colorsGroup, stretchGroup, transformGroup, exportGroup]) g.style.display = display;
   }
 
   // --- Per-glyph editing panel ---
