@@ -1,6 +1,6 @@
 import opentype from 'opentype.js';
 import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
-import { connectorQuads } from './grid-connect.js';
+import { connectorQuads, connectHiddenCells } from './grid-connect.js';
 import { resolveTransform } from '../core/project.js';
 import { EM_SIZE, fontVerticalMetrics, glyphName, collectGlyphEntries } from './font/glyph-collect.js';
 
@@ -21,7 +21,12 @@ export function buildFont(project, opts = {}) {
   const global = project.global;
   const fontInfo = global.fontInfo || {};
   const fontMetrics = global.fontMetrics || {};
-  const transform = opts.transform || resolveTransform(global, {});
+  const transform = {
+    ...(opts.transform || resolveTransform(global, {})),
+    // Version-gated render behavior comes from the project, not the caller's
+    // (possibly partial) transform.
+    connectHideInterior: !!global.connectHideInterior,
+  };
 
   // Font-unit reference: baseline at y=0, ascent above (positive), descent below.
   // kabuku's canvas Y is down with baseline at `baselineRatio * EM_SIZE`.
@@ -115,8 +120,10 @@ function buildGlyphPath(layers, transform, fontMetrics) {
       scaleParallel: layer.scaleParallel ?? 1,
       scaleOrthogonal: layer.scaleOrthogonal ?? 1,
     };
+    // Grid connect hides the interior cells of each run (see grid-connect.js).
+    const hidden = connectHiddenCells(layer, transform);
     for (const cell of layer.cells) {
-      if (!cell.filled) continue;
+      if (!cell.filled || hidden.has(cell)) continue;
       const { dx, dy } = cellDisplacement(cell.center, transform, EM_SIZE, EM_SIZE, baselineY);
       const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, layerTransform));
       appendCellSubpath(path, geom, dx, dy, baselineY);

@@ -1,6 +1,6 @@
 import { applyMetaballFilter } from '../transform/metaball.js';
 import { cellDisplacement, cellScaleFactor } from './transform-utils.js';
-import { connectorQuads, fillQuad } from './grid-connect.js';
+import { connectorQuads, connectHiddenCells, fillQuad } from './grid-connect.js';
 
 /**
  * Recolor everything currently drawn on the canvas to `color` via a
@@ -81,31 +81,38 @@ export function renderCanvas(ctx, layers, opts = {}) {
     }
   }
 
-  // ── 1. Cell fills (back-most) ──
-  for (const layer of layers) {
-    if (!layer.visible) continue;
-    ctx.globalAlpha = layer.opacity;
-
+  // Fill one layer's cells + grid-connect bridges in the current fillStyle.
+  // Grid connect: consecutive filled cells orthogonal to the stretch
+  // direction are bridged with quads so each run reads as one continuous
+  // segment; the run's interior cells skip their own shape (only the
+  // endpoints keep it) so nothing pokes out of the bridge.
+  function fillLayer(layer, color) {
+    const hidden = connectHiddenCells(layer, t);
     for (const cell of layer.cells) {
-      if (!cell.filled) continue;
+      if (!cell.filled || hidden.has(cell)) continue;
 
       ctx.save();
       placeCell(cell, layer);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = color;
       ctx.fill(cell.path);
       ctx.restore();
     }
 
-    // Grid connect: bridge consecutive filled cells orthogonal to the
-    // stretch direction so each run reads as one continuous segment.
     const quads = connectorQuads(layer, t, glyphSize, glyphSize, baselineLocalY);
     if (quads.length > 0) {
       ctx.save();
       ctx.translate(ox, oy);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = color;
       for (const q of quads) fillQuad(ctx, q.points);
       ctx.restore();
     }
+  }
+
+  // ── 1. Cell fills (back-most) ──
+  for (const layer of layers) {
+    if (!layer.visible) continue;
+    ctx.globalAlpha = layer.opacity;
+    fillLayer(layer, '#000');
   }
 
   ctx.globalAlpha = 1;
@@ -177,15 +184,7 @@ export function renderCanvas(ctx, layers, opts = {}) {
       const layer = layers[activeLayerIndex];
       if (layer && layer.visible) {
         ctx.globalAlpha = layer.opacity;
-        for (const cell of layer.cells) {
-          if (!cell.filled) continue;
-
-          ctx.save();
-          placeCell(cell, layer);
-          ctx.fillStyle = 'rgba(255, 0, 0, 0.55)';
-          ctx.fill(cell.path);
-          ctx.restore();
-        }
+        fillLayer(layer, 'rgba(255, 0, 0, 0.55)');
         ctx.globalAlpha = 1;
       }
     }

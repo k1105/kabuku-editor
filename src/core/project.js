@@ -18,8 +18,15 @@ import { currentUser, userInfo } from './auth.js';
 import { getAllGrids } from '../grids/grid-plugin.js';
 import { createChangeBus, createDebouncedWriter, chunkOpsBySize, estimateDocBytes, FIRESTORE_MAX_DOC_BYTES } from './store-utils.js';
 import { encodeCellsV2 } from './cell-codec.js';
+import { CAMERA_PARAM_KEYS, CAMERA_DEFAULTS } from '../animation/camera.js';
 
-const VERSION = 8;
+// Project format/behavior version. Bumped when a change alters how existing
+// projects render, so older projects keep their look until explicitly migrated
+// (duplicate → migrateFontProjectVersion).
+//   9: grid connect hides the interior cells of each connected run (only the
+//      run's endpoints keep their own shape) — see render/grid-connect.js.
+export const VERSION = 9;
+const CONNECT_HIDE_INTERIOR_MIN_VERSION = 9;
 const WRITE_DEBOUNCE_MS = 1500;
 
 export const DEFAULT_FONT_METRICS = {
@@ -57,6 +64,9 @@ const DEFAULT_GLOBAL = {
   ],
   fontMetrics: { ...DEFAULT_FONT_METRICS },
   fontInfo: { ...DEFAULT_FONT_INFO },
+  // Version-gated render behavior (derived from the project version on load,
+  // never user-edited): grid connect draws only the endpoints of each run.
+  connectHideInterior: true,
   // Compose (組版) view colors — canvas background and glyph fill.
   composeBgColor: '#ffffff',
   composeTextColor: '#000000',
@@ -72,10 +82,8 @@ export const ANIMATED_PARAM_KEYS = [
   'textBoxWidth',
   'kerning',
   'lineHeight',
-  'cameraX',
-  'cameraY',
-  'cameraDistance',
-  'cameraRotation',
+  // 3D lookAt camera (see animation/camera.js): position, target, roll, focal.
+  ...CAMERA_PARAM_KEYS,
 ];
 
 export const DEFAULT_ANIMATION_BASE_VALUES = {
@@ -88,10 +96,7 @@ export const DEFAULT_ANIMATION_BASE_VALUES = {
   textBoxWidth: 800,
   kerning: 0,
   lineHeight: 1.5,
-  cameraX: 0,
-  cameraY: 0,
-  cameraDistance: 1,
-  cameraRotation: 0,
+  ...CAMERA_DEFAULTS,
 };
 
 function initialTracks(baseValues) {
@@ -173,7 +178,16 @@ function defaultGlobal() {
   };
 }
 
-function ensureGlobalDefaults(g) {
+/** Whether a project at `version` renders grid connect with hidden interior cells. */
+export function connectHideInteriorForVersion(version) {
+  return (version || VERSION) >= CONNECT_HIDE_INTERIOR_MIN_VERSION;
+}
+
+function ensureGlobalDefaults(g, version) {
+  // Derived from the project version every load (the stored value is only a
+  // cache) so the version stays the single source of truth; animation
+  // snapshots freeze the value along with the rest of the global.
+  g.connectHideInterior = connectHideInteriorForVersion(version);
   if (!g.gridDefaults || Object.keys(g.gridDefaults).length === 0) g.gridDefaults = buildGridDefaults();
   if (!g.defaultLayers || g.defaultLayers.length === 0) g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
   if (!g.fontMetrics) g.fontMetrics = { ...DEFAULT_FONT_METRICS };
@@ -303,12 +317,13 @@ export async function bootFontProject(projectId) {
   const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
   const characters = {};
   for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
+  const version = meta.version || VERSION;
   _fp = {
     id: projectId,
     name: meta.name || 'Untitled',
-    global: ensureGlobalDefaults({ ...defaultGlobal(), ...(meta.global || {}) }),
+    global: ensureGlobalDefaults({ ...defaultGlobal(), ...(meta.global || {}) }, version),
     characters,
-    version: meta.version || VERSION,
+    version,
   };
   _fpId = projectId;
   _dirtyChars.clear();
@@ -750,13 +765,38 @@ export async function fetchFontProjectSnapshot(projectId) {
   const charsSnap = await getDocs(collection(db, 'fontProjects', projectId, 'characters'));
   const characters = {};
   for (const d of charsSnap.docs) characters[docIdToCharId(d.id)] = d.data();
+  const version = meta.version || VERSION;
   return {
     id: projectId,
     name: meta.name || 'Untitled',
-    global: ensureGlobalDefaults({ ...defaultGlobal(), ...(meta.global || {}) }),
+    global: ensureGlobalDefaults({ ...defaultGlobal(), ...(meta.global || {}) }, version),
     characters,
-    version: meta.version || VERSION,
+    version,
   };
+}
+
+/**
+ * Migrate a font project to the current VERSION (opts in to the newest
+ * version-gated render behavior). Only touches the meta doc: version plus the
+ * derived global flags. Intended to be run on a duplicate so the original
+ * keeps its look. Returns false when the project is already current; throws
+ * for the active in-memory project (its cached version would go stale).
+ */
+export async function migrateFontProjectVersion(projectId) {
+  if (projectId === _fpId) throw new Error('Cannot migrate the active project; switch projects first');
+  const db = getDb();
+  const ref = doc(db, 'fontProjects', projectId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error(`Font project not found: ${projectId}`);
+  const meta = snap.data();
+  if ((meta.version || 0) >= VERSION) return false;
+  await updateDoc(ref, {
+    version: VERSION,
+    'global.connectHideInterior': connectHideInteriorForVersion(VERSION),
+    updatedAt: serverTimestamp(),
+    lastEditor: userInfo() || null,
+  });
+  return true;
 }
 
 /**
@@ -785,6 +825,9 @@ export function resolveTransform(global, overrides) {
     metaballRadius: global.metaballRadius,
     stretchAngle: global.stretchAngle,
     stretchAmount: global.stretchAmount,
+    // Version-gated render behavior rides along with the transform so every
+    // renderer/exporter sees it without extra plumbing.
+    connectHideInterior: !!global.connectHideInterior,
     ...overrides,
   };
 }

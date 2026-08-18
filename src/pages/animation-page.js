@@ -10,6 +10,7 @@ import { sampleAnimation, upsertKeyframe, clampTime, nextKeyframeTime, prevKeyfr
 import { attachCharKerningKeys, remapCharKerning, kernHintText, createKernHint, attachKernCaretTracking } from '../compose/char-kerning.js';
 import { createTimelineUI } from '../animation/timeline-ui.js';
 import { renderFrames, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../animation/render.js';
+import { migrateLegacyCamera } from '../animation/camera.js';
 import { exportPngSequence, exportGif } from '../animation/export.js';
 import { createPageHeader } from '../ui/page-header.js';
 import { iconEl, iconSvg, iconButton } from '../ui/icons.js';
@@ -28,6 +29,7 @@ import { createAudioPanel } from './animation/audio-panel.js';
 import { addNumberField } from './animation/form-utils.js';
 import { addColorField } from '../ui/color-field.js';
 import { createTypefaceLinkControl } from './animation/typeface-link.js';
+import { createCameraSceneView } from './animation/camera-scene-view.js';
 
 const ANIMATED_SLIDER_DEFS = [
   { key: 'fontSize', label: 'Font Size', min: 16, max: 256, step: 1 },
@@ -42,12 +44,26 @@ const ANIMATED_SLIDER_DEFS = [
   { key: 'metaballRadius', label: 'Blur', min: 0, max: 30, step: 1 },
 ];
 
-const CAMERA_SLIDER_DEFS = [
-  { key: 'cameraX', label: 'X', min: -1000, max: 1000, step: 1 },
-  { key: 'cameraY', label: 'Y', min: -1000, max: 1000, step: 1 },
-  { key: 'cameraDistance', label: 'Distance', min: 0.1, max: 5, step: 0.05 },
-  { key: 'cameraRotation', label: 'Rotation', min: -180, max: 180, step: 1 },
+// 3D lookAt camera (see animation/camera.js). World units are frame pixels
+// with the origin at the frame center; the camera at (X, Y, Z) always looks at
+// the plane point (Look At X, Y). Sub-groups keep the panel readable; the
+// timeline is flat, so `timelineLabel` qualifies the short row labels there.
+const CAMERA_SLIDER_GROUPS = [
+  { title: 'Position', defs: [
+    { key: 'cameraX', label: 'X', timelineLabel: 'Camera X', min: -2000, max: 2000, step: 1 },
+    { key: 'cameraY', label: 'Y', timelineLabel: 'Camera Y', min: -2000, max: 2000, step: 1 },
+    { key: 'cameraZ', label: 'Z', timelineLabel: 'Camera Z', min: 100, max: 5000, step: 10, hardMin: 1 },
+  ] },
+  { title: 'Look At', defs: [
+    { key: 'cameraTargetX', label: 'X', timelineLabel: 'Look At X', min: -2000, max: 2000, step: 1 },
+    { key: 'cameraTargetY', label: 'Y', timelineLabel: 'Look At Y', min: -2000, max: 2000, step: 1 },
+  ] },
+  { title: 'Lens', defs: [
+    { key: 'cameraRoll', label: 'Roll', min: -180, max: 180, step: 1 },
+    { key: 'cameraFocal', label: 'Focal Length', min: 200, max: 5000, step: 10, hardMin: 1 },
+  ] },
 ];
+const CAMERA_SLIDER_DEFS = CAMERA_SLIDER_GROUPS.flatMap(g => g.defs);
 
 /**
  * Build animatable grid-param sliders grouped by default layer. Returns one
@@ -110,6 +126,9 @@ export function renderAnimationPage(app) {
   // Back-fill frame colors on animations created before they were configurable.
   if (!animation.bgColor) animation.bgColor = '#ffffff';
   if (!animation.textColor) animation.textColor = '#000000';
+  // One-time upgrade of the legacy 2D camera (pan/zoom/rotation) to the 3D
+  // lookAt camera; visually equivalent, so existing movies look the same.
+  if (migrateLegacyCamera(animation)) saveAnimation(animation);
 
   // Grid param sliders, grouped by default layer (one sub-section per layer).
   // The flattened def list is used for baseValues seeding + timeline labels.
@@ -284,6 +303,8 @@ export function renderAnimationPage(app) {
     activePanel = id;
     for (const [k, el] of Object.entries(PANEL_ELS)) el.style.display = k === id ? '' : 'none';
     rail.setActive(id);
+    // The scene view skips drawing while hidden — refresh it on reveal.
+    if (id === 'camera') refreshCameraScene();
   }
 
   // Collapsible param group. The heading doubles as a toggle button: clicking it
@@ -466,6 +487,16 @@ export function renderAnimationPage(app) {
     return (animation.tracks[key] || []).length > 0;
   }
 
+  /** Write an edited value at the playhead: a keyframe when the param's
+   *  stopwatch is on, otherwise it re-bases the constant (no keyframe). */
+  function commitAnimatedValue(key, v) {
+    if (isKeyframed(key)) {
+      upsertKeyframe(animation.tracks[key], currentTime, v);
+    } else {
+      animation.baseValues[key] = v;
+    }
+  }
+
   /** Sync every stopwatch button with its track's keyframed state. */
   function refreshKfToggles() {
     for (const [key, btn] of Object.entries(kfToggles)) {
@@ -497,12 +528,7 @@ export function renderAnimationPage(app) {
           redrawFast(overrideWith(def.key, v));
         },
         onChange: (v) => {
-          if (isKeyframed(def.key)) {
-            upsertKeyframe(animation.tracks[def.key], currentTime, v);
-          } else {
-            // Stopwatch off: the edit re-bases the constant value, no keyframe.
-            animation.baseValues[def.key] = v;
-          }
+          commitAnimatedValue(def.key, v);
           persist();
           markDirty();
           timeline.render();
@@ -541,13 +567,51 @@ export function renderAnimationPage(app) {
   addAnimatedSliders(paramsBody, ANIMATED_SLIDER_DEFS);
   panelText.appendChild(paramsGroup);
 
+  // CAMERA scene view — orbitable 3D wireframe of the plane, camera, frustum
+  // and target, so the pose reads at a glance while editing the sliders.
+  // Its gizmos edit camera params with slider semantics: live drags go through
+  // the fast preview; the release commits (keyframe when the param's stopwatch
+  // is on, otherwise the constant baseValue).
+  const cameraScene = createCameraSceneView({
+    getFrameSize: () => ({
+      width: Math.max(1, Math.round(animation.canvasWidth || DEFAULT_CANVAS_WIDTH)),
+      height: Math.max(1, Math.round(animation.canvasHeight || DEFAULT_CANVAS_HEIGHT)),
+    }),
+    onInput: (changes) => {
+      const p = sampleAnimation(animation, currentTime);
+      for (const [k, v] of Object.entries(changes)) {
+        p[k] = v;
+        sliderInputs[k]?.api.setValue(v);
+      }
+      redrawFast(p);
+    },
+    onChange: (changes) => {
+      for (const [k, v] of Object.entries(changes)) {
+        commitAnimatedValue(k, v);
+        sliderInputs[k]?.api.setValue(v);
+      }
+      persist();
+      markDirty();
+      timeline.render();
+      redrawPreview();
+      commitHistory('camera-gizmo');
+    },
+  });
+  panelCamera.appendChild(cameraScene.el);
+
   // CAMERA group
   const cameraGroup = document.createElement('div');
   cameraGroup.className = 'param-group';
   const cameraTitle = document.createElement('h3');
   cameraTitle.textContent = 'CAMERA';
   cameraGroup.appendChild(cameraTitle);
-  addAnimatedSliders(cameraGroup, CAMERA_SLIDER_DEFS);
+  for (const cg of CAMERA_SLIDER_GROUPS) {
+    const sub = document.createElement('h4');
+    sub.className = 'param-subhead';
+    sub.textContent = cg.title;
+    cameraGroup.appendChild(sub);
+    addAnimatedSliders(cameraGroup, cg.defs);
+  }
   panelCamera.appendChild(cameraGroup);
 
   const audioPanel = createAudioPanel({
@@ -793,7 +857,7 @@ export function renderAnimationPage(app) {
   // there are multiple layers) to stay unambiguous.
   const trackLabelMap = {};
   for (const d of [...ANIMATED_SLIDER_DEFS, ...CAMERA_SLIDER_DEFS]) {
-    trackLabelMap[d.key] = d.label;
+    trackLabelMap[d.key] = d.timelineLabel || d.label;
   }
   for (const d of gridSliderDefs) {
     trackLabelMap[d.key] = d.timelineLabel || d.label;
@@ -870,8 +934,13 @@ export function renderAnimationPage(app) {
   });
   // Hoisted wrappers — callbacks declared above this point call these.
   function applyDisplayZoom() { preview.applyDisplayZoom(); }
-  function redrawPreview() { preview.redrawPreview(); }
-  function redrawFast(params) { preview.redrawFast(params); }
+  function redrawPreview() { preview.redrawPreview(); refreshCameraScene(); }
+  function redrawFast(params) { preview.redrawFast(params); refreshCameraScene(params); }
+  /** Redraw the Camera panel's scene view (no-op while the panel is hidden). */
+  function refreshCameraScene(params) {
+    if (activePanel !== 'camera') return;
+    cameraScene.render(params || sampleAnimation(animation, currentTime));
+  }
   function overrideWith(key, val) { return preview.overrideWith(key, val); }
 
   function updateSlidersFromTime() {

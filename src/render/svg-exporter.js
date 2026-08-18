@@ -1,5 +1,5 @@
 import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
-import { connectorQuads } from './grid-connect.js';
+import { connectorQuads, connectHiddenCells } from './grid-connect.js';
 
 /**
  * Export a single layer to SVG.
@@ -117,7 +117,9 @@ function placeCells(layer, width, height, opts) {
     scaleParallel: layer.scaleParallel ?? 1,
     scaleOrthogonal: layer.scaleOrthogonal ?? 1,
   };
-  const filled = layer.cells.filter(c => c.filled);
+  // Grid connect hides the interior cells of each run (see grid-connect.js).
+  const hidden = connectHiddenCells(layer, t);
+  const filled = layer.cells.filter(c => c.filled && !hidden.has(c));
   const placed = filled.map(cell => {
     const { dx, dy, pos } = cellDisplacement(cell.center, t, width, height, baselineY);
     // Per-cell orientation scale, baked into a scaled geometry so the export

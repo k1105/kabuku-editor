@@ -3,6 +3,7 @@ import {
   connectionStep,
   connectorPairs,
   connectorQuads,
+  connectHiddenCells,
   isConnectEnabled,
 } from '../src/render/grid-connect.js';
 
@@ -124,5 +125,43 @@ describe('connectorQuads', () => {
     const horizontal = pixelLayer([cell(0, 0), cell(1, 0)]);
     const t = { stretchAngle: 0, stretchAmount: 0, scaleRefAngle: 90 };
     expect(connectorQuads(horizontal, t, 512, 512, 256).length).toBe(1);
+  });
+});
+
+describe('connectHiddenCells', () => {
+  it('連結された並びの端点以外（両側に相手がいるセル）を隠す', () => {
+    const cells = [cell(0, 0), cell(1, 0), cell(2, 0), cell(3, 0)];
+    const hidden = connectHiddenCells(pixelLayer(cells), { stretchAngle: 90, connectHideInterior: true });
+    expect(hidden.has(cells[0])).toBe(false);
+    expect(hidden.has(cells[1])).toBe(true);
+    expect(hidden.has(cells[2])).toBe(true);
+    expect(hidden.has(cells[3])).toBe(false);
+  });
+
+  it('孤立セル・2セルの並びは何も隠さない', () => {
+    const cells = [cell(0, 0), cell(1, 0), cell(5, 0)];
+    expect(connectHiddenCells(pixelLayer(cells), { stretchAngle: 90, connectHideInterior: true }).size).toBe(0);
+  });
+
+  it('接続方向と違う並びは隠さない', () => {
+    const cells = [cell(0, 0), cell(1, 0), cell(2, 0)];
+    expect(connectHiddenCells(pixelLayer(cells), { stretchAngle: 0, connectHideInterior: true }).size).toBe(0);
+  });
+
+  it('connect=0 なら空', () => {
+    const cells = [cell(0, 0), cell(1, 0), cell(2, 0)];
+    expect(connectHiddenCells(pixelLayer(cells, 0), { stretchAngle: 90, connectHideInterior: true }).size).toBe(0);
+  });
+
+  it('connectHideInterior が無い（version 8 以前の）transform では何も隠さない', () => {
+    const cells = [cell(0, 0), cell(1, 0), cell(2, 0)];
+    expect(connectHiddenCells(pixelLayer(cells), { stretchAngle: 90 }).size).toBe(0);
+    expect(connectHiddenCells(pixelLayer(cells), { stretchAngle: 90, connectHideInterior: false }).size).toBe(0);
+  });
+
+  it('編集ビューでは scaleRefAngle が方向を決める', () => {
+    const cells = [cell(0, 0), cell(1, 0), cell(2, 0)];
+    const t = { stretchAngle: 0, stretchAmount: 0, scaleRefAngle: 90, connectHideInterior: true };
+    expect(connectHiddenCells(pixelLayer(cells), t).size).toBe(1);
   });
 });

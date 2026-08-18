@@ -76,6 +76,41 @@ export function connectorPairs(cells, angle) {
   return pairs;
 }
 
+/** Connect direction (deg) for a transform: orthogonal to the stretch. */
+function connectAngle(t) {
+  return (t.scaleRefAngle ?? t.stretchAngle ?? 0) + 90;
+}
+
+const EMPTY_SET = new Set();
+
+/**
+ * Cells whose own shape is hidden by grid connect: the interior cells of a
+ * run (a connect neighbor on both sides). Their shape is nominally covered by
+ * the bridge quads, but pokes out wherever the displaced run bends or the
+ * neighbors' per-cell scale differs, so only the run's endpoints (and
+ * isolated cells) keep their shape. Every output path consults this set so
+ * exports match the screen.
+ *
+ * Version-gated: only active when `t.connectHideInterior` is set (projects at
+ * VERSION ≥ 9 — see core/project.js). Older projects keep drawing every cell.
+ *
+ * @param {Object} layer - runtime layer (gridPlugin, gridParams, cells)
+ * @param {Object} t - shared transform (scaleRefAngle / stretchAngle / connectHideInterior)
+ * @returns {Set<Object>} cells to skip when drawing cell shapes
+ */
+export function connectHiddenCells(layer, t) {
+  if (!t?.connectHideInterior || !isConnectEnabled(layer)) return EMPTY_SET;
+  const hasNext = new Set();
+  const hasPrev = new Set();
+  for (const [a, b] of connectorPairs(layer.cells, connectAngle(t))) {
+    hasNext.add(a);
+    hasPrev.add(b);
+  }
+  const hidden = new Set();
+  for (const c of hasNext) if (hasPrev.has(c)) hidden.add(c);
+  return hidden;
+}
+
 /**
  * Bridge quads for one layer, in glyph-local coordinates with the stretch/gap
  * displacement already applied. Each quad spans between the displaced centers
@@ -96,7 +131,7 @@ export function connectorPairs(cells, angle) {
 export function connectorQuads(layer, t, width, height, baselineY) {
   if (!isConnectEnabled(layer)) return [];
   // Runs orthogonal to the stretch direction are the ones to connect.
-  const angle = (t.scaleRefAngle ?? t.stretchAngle ?? 0) + 90;
+  const angle = connectAngle(t);
   const layerT = {
     ...t,
     scaleParallel: layer.scaleParallel ?? 1,

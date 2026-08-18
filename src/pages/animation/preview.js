@@ -9,6 +9,7 @@
  * references; `deps` the page-level hooks.
  */
 import { sampleAnimation } from '../../animation/animation.js';
+import { createCamera } from '../../animation/camera.js';
 import { computeFrameCacheShape, createFrameRenderer, computeLayout, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../../animation/render.js';
 import { stretchMatrix } from '../../core/transform-math.js';
 import { RENDER_SIZE } from '../../compose/glyph-cache.js';
@@ -132,29 +133,26 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     if (segs.length === 0) return;
     const cacheW = state.frameCache.width;
     const cacheH = state.frameCache.height;
-    const dx = Math.floor((cacheW - layout.cw) / 2);
-    const dy = Math.floor((cacheH - layout.ch) / 2);
-    const dist = p.cameraDistance != null ? p.cameraDistance : 1;
+    const offX = Math.floor((cacheW - layout.cw) / 2) + layout.pad;
+    const offY = Math.floor((cacheH - layout.ch) / 2) + layout.pad;
+    // Project each caret endpoint through the camera (perspective isn't an
+    // affine context transform) and stroke in screen space at a constant width.
+    const cam = createCamera(p, cacheW, cacheH);
+    const projected = [];
+    for (const s of segs) {
+      const a = cam.projectPoint(offX + s.x1, offY + s.y1);
+      const b = cam.projectPoint(offX + s.x2, offY + s.y2);
+      if (a && b) projected.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    }
     ctx.save();
-    applyCameraTransform(ctx, cacheW, cacheH, p);
-    drawKernCaretSegments(ctx, segs, dx + layout.pad, dy + layout.pad, 2 / dist);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    drawKernCaretSegments(ctx, projected, 0, 0, 2);
     ctx.restore();
   }
   /** Redraw only if the textarea caret moved since the last draw (caret
    *  tracking calls this on every focus/keyup/click — most are no-ops). */
   function refreshKernCaret() {
     if (kernCaretKey() !== drawnKernCaretKey) redrawPreview();
-  }
-
-  /** Apply camera transform (pan + rotation + zoom) around the canvas center. */
-  function applyCameraTransform(targetCtx, cw, ch, p) {
-    const cx = cw / 2;
-    const cy = ch / 2;
-    targetCtx.translate(cx + (p.cameraX || 0), cy + (p.cameraY || 0));
-    targetCtx.rotate(((p.cameraRotation || 0) * Math.PI) / 180);
-    const dist = p.cameraDistance != null ? p.cameraDistance : 1;
-    targetCtx.scale(dist, dist);
-    targetCtx.translate(-cx, -cy);
   }
 
   /**
@@ -222,15 +220,21 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     const dx = Math.floor((cacheW - layout.cw) / 2);
     const dy = Math.floor((cacheH - layout.ch) / 2);
     const { a, b, d } = stretchMatrix(p.stretchAngle, p.stretchAmount);
+    // Camera: each glyph is drawn through the perspective camera's tangent
+    // affine at its center (a per-glyph approximation — the full renderer does
+    // this per cell). Good enough for live slider dragging.
+    const cam = createCamera(p, cacheW, cacheH);
     // Image stretch pivots on glyph center, not on baseline — font metrics
     // are reference guides only and editing them must not shift the underlay.
     ctx.save();
-    applyCameraTransform(ctx, cacheW, cacheH, p);
     for (const pos of layout.positions) {
       const gx = dx + layout.pad + pos.x;
       const gy = dy + layout.pad + pos.y;
       const cx = gx + p.fontSize / 2;
       const cy = gy + p.fontSize / 2;
+      const tan = cam.tangentAt(cx, cy);
+      if (!tan) continue; // behind the camera
+      ctx.setTransform(tan.a, tan.b, tan.c, tan.d, tan.e, tan.f);
       if (pos.missing) { drawMissingAt(gx, gy, p.fontSize); continue; }
       const srcImg = sourceImageCache.get(pos.charId);
       if (!srcImg) continue;

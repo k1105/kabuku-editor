@@ -10,8 +10,9 @@ import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
 import { cellDisplacement, cellScaleFactor } from '../render/transform-utils.js';
-import { connectorQuads, fillQuad } from '../render/grid-connect.js';
+import { connectorQuads, connectHiddenCells, fillQuad } from '../render/grid-connect.js';
 import { sampleAnimation } from './animation.js';
+import { createCamera } from './camera.js';
 
 // Threshold for per-frame auto-mesh of animated-grid glyphs. Matches the
 // editor's "Auto Mesh All" default (index-page.js) so animated frames mesh the
@@ -133,19 +134,6 @@ function paramsEqual(a, b) {
 }
 
 /**
- * Apply the camera transform (pan + rotation + zoom about the frame center) to
- * a context. `cam` = { dist, rot, cx, cy, panX, panY }; rot is in radians.
- * Used to bake the camera into each glyph's raster (and the missing-glyph
- * placeholder) so paths are recomputed at the camera resolution.
- */
-function applyCameraTo(ctx, cam) {
-  ctx.translate(cam.cx + cam.panX, cam.cy + cam.panY);
-  ctx.rotate(cam.rot);
-  ctx.scale(cam.dist, cam.dist);
-  ctx.translate(-cam.cx, -cam.cy);
-}
-
-/**
  * Render one glyph's cells (with full per-cell stretch + gap) into a work
  * canvas, apply metaball blur within that canvas, then composite onto the
  * frame canvas. Work canvas is frame-sized and reused across glyphs — the
@@ -158,12 +146,18 @@ function applyCameraTo(ctx, cam) {
  * resolution. Blur is scaled by fontSize/RENDER_SIZE so its on-screen extent
  * matches the legacy "render at RENDER_SIZE, then downscale" path.
  *
- * The camera transform (`cam`) is baked into the work canvas BEFORE the glyph
- * is rasterized, so vector paths are re-computed at the camera's effective
- * resolution rather than the frame canvas scaling an already-rasterized bitmap.
- * This keeps zoom-in sharp (no pixel stretching) and zoom-out free of the
- * frame-rectangle clip (cells that would land outside the un-zoomed frame are
- * still drawn, instead of being clamped at the work-canvas edge).
+ * The camera (`cam`, see camera.js) is baked into the work canvas BEFORE the
+ * glyph is rasterized, so vector paths are re-computed at the camera's
+ * effective resolution rather than the frame canvas scaling an already-
+ * rasterized bitmap. This keeps zoom-in sharp (no pixel stretching) and
+ * zoom-out free of the frame-rectangle clip.
+ *
+ * Perspective: a 3D view of the typeset plane is a homography, which Canvas 2D
+ * cannot express directly. Each cell is instead drawn through the homography's
+ * tangent affine at its own (displaced) center — exact there and first-order
+ * within the cell, which at grid-cell size is indistinguishable from the true
+ * projection — while connector quads project their vertices exactly. Cells
+ * that fall behind the camera are skipped.
  */
 function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layers, charTransform, global, cam, fillColor) {
   workCtx.clearRect(0, 0, workCanvas.width, workCanvas.height);
@@ -171,16 +165,14 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
   const baselineLocalY = (global?.fontMetrics?.baseline != null)
     ? RENDER_SIZE * global.fontMetrics.baseline
     : RENDER_SIZE / 2;
-  const camDist = cam ? cam.dist : 1;
   const scale = fontSize / RENDER_SIZE;
+  // Local magnification at the glyph center — scales the metaball blur so its
+  // on-screen extent follows the camera (nearer → larger blur), matching the
+  // per-cell scale baked into the raster below.
+  const glyphTangent = cam.tangentAt(gx + fontSize / 2, gy + fontSize / 2);
+  const camScale = glyphTangent ? glyphTangent.scale : 1;
 
   workCtx.save();
-  // Bake the camera (pan + zoom + rotation) so the glyph rasterizes at screen
-  // resolution.
-  if (cam) applyCameraTo(workCtx, cam);
-  workCtx.translate(gx, gy);
-  workCtx.scale(scale, scale);
-
   for (const layer of layers) {
     if (!layer.visible) continue;
     workCtx.globalAlpha = layer.opacity;
@@ -192,10 +184,19 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
       scaleParallel: layer.scaleParallel ?? 1,
       scaleOrthogonal: layer.scaleOrthogonal ?? 1,
     };
+    // Grid connect hides the interior cells of each run (see grid-connect.js).
+    const hidden = connectHiddenCells(layer, charTransform);
     for (const cell of layer.cells) {
-      if (!cell.filled) continue;
+      if (!cell.filled || hidden.has(cell)) continue;
       const { dx: cdx, dy: cdy } = cellDisplacement(cell.center, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
-      workCtx.save();
+      // Camera tangent at the cell's displaced center (frame px), then the
+      // usual glyph-local chain: glyph origin → fontSize scale → displacement
+      // → per-cell orientation scale about the (undisplaced) center.
+      const tan = cam.tangentAt(gx + scale * (cell.center.x + cdx), gy + scale * (cell.center.y + cdy));
+      if (!tan) continue; // behind the camera
+      workCtx.setTransform(tan.a, tan.b, tan.c, tan.d, tan.e, tan.f);
+      workCtx.translate(gx, gy);
+      workCtx.scale(scale, scale);
       workCtx.translate(cdx, cdy);
       const cs = cellScaleFactor(cell, layerTransform);
       if (cs !== 1) {
@@ -205,13 +206,20 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
       }
       workCtx.fillStyle = '#000';
       workCtx.fill(cell.path);
-      workCtx.restore();
     }
     // Grid connect: bridge consecutive filled cells orthogonal to the
-    // stretch direction so each run reads as one continuous segment.
+    // stretch direction so each run reads as one continuous segment. Quad
+    // vertices are projected exactly (they can span several cells).
+    workCtx.setTransform(1, 0, 0, 1, 0, 0);
     workCtx.fillStyle = '#000';
     for (const q of connectorQuads(layer, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY)) {
-      fillQuad(workCtx, q.points);
+      const pts = [];
+      for (const pt of q.points) {
+        const sp = cam.projectPoint(gx + scale * pt.x, gy + scale * pt.y);
+        if (!sp) { pts.length = 0; break; }
+        pts.push(sp);
+      }
+      if (pts.length) fillQuad(workCtx, pts);
     }
   }
   workCtx.globalAlpha = 1;
@@ -219,9 +227,9 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
 
   // Blur radius in glyph-local px (RENDER_SIZE space); scale to output px so
   // the visual blur matches the value the user sees in the slider regardless
-  // of fontSize. The camera zoom is baked into the raster above, so the blur
-  // extent scales with it too (zoom in → larger on-screen blur).
-  const blur = (charTransform.metaballRadius || 0) * scale * camDist;
+  // of fontSize. The camera magnification is baked into the raster above, so
+  // the blur extent scales with it too (closer → larger on-screen blur).
+  const blur = (charTransform.metaballRadius || 0) * scale * camScale;
   if (blur > 0) {
     applyMetaballFilter(workCtx, blur, 100);
   }
@@ -386,34 +394,36 @@ export function createFrameRenderer(animation, ctx) {
     const dx = Math.floor((width - layout.cw) / 2);
     const dy = Math.floor((height - layout.ch) / 2);
 
-    // Camera transform (pan + rotation + zoom) about the frame center. It is
-    // NOT applied to octx; instead it's baked into each glyph's rasterization
-    // so paths are recomputed at the camera resolution (no bitmap stretching on
-    // zoom-in, no frame-rectangle clamp on zoom-out).
-    const dist = params.cameraDistance != null ? params.cameraDistance : 1;
-    const cam = {
-      dist,
-      rot: ((params.cameraRotation || 0) * Math.PI) / 180,
-      cx: width / 2,
-      cy: height / 2,
-      panX: params.cameraX || 0,
-      panY: params.cameraY || 0,
-    };
+    // 3D lookAt camera (position / target / roll / focal — see camera.js).
+    // It is NOT applied to octx as a context transform (perspective isn't
+    // affine); instead each glyph bakes it into its own rasterization so paths
+    // are recomputed at the camera resolution (no bitmap stretching on zoom-in,
+    // no frame-rectangle clamp on zoom-out).
+    const cam = createCamera(params, width, height);
 
     const transform = transformFromParams(params, global);
     for (const pos of layout.positions) {
       const gx = dx + layout.pad + pos.x;
       const gy = dy + layout.pad + pos.y;
       if (pos.missing) {
-        // Missing-glyph placeholder: apply the camera here since octx is untransformed.
-        octx.save();
-        applyCameraTo(octx, cam);
-        octx.fillStyle = '#f0f0f0';
-        octx.fillRect(gx, gy, params.fontSize, params.fontSize);
-        octx.strokeStyle = '#bbb';
-        octx.lineWidth = 1 / cam.dist;
-        octx.strokeRect(gx, gy, params.fontSize, params.fontSize);
-        octx.restore();
+        // Missing-glyph placeholder: project the box corners through the camera
+        // (octx itself is untransformed).
+        const fs = params.fontSize;
+        const corners = [[gx, gy], [gx + fs, gy], [gx + fs, gy + fs], [gx, gy + fs]]
+          .map(([x, y]) => cam.projectPoint(x, y));
+        if (corners.every(Boolean)) {
+          octx.save();
+          octx.beginPath();
+          octx.moveTo(corners[0].x, corners[0].y);
+          for (let i = 1; i < 4; i++) octx.lineTo(corners[i].x, corners[i].y);
+          octx.closePath();
+          octx.fillStyle = '#f0f0f0';
+          octx.fill();
+          octx.strokeStyle = '#bbb';
+          octx.lineWidth = 1;
+          octx.stroke();
+          octx.restore();
+        }
         continue;
       }
       const charData = project.characters[pos.charId];
