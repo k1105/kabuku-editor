@@ -1,5 +1,5 @@
-import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
-import { connectorQuads, connectHiddenCells } from './grid-connect.js';
+import { cellDisplacement, scaleGeometryAboutCenter } from './transform-utils.js';
+import { connectorQuads, connectHiddenCells, connectRunScales, effectiveCellScale, layerScaleTransform } from './grid-connect.js';
 
 /**
  * Export a single layer to SVG.
@@ -110,21 +110,19 @@ function placeCells(layer, width, height, opts) {
   const baselineY = (opts.fontMetrics?.baseline != null)
     ? height * opts.fontMetrics.baseline
     : height / 2;
-  // Per-cell orientation scale is a per-layer setting; merge it in for
-  // cellScaleFactor while displacement keeps using the shared transform.
-  const scaleT = {
-    ...t,
-    scaleParallel: layer.scaleParallel ?? 1,
-    scaleOrthogonal: layer.scaleOrthogonal ?? 1,
-  };
-  // Grid connect hides the interior cells of each run (see grid-connect.js).
+  // Per-cell orientation scale is a per-layer setting; merge it in for the
+  // cell scale while displacement keeps using the shared transform.
+  const scaleT = layerScaleTransform(layer, t);
+  // Grid connect hides the interior cells of each run and gives every cell of
+  // a run the run's scale (see grid-connect.js).
   const hidden = connectHiddenCells(layer, t);
+  const runScales = connectRunScales(layer, t);
   const filled = layer.cells.filter(c => c.filled && !hidden.has(c));
   const placed = filled.map(cell => {
     const { dx, dy, pos } = cellDisplacement(cell.center, t, width, height, baselineY);
     // Per-cell orientation scale, baked into a scaled geometry so the export
     // matches the canvas renderer.
-    const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, scaleT));
+    const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, effectiveCellScale(cell, scaleT, runScales));
     return { cell, geom, dx, dy, pos, radius: cellRadius(geom) };
   });
   // Grid connect bridges, emitted as polygon placements (already displaced,

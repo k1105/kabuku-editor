@@ -1,6 +1,6 @@
 import { applyMetaballFilter } from '../transform/metaball.js';
-import { cellDisplacement, cellScaleFactor } from './transform-utils.js';
-import { connectorQuads, connectHiddenCells, fillQuad } from './grid-connect.js';
+import { cellDisplacement } from './transform-utils.js';
+import { connectorQuads, connectHiddenCells, connectRunScales, effectiveCellScale, layerScaleTransform, fillQuad } from './grid-connect.js';
 
 /**
  * Recolor everything currently drawn on the canvas to `color` via a
@@ -64,16 +64,13 @@ export function renderCanvas(ctx, layers, opts = {}) {
   // Position a cell in the current ctx: displace its center, then (if the
   // per-cell scale ≠ 1) scale its shape about its own center. The scale
   // range is a per-layer setting (each layer can scale independently); the
-  // reference angle/direction still comes from the shared transform.
+  // reference angle/direction still comes from the shared transform. Cells in
+  // a grid-connect run share the run's scale (`runScales`, see grid-connect.js).
   // Caller wraps in save()/restore() and then fill/stroke(cell.path).
-  function placeCell(cell, layer) {
+  function placeCell(cell, layer, runScales) {
     const d = cellDisplacement(cell.center, t, glyphSize, glyphSize, baselineLocalY);
     ctx.translate(d.dx + ox, d.dy + oy);
-    const s = cellScaleFactor(cell, {
-      ...t,
-      scaleParallel: layer.scaleParallel ?? 1,
-      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
-    });
+    const s = effectiveCellScale(cell, layerScaleTransform(layer, t), runScales);
     if (s !== 1) {
       ctx.translate(cell.center.x, cell.center.y);
       ctx.scale(s, s);
@@ -88,11 +85,12 @@ export function renderCanvas(ctx, layers, opts = {}) {
   // endpoints keep it) so nothing pokes out of the bridge.
   function fillLayer(layer, color) {
     const hidden = connectHiddenCells(layer, t);
+    const runScales = connectRunScales(layer, t);
     for (const cell of layer.cells) {
       if (!cell.filled || hidden.has(cell)) continue;
 
       ctx.save();
-      placeCell(cell, layer);
+      placeCell(cell, layer, runScales);
       ctx.fillStyle = color;
       ctx.fill(cell.path);
       ctx.restore();

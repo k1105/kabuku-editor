@@ -4,31 +4,34 @@ import {
   connectorPairs,
   connectorQuads,
   connectHiddenCells,
+  connectRunScales,
+  effectiveCellScale,
+  layerScaleTransform,
   isConnectEnabled,
 } from '../src/render/grid-connect.js';
 
 const SIZE = 16;
 
 /** PixelGrid 相当の矩形セル（格子座標 col/row 指定）。 */
-function cell(col, row, filled = true) {
+function cell(col, row, filled = true, orientation = null) {
   const x = col * SIZE;
   const y = row * SIZE;
   return {
     center: { x: x + SIZE / 2, y: y + SIZE / 2 },
     filled,
     geometry: { type: 'rect', x, y, width: SIZE, height: SIZE },
-    orientation: null,
+    orientation,
     coherence: 0,
   };
 }
 
-function pixelLayer(cells, connect = 1) {
+function pixelLayer(cells, connect = 1, scaleParallel = 1, scaleOrthogonal = 1) {
   return {
     gridPlugin: { name: 'PixelGrid' },
     gridParams: { gridSize: SIZE, connect },
     cells,
-    scaleParallel: 1,
-    scaleOrthogonal: 1,
+    scaleParallel,
+    scaleOrthogonal,
   };
 }
 
@@ -163,5 +166,69 @@ describe('connectHiddenCells', () => {
     const cells = [cell(0, 0), cell(1, 0), cell(2, 0)];
     const t = { stretchAngle: 0, stretchAmount: 0, scaleRefAngle: 90, connectHideInterior: true };
     expect(connectHiddenCells(pixelLayer(cells), t).size).toBe(1);
+  });
+});
+
+describe('connectRunScales / effectiveCellScale', () => {
+  // 伸縮 90°(垂直) → 水平の並びを接続。scaleParallel=1, scaleOrthogonal=2 で
+  // orientation 90° は平行(1.0)、0° は直交(2.0)、45° は中間(1.5)。
+  const t = { stretchAngle: 90, connectHideInterior: true, connectUniformScale: true };
+
+  it('連結された並びの全セルが run 内最大のスケールになる', () => {
+    const cells = [cell(0, 0, true, 90), cell(1, 0, true, 45), cell(2, 0, true, 0)];
+    const layer = pixelLayer(cells, 1, 1, 2);
+    const scales = connectRunScales(layer, t);
+    expect(scales.size).toBe(3);
+    for (const c of cells) expect(scales.get(c)).toBeCloseTo(2);
+    const layerT = layerScaleTransform(layer, t);
+    expect(effectiveCellScale(cells[0], layerT, scales)).toBeCloseTo(2);
+  });
+
+  it('別の run・孤立セルは影響を受けない', () => {
+    // ■■_■_■ : run A = (0,1)、run B なし、孤立 = 3, 5
+    const cells = [cell(0, 0, true, 90), cell(1, 0, true, 0), cell(3, 0, true, 90), cell(5, 0, true, 45)];
+    const layer = pixelLayer(cells, 1, 1, 2);
+    const scales = connectRunScales(layer, t);
+    expect(scales.get(cells[0])).toBeCloseTo(2);
+    expect(scales.get(cells[1])).toBeCloseTo(2);
+    expect(scales.has(cells[2])).toBe(false);
+    expect(scales.has(cells[3])).toBe(false);
+    const layerT = layerScaleTransform(layer, t);
+    expect(effectiveCellScale(cells[2], layerT, scales)).toBeCloseTo(1);
+    expect(effectiveCellScale(cells[3], layerT, scales)).toBeCloseTo(1.5);
+  });
+
+  it('負のスケールは絶対値で比較し、結果は非負', () => {
+    const cells = [cell(0, 0, true, 90), cell(1, 0, true, 0)];
+    const layer = pixelLayer(cells, 1, 1, -3);
+    const scales = connectRunScales(layer, t);
+    expect(scales.get(cells[0])).toBeCloseTo(3);
+    expect(scales.get(cells[1])).toBeCloseTo(3);
+  });
+
+  it('ブリッジの半幅も run のスケールに揃う', () => {
+    const cells = [cell(0, 0, true, 90), cell(1, 0, true, 0)];
+    const layer = pixelLayer(cells, 1, 1, 2);
+    const quads = connectorQuads(layer, t, 512, 512, 256);
+    expect(quads.length).toBe(1);
+    // 半幅 = 2 × 8 = 16 → y は -8..24 で両端とも同じ
+    const ys = quads[0].points.map((p) => p.y);
+    expect(ys).toEqual([24, 24, -8, -8]);
+  });
+
+  it('connectUniformScale が無い（version 9 以前の）transform では従来通り', () => {
+    const cells = [cell(0, 0, true, 90), cell(1, 0, true, 0)];
+    const layer = pixelLayer(cells, 1, 1, 2);
+    const legacy = { stretchAngle: 90, connectHideInterior: true };
+    expect(connectRunScales(layer, legacy).size).toBe(0);
+    const quads = connectorQuads(layer, legacy, 512, 512, 256);
+    // 左端は半幅 8、右端は半幅 16
+    expect(quads[0].points[0].y).toBe(16);
+    expect(quads[0].points[1].y).toBe(24);
+  });
+
+  it('connect=0 なら空', () => {
+    const cells = [cell(0, 0, true, 90), cell(1, 0, true, 0)];
+    expect(connectRunScales(pixelLayer(cells, 0, 1, 2), t).size).toBe(0);
   });
 });

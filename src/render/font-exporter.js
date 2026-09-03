@@ -1,6 +1,6 @@
 import opentype from 'opentype.js';
-import { cellDisplacement, cellScaleFactor, scaleGeometryAboutCenter } from './transform-utils.js';
-import { connectorQuads, connectHiddenCells } from './grid-connect.js';
+import { cellDisplacement, scaleGeometryAboutCenter } from './transform-utils.js';
+import { connectorQuads, connectHiddenCells, connectRunScales, effectiveCellScale, layerScaleTransform } from './grid-connect.js';
 import { resolveTransform } from '../core/project.js';
 import { EM_SIZE, fontVerticalMetrics, glyphName, collectGlyphEntries } from './font/glyph-collect.js';
 
@@ -26,6 +26,7 @@ export function buildFont(project, opts = {}) {
     // Version-gated render behavior comes from the project, not the caller's
     // (possibly partial) transform.
     connectHideInterior: !!global.connectHideInterior,
+    connectUniformScale: !!global.connectUniformScale,
   };
 
   // Font-unit reference: baseline at y=0, ascent above (positive), descent below.
@@ -115,17 +116,15 @@ function buildGlyphPath(layers, transform, fontMetrics) {
 
   for (const layer of layers) {
     if (!layer.visible) continue;
-    const layerTransform = {
-      ...transform,
-      scaleParallel: layer.scaleParallel ?? 1,
-      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
-    };
-    // Grid connect hides the interior cells of each run (see grid-connect.js).
+    const layerTransform = layerScaleTransform(layer, transform);
+    // Grid connect hides the interior cells of each run and gives every cell
+    // of a run the run's scale (see grid-connect.js).
     const hidden = connectHiddenCells(layer, transform);
+    const runScales = connectRunScales(layer, transform);
     for (const cell of layer.cells) {
       if (!cell.filled || hidden.has(cell)) continue;
       const { dx, dy } = cellDisplacement(cell.center, transform, EM_SIZE, EM_SIZE, baselineY);
-      const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, cellScaleFactor(cell, layerTransform));
+      const geom = scaleGeometryAboutCenter(cell.geometry, cell.center, effectiveCellScale(cell, layerTransform, runScales));
       appendCellSubpath(path, geom, dx, dy, baselineY);
     }
     // Grid connect bridges (already displaced → dx/dy = 0), so the exported

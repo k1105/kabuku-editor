@@ -9,8 +9,8 @@ import { drawSourceImage, tintFills } from '../render/canvas-renderer.js';
 import { renderFontSourceToCanvas } from '../render/font/font-import.js';
 import { renderKanjiVGSourceToCanvas } from '../render/font/kanjivg-import.js';
 import { applyMetaballFilter } from '../transform/metaball.js';
-import { cellDisplacement, cellScaleFactor } from '../render/transform-utils.js';
-import { connectorQuads, connectHiddenCells, fillQuad } from '../render/grid-connect.js';
+import { cellDisplacement } from '../render/transform-utils.js';
+import { connectorQuads, connectHiddenCells, connectRunScales, effectiveCellScale, layerScaleTransform, fillQuad } from '../render/grid-connect.js';
 import { sampleAnimation } from './animation.js';
 import { createCamera } from './camera.js';
 
@@ -177,15 +177,13 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
     if (!layer.visible) continue;
     workCtx.globalAlpha = layer.opacity;
     // Per-cell orientation scale is a per-layer setting; merge it into the
-    // shared transform for cellScaleFactor while displacement (stretch/gap)
+    // shared transform for the cell scale while displacement (stretch/gap)
     // stays uniform across layers.
-    const layerTransform = {
-      ...charTransform,
-      scaleParallel: layer.scaleParallel ?? 1,
-      scaleOrthogonal: layer.scaleOrthogonal ?? 1,
-    };
-    // Grid connect hides the interior cells of each run (see grid-connect.js).
+    const layerTransform = layerScaleTransform(layer, charTransform);
+    // Grid connect hides the interior cells of each run and gives every cell
+    // of a run the run's scale (see grid-connect.js).
     const hidden = connectHiddenCells(layer, charTransform);
+    const runScales = connectRunScales(layer, charTransform);
     for (const cell of layer.cells) {
       if (!cell.filled || hidden.has(cell)) continue;
       const { dx: cdx, dy: cdy } = cellDisplacement(cell.center, charTransform, RENDER_SIZE, RENDER_SIZE, baselineLocalY);
@@ -198,7 +196,7 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
       workCtx.translate(gx, gy);
       workCtx.scale(scale, scale);
       workCtx.translate(cdx, cdy);
-      const cs = cellScaleFactor(cell, layerTransform);
+      const cs = effectiveCellScale(cell, layerTransform, runScales);
       if (cs !== 1) {
         workCtx.translate(cell.center.x, cell.center.y);
         workCtx.scale(cs, cs);

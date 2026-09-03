@@ -112,11 +112,83 @@ export function connectHiddenCells(layer, t) {
 }
 
 /**
+ * Per-cell scale for a layer's cells with grid connect applied: every cell in
+ * a connected run takes the run's largest |scale| (a run of circles reads as
+ * one segment of uniform width, sized to its biggest circle). Cells outside
+ * any run keep their own `cellScaleFactor`. Bridges use the same value at both
+ * ends (see connectorQuads), so the run stays flush with its endpoint shapes.
+ *
+ * The value is always non-negative: PixelGrid shapes are centrally symmetric,
+ * so the mirror a negative factor would produce is invisible.
+ *
+ * Version-gated: only active when `t.connectUniformScale` is set (projects at
+ * VERSION ≥ 10 — see core/project.js). Older projects keep per-cell sizes.
+ *
+ * @param {Object} layer - runtime layer (gridPlugin, gridParams, cells, scale*)
+ * @param {Object} t - shared transform (scaleRefAngle / stretchAngle / connectUniformScale)
+ * @returns {Map<Object, number>} cell → run scale (empty when not applicable)
+ */
+export function connectRunScales(layer, t) {
+  const scales = new Map();
+  if (!t?.connectUniformScale || !isConnectEnabled(layer)) return scales;
+  const layerT = layerScaleTransform(layer, t);
+  // Union-find over connect pairs; a cell has at most one prev/next so the
+  // components are chains, but the generic walk is just as simple.
+  const parent = new Map();
+  const find = (c) => {
+    let r = c;
+    while (parent.get(r) !== r) r = parent.get(r);
+    let n = c;
+    while (parent.get(n) !== r) { const next = parent.get(n); parent.set(n, r); n = next; }
+    return r;
+  };
+  for (const [a, b] of connectorPairs(layer.cells, connectAngle(t))) {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    parent.set(find(a), find(b));
+  }
+  if (parent.size === 0) return scales;
+  const runMax = new Map();
+  for (const c of parent.keys()) {
+    const root = find(c);
+    const s = Math.abs(cellScaleFactor(c, layerT));
+    if (!(runMax.has(root)) || s > runMax.get(root)) runMax.set(root, s);
+  }
+  for (const c of parent.keys()) scales.set(c, runMax.get(find(c)));
+  return scales;
+}
+
+/**
+ * Effective per-cell scale for drawing: the run scale when the cell belongs to
+ * a connected run (see connectRunScales), else its own `cellScaleFactor`.
+ * Every output path uses this so screen and exports agree.
+ *
+ * @param {Object} cell
+ * @param {Object} layerT - transform with the layer's scaleParallel/Orthogonal merged in
+ * @param {Map<Object, number>} runScales - from connectRunScales(layer, t)
+ * @returns {number}
+ */
+export function effectiveCellScale(cell, layerT, runScales) {
+  const run = runScales?.get(cell);
+  return run !== undefined ? run : cellScaleFactor(cell, layerT);
+}
+
+/** Shared transform with the layer's per-layer scale range merged in. */
+export function layerScaleTransform(layer, t) {
+  return {
+    ...t,
+    scaleParallel: layer.scaleParallel ?? 1,
+    scaleOrthogonal: layer.scaleOrthogonal ?? 1,
+  };
+}
+
+/**
  * Bridge quads for one layer, in glyph-local coordinates with the stretch/gap
  * displacement already applied. Each quad spans between the displaced centers
  * of an adjacent pair, with per-end half-widths matching each cell's rendered
- * size (cell pitch × per-cell orientation scale), so the bridge stays flush
- * with the cells it connects.
+ * size (cell pitch × effective scale — the run's uniform scale when
+ * connectUniformScale is on, else the per-cell orientation scale), so the
+ * bridge stays flush with the cells it connects.
  *
  * Point order matches the exporters' polygon winding convention (same as the
  * grid cells'), so font/SVG output unions correctly with the cell shapes.
@@ -132,11 +204,8 @@ export function connectorQuads(layer, t, width, height, baselineY) {
   if (!isConnectEnabled(layer)) return [];
   // Runs orthogonal to the stretch direction are the ones to connect.
   const angle = connectAngle(t);
-  const layerT = {
-    ...t,
-    scaleParallel: layer.scaleParallel ?? 1,
-    scaleOrthogonal: layer.scaleOrthogonal ?? 1,
-  };
+  const layerT = layerScaleTransform(layer, t);
+  const runScales = connectRunScales(layer, t);
   const quads = [];
   for (const [a, b] of connectorPairs(layer.cells, angle)) {
     const pa = cellDisplacement(a.center, t, width, height, baselineY).pos;
@@ -145,8 +214,8 @@ export function connectorQuads(layer, t, width, height, baselineY) {
     if (len === 0) continue;
     const px = -(pb.y - pa.y) / len;
     const py = (pb.x - pa.x) / len;
-    const ra = Math.abs(cellScaleFactor(a, layerT)) * cellSize(a) / 2;
-    const rb = Math.abs(cellScaleFactor(b, layerT)) * cellSize(b) / 2;
+    const ra = Math.abs(effectiveCellScale(a, layerT, runScales)) * cellSize(a) / 2;
+    const rb = Math.abs(effectiveCellScale(b, layerT, runScales)) * cellSize(b) / 2;
     quads.push({
       points: [
         { x: pa.x + px * ra, y: pa.y + py * ra },

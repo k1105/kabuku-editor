@@ -32,7 +32,9 @@ const MAX_PPS = 800;
 // Synthetic row key for the step-keyframed text track. It is NOT a numeric
 // `animation.tracks` entry — text keyframes live in `animation.textTrack` as
 // `{ time, value:string }` and hold (no interpolation), so this row is rendered
-// specially and excluded from all curve / value-range / multi-select logic.
+// specially and excluded from all curve / value-range logic. It DOES take part
+// in the selection model (select / Shift+click / box / group move / delete):
+// `trackFor(key)` resolves TEXT_KEY to `animation.textTrack`.
 const TEXT_KEY = '__text__';
 
 /**
@@ -51,8 +53,8 @@ export function createTimelineUI(animation, callbacks) {
   // Current keyframe selection: array of { key: string, time: number }.
   // Persists across re-renders; each matching dot gets `.selected` class.
   // A single-element selection enables the per-keyframe affordances (bezier
-  // handles, value drag); a multi-element selection (built by rubber-band) only
-  // supports group time-shift and delete.
+  // handles, value drag); a multi-element selection (built by rubber-band or
+  // Shift+click) only supports group time-shift and delete.
   let selectedKfs = [];
 
   // The lone selection when exactly one keyframe is selected, else null.
@@ -467,6 +469,15 @@ export function createTimelineUI(animation, callbacks) {
     row.appendChild(hdot);
   }
 
+  /** Keyframe array behind a row key — numeric tracks or the text track. */
+  function trackFor(key) {
+    if (key === TEXT_KEY) {
+      if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
+      return animation.textTrack;
+    }
+    return animation.tracks[key];
+  }
+
   function isDotSelected(key, kf) {
     return selectedKfs.some(s =>
       s.key === key && Math.abs(s.time - kf.time) < SELECT_EPSILON);
@@ -478,6 +489,16 @@ export function createTimelineUI(animation, callbacks) {
     return true;
   }
 
+  /** Shift+click: add the keyframe to the selection, or drop it if already in. */
+  function toggleDotSelection(key, kf) {
+    if (isDotSelected(key, kf)) {
+      selectedKfs = selectedKfs.filter(s =>
+        !(s.key === key && Math.abs(s.time - kf.time) < SELECT_EPSILON));
+    } else {
+      selectedKfs = [...selectedKfs, { key, time: kf.time }];
+    }
+  }
+
   /**
    * Shift every selected keyframe in time by `delta` seconds, clamped so the
    * whole group stays within [0, duration] (preserving relative spacing).
@@ -487,7 +508,7 @@ export function createTimelineUI(animation, callbacks) {
     const items = [];
     let dMin = -Infinity, dMax = Infinity;
     for (const s of selectedKfs) {
-      const track = animation.tracks[s.key];
+      const track = trackFor(s.key);
       if (!track) continue;
       const found = findKeyframeAt(track, s.time);
       if (!found) continue;
@@ -510,17 +531,18 @@ export function createTimelineUI(animation, callbacks) {
    * Select every keyframe whose dot falls inside the rubber-band box, given in
    * rowsInner-local pixel coordinates. Dot positions are recomputed here the
    * same way renderRows() draws them (x from time, y from row layout + value).
+   * With `additive` (Shift held) the box adds to the current selection instead
+   * of replacing it.
    */
-  function selectKeyframesInBox(left, top, right, bottom) {
+  function selectKeyframesInBox(left, top, right, bottom, additive) {
     const w = contentW();
-    if (w <= 0) { selectedKfs = []; return; }
+    if (w <= 0) { if (!additive) selectedKfs = []; return; }
     const { tops } = computeRowLayout();
-    const sel = [];
+    const sel = additive ? [...selectedKfs] : [];
     for (const key of activeKeys()) {
-      // Text keyframes aren't part of the numeric multi-select model.
-      if (key === TEXT_KEY) continue;
-      const track = animation.tracks[key] || [];
-      const isExpanded = expandedRows.has(key);
+      const track = trackFor(key) || [];
+      // Text row is never expanded; its dots sit at mid-row like collapsed rows.
+      const isExpanded = key !== TEXT_KEY && expandedRows.has(key);
       const h = rowHeight(key);
       const rowTop = tops[key];
       let range = null;
@@ -533,11 +555,68 @@ export function createTimelineUI(animation, callbacks) {
         const yInRow = (isExpanded && range) ? valueToY(kf.value, range, h) : h / 2;
         const y = rowTop + yInRow;
         if (x >= left && x <= right && y >= top && y <= bottom) {
-          sel.push({ key, time: kf.time });
+          const dup = additive && sel.some(s =>
+            s.key === key && Math.abs(s.time - kf.time) < SELECT_EPSILON);
+          if (!dup) sel.push({ key, time: kf.time });
         }
       }
     }
     selectedKfs = sel;
+  }
+
+  /**
+   * Drag every selected keyframe (numeric and text) by a shared time delta,
+   * preserving relative spacing and keeping the group within [0, duration].
+   * Value is left untouched — the group may span rows with different value
+   * ranges, so only the time axis has a shared meaning. A click without
+   * movement narrows the selection to the clicked keyframe.
+   */
+  function startGroupDrag(e, row, key, kf) {
+    const rect = row.getBoundingClientRect();
+    const trackWidth = rect.width;
+    const startX = e.clientX;
+    const dur = animation.duration;
+    const items = selectedKfs.map((s) => {
+      const track = trackFor(s.key);
+      const f = track ? findKeyframeAt(track, s.time) : null;
+      return f ? { key: s.key, track, kf: f.kf, startTime: f.kf.time } : null;
+    }).filter(Boolean);
+    let minStart = Infinity, maxStart = -Infinity;
+    for (const it of items) {
+      minStart = Math.min(minStart, it.startTime);
+      maxStart = Math.max(maxStart, it.startTime);
+    }
+    const dtMin = -minStart;
+    const dtMax = dur - maxStart;
+    let moved = false;
+    const onMove = (ev) => {
+      if (trackWidth <= 0) return;
+      const dx = ev.clientX - startX;
+      if (Math.abs(dx) > 2) moved = true;
+      if (!moved) return;
+      let delta = (dx / trackWidth) * dur;
+      delta = snapDelta(delta, ev.altKey);
+      delta = Math.max(dtMin, Math.min(dtMax, delta));
+      const tracks = new Set();
+      for (const it of items) { it.kf.time = it.startTime + delta; tracks.add(it.track); }
+      for (const track of tracks) {
+        track.sort((a, b) => a.time - b.time);
+        clampTrackHandles(track);
+      }
+      selectedKfs = items.map(it => ({ key: it.key, time: it.kf.time }));
+      callbacks.onChange?.();
+      render();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      if (!moved) {
+        selectedKfs = [{ key, time: kf.time }];
+        renderRows();
+      }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
 
   const header = document.createElement('div');
@@ -1079,6 +1158,7 @@ export function createTimelineUI(animation, callbacks) {
     for (const kf of tr) {
       const dot = document.createElement('div');
       dot.className = 'anim-keyframe anim-text-keyframe';
+      if (isDotSelected(TEXT_KEY, kf)) dot.classList.add('selected');
       dot.style.left = timeToX(kf.time, w) + 'px';
       dot.style.top = (h / 2) + 'px';
       dot.title = kf.value;
@@ -1091,12 +1171,26 @@ export function createTimelineUI(animation, callbacks) {
       dot.addEventListener('mousedown', (e) => {
         e.stopPropagation();
         if (e.button !== 0) return;
+        // Same selection gestures as numeric keyframes: Shift+click toggles
+        // membership, a click on a multi-selection member drags the group.
+        if (e.shiftKey) {
+          lastClick = null;
+          toggleDotSelection(TEXT_KEY, kf);
+          renderRows();
+          return;
+        }
         const now = performance.now();
         const isDouble = lastClick && lastClick.key === TEXT_KEY
           && Math.abs(lastClick.time - kf.time) < SELECT_EPSILON
           && (now - lastClick.at) < DBLCLICK_MS;
         if (isDouble) { lastClick = null; editTextKeyframe(kf); return; }
         lastClick = { key: TEXT_KEY, time: kf.time, at: now };
+        if (selectedKfs.length > 1 && isDotSelected(TEXT_KEY, kf)) {
+          startGroupDrag(e, row, TEXT_KEY, kf);
+          return;
+        }
+        selectedKfs = [{ key: TEXT_KEY, time: kf.time }];
+        renderRows();
 
         const rect = row.getBoundingClientRect();
         const trackWidth = rect.width;
@@ -1114,6 +1208,7 @@ export function createTimelineUI(animation, callbacks) {
           growDurationTo(t);
           kf.time = t;
           (animation.textTrack || []).sort((a, b) => a.time - b.time);
+          selectedKfs = [{ key: TEXT_KEY, time: t }];
           callbacks.onChange?.();
           render();
         };
@@ -1228,6 +1323,15 @@ export function createTimelineUI(animation, callbacks) {
         dot.addEventListener('mousedown', (e) => {
           e.stopPropagation();
           if (e.button !== 0) return;
+          // Shift+click toggles membership in the multi-selection without
+          // starting a drag. (Shift pressed *during* a drag still means
+          // value-only lock in expanded rows — see onMove below.)
+          if (e.shiftKey) {
+            lastClick = null;
+            toggleDotSelection(key, kf);
+            renderRows();
+            return;
+          }
           // Double-click on a keyframe toggles its handle mode (smooth ⇄
           // broken). Detected manually since render() swaps the dot between
           // clicks. Only meaningful in expanded (curve) rows where handles show.
@@ -1253,46 +1357,8 @@ export function createTimelineUI(animation, callbacks) {
           // the whole group by a shared time delta (preserving relative spacing).
           // Value is left untouched — the group may span rows with different
           // value ranges, so only the time axis has a shared meaning.
-          const inGroup = selectedKfs.length > 1 && isDotSelected(key, kf);
-          if (inGroup) {
-            const rect = row.getBoundingClientRect();
-            const trackWidth = rect.width;
-            const startX = e.clientX;
-            const dur = animation.duration;
-            const items = selectedKfs.map((s) => {
-              const track2 = animation.tracks[s.key];
-              const f = track2 ? findKeyframeAt(track2, s.time) : null;
-              return f ? { key: s.key, track: track2, kf: f.kf, startTime: f.kf.time } : null;
-            }).filter(Boolean);
-            let minStart = Infinity, maxStart = -Infinity;
-            for (const it of items) {
-              minStart = Math.min(minStart, it.startTime);
-              maxStart = Math.max(maxStart, it.startTime);
-            }
-            const dtMin = -minStart;
-            const dtMax = dur - maxStart;
-            const onMoveG = (ev) => {
-              if (trackWidth <= 0) return;
-              const dx = ev.clientX - startX;
-              let delta = (dx / trackWidth) * dur;
-              delta = snapDelta(delta, ev.altKey);
-              delta = Math.max(dtMin, Math.min(dtMax, delta));
-              const tracks = new Set();
-              for (const it of items) { it.kf.time = it.startTime + delta; tracks.add(it.track); }
-              for (const track2 of tracks) {
-                track2.sort((a, b) => a.time - b.time);
-                clampTrackHandles(track2);
-              }
-              selectedKfs = items.map(it => ({ key: it.key, time: it.kf.time }));
-              callbacks.onChange?.();
-              render();
-            };
-            const onUpG = () => {
-              document.removeEventListener('mousemove', onMoveG);
-              document.removeEventListener('mouseup', onUpG);
-            };
-            document.addEventListener('mousemove', onMoveG);
-            document.addEventListener('mouseup', onUpG);
+          if (selectedKfs.length > 1 && isDotSelected(key, kf)) {
+            startGroupDrag(e, row, key, kf);
             return;
           }
           // Cache row geometry NOW — render() below detaches `row`, after which
@@ -1603,9 +1669,11 @@ export function createTimelineUI(animation, callbacks) {
 
   // Rubber-band multi-selection: drag over the empty track area to box-select
   // keyframes. Keyframe/handle dots stopPropagation on their own mousedown, so
-  // a mousedown reaching rowsInner is always on bare background.
+  // a mousedown reaching rowsInner is always on bare background. Shift held at
+  // mousedown makes the box additive (union with the current selection).
   rowsInner.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
+    const additive = e.shiftKey;
     const rect = rowsInner.getBoundingClientRect();
     const x0 = e.clientX - rect.left;
     const y0 = e.clientY - rect.top;
@@ -1628,8 +1696,9 @@ export function createTimelineUI(animation, callbacks) {
       document.removeEventListener('mouseup', onUp);
       box.remove();
       if (!didMove) {
-        // Plain click on empty area clears the current selection.
-        if (clearSelection()) renderRows();
+        // Plain click on empty area clears the current selection. A Shift+click
+        // on empty area is a no-op so an additive selection isn't lost.
+        if (!additive && clearSelection()) renderRows();
         return;
       }
       const x1 = ev.clientX - rect.left;
@@ -1637,6 +1706,7 @@ export function createTimelineUI(animation, callbacks) {
       selectKeyframesInBox(
         Math.min(x0, x1), Math.min(y0, y1),
         Math.max(x0, x1), Math.max(y0, y1),
+        additive,
       );
       renderRows();
     };
@@ -1680,7 +1750,7 @@ export function createTimelineUI(animation, callbacks) {
       // removals don't shift the indices still pending.
       const byTrack = new Map();
       for (const s of selectedKfs) {
-        const track = animation.tracks[s.key];
+        const track = trackFor(s.key);
         if (!track) continue;
         const found = findKeyframeAt(track, s.time);
         if (!found) continue;
@@ -1688,7 +1758,7 @@ export function createTimelineUI(animation, callbacks) {
         byTrack.get(s.key).push(found.index);
       }
       for (const [key, indices] of byTrack) {
-        const track = animation.tracks[key];
+        const track = trackFor(key);
         indices.sort((a, b) => b - a);
         for (const idx of indices) removeKeyframe(track, idx);
         clampTrackHandles(track);

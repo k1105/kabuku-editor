@@ -25,8 +25,11 @@ import { CAMERA_PARAM_KEYS, CAMERA_DEFAULTS } from '../animation/camera.js';
 // (duplicate → migrateFontProjectVersion).
 //   9: grid connect hides the interior cells of each connected run (only the
 //      run's endpoints keep their own shape) — see render/grid-connect.js.
-export const VERSION = 9;
+//  10: grid connect sizes every cell of a connected run (endpoints + bridges)
+//      to the run's largest per-cell scale — see render/grid-connect.js.
+export const VERSION = 10;
 const CONNECT_HIDE_INTERIOR_MIN_VERSION = 9;
+const CONNECT_UNIFORM_SCALE_MIN_VERSION = 10;
 const WRITE_DEBOUNCE_MS = 1500;
 
 export const DEFAULT_FONT_METRICS = {
@@ -65,8 +68,10 @@ const DEFAULT_GLOBAL = {
   fontMetrics: { ...DEFAULT_FONT_METRICS },
   fontInfo: { ...DEFAULT_FONT_INFO },
   // Version-gated render behavior (derived from the project version on load,
-  // never user-edited): grid connect draws only the endpoints of each run.
+  // never user-edited): grid connect draws only the endpoints of each run,
+  // and sizes the whole run to its largest cell.
   connectHideInterior: true,
+  connectUniformScale: true,
   // Compose (組版) view colors — canvas background and glyph fill.
   composeBgColor: '#ffffff',
   composeTextColor: '#000000',
@@ -183,11 +188,17 @@ export function connectHideInteriorForVersion(version) {
   return (version || VERSION) >= CONNECT_HIDE_INTERIOR_MIN_VERSION;
 }
 
+/** Whether a project at `version` sizes each grid-connect run to its largest cell. */
+export function connectUniformScaleForVersion(version) {
+  return (version || VERSION) >= CONNECT_UNIFORM_SCALE_MIN_VERSION;
+}
+
 function ensureGlobalDefaults(g, version) {
   // Derived from the project version every load (the stored value is only a
   // cache) so the version stays the single source of truth; animation
   // snapshots freeze the value along with the rest of the global.
   g.connectHideInterior = connectHideInteriorForVersion(version);
+  g.connectUniformScale = connectUniformScaleForVersion(version);
   if (!g.gridDefaults || Object.keys(g.gridDefaults).length === 0) g.gridDefaults = buildGridDefaults();
   if (!g.defaultLayers || g.defaultLayers.length === 0) g.defaultLayers = [...DEFAULT_GLOBAL.defaultLayers];
   if (!g.fontMetrics) g.fontMetrics = { ...DEFAULT_FONT_METRICS };
@@ -793,6 +804,7 @@ export async function migrateFontProjectVersion(projectId) {
   await updateDoc(ref, {
     version: VERSION,
     'global.connectHideInterior': connectHideInteriorForVersion(VERSION),
+    'global.connectUniformScale': connectUniformScaleForVersion(VERSION),
     updatedAt: serverTimestamp(),
     lastEditor: userInfo() || null,
   });
@@ -828,6 +840,7 @@ export function resolveTransform(global, overrides) {
     // Version-gated render behavior rides along with the transform so every
     // renderer/exporter sees it without extra plumbing.
     connectHideInterior: !!global.connectHideInterior,
+    connectUniformScale: !!global.connectUniformScale,
     ...overrides,
   };
 }
