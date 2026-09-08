@@ -10,7 +10,7 @@
  */
 import { sampleAnimation } from '../../animation/animation.js';
 import { createCamera } from '../../animation/camera.js';
-import { computeFrameCacheShape, createFrameRenderer, computeLayout, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../../animation/render.js';
+import { computeFrameCacheShape, createFrameRenderer, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT } from '../../animation/render.js';
 import { stretchMatrix } from '../../core/transform-math.js';
 import { RENDER_SIZE } from '../../compose/glyph-cache.js';
 import { kernIndicesForSelection, kernCaretSegments, drawKernCaretSegments } from '../../compose/char-kerning.js';
@@ -94,8 +94,10 @@ export function createPreviewRenderer({ canvas, ctx, mainArea, state, env, deps 
     return frameRenderer;
   }
 
+  // Layout goes through the frame renderer so the 'center' align mode sees
+  // the same per-glyph ink bounds the renderer draws with.
   function layoutFor(params) {
-    return computeLayout(params, state.animation, charIds, global);
+    return getFrameRenderer().layoutFor(params);
   }
 
   function prepareCanvas(cw, ch) {

@@ -37,6 +37,9 @@ const ANIMATED_SLIDER_DEFS = [
   // Box Width control has no effect (see computeLayout in render.js).
   { key: 'kerning', label: 'Kerning', min: -40, max: 100, step: 1 },
   { key: 'lineHeight', label: 'Line Height', min: 0.4, max: 6.0, step: 0.1 },
+  // Vertical offset of the rendered text (frame px, +down), applied on screen
+  // after the camera projection so it is independent of the look-at point.
+  { key: 'baselineY', label: 'Baseline Y', min: -500, max: 500, step: 1 },
   { key: 'stretchAngle', label: 'Stretch Angle', min: 0, max: 180, step: 1, hardMin: 0, hardMax: 180 },
   { key: 'stretchAmount', label: 'Stretch Amount', min: 0, max: 2, step: 0.05 },
   { key: 'baseGap', label: 'Gap', min: 0, max: 20, step: 0.5 },
@@ -110,6 +113,8 @@ export function renderAnimationPage(app) {
   // Back-fill canvas size on animations created before it was configurable.
   if (animation.canvasWidth == null) animation.canvasWidth = DEFAULT_CANVAS_WIDTH;
   if (animation.canvasHeight == null) animation.canvasHeight = DEFAULT_CANVAS_HEIGHT;
+  // Back-fill the align mode (baseline / ink center) on older animations.
+  if (animation.alignMode !== 'center') animation.alignMode = 'baseline';
   // Back-fill the step-keyframed text track for animations created before it
   // existed.
   if (!Array.isArray(animation.textTrack)) animation.textTrack = [];
@@ -473,6 +478,38 @@ export function renderAnimationPage(app) {
   modeRow.appendChild(modeLbl);
   modeRow.appendChild(modeWrap);
   textBody.appendChild(modeRow);
+
+  // Align mode: Baseline (glyphs share the baseline; em-box block centered) or
+  // Center (the glyphs' ink union is centered on the frame). Applied inside
+  // computeLayout, so preview and export agree.
+  const alignRow = document.createElement('div');
+  alignRow.className = 'param-row';
+  const alignLbl = document.createElement('label');
+  alignLbl.textContent = 'Align';
+  const alignWrap = document.createElement('div');
+  alignWrap.className = 'writing-mode-toggle';
+  const baselineBtn = document.createElement('button');
+  baselineBtn.className = 'tool-btn' + (animation.alignMode !== 'center' ? ' active' : '');
+  baselineBtn.textContent = 'Baseline';
+  baselineBtn.title = 'ベースラインで揃える';
+  const centerBtn = document.createElement('button');
+  centerBtn.className = 'tool-btn' + (animation.alignMode === 'center' ? ' active' : '');
+  centerBtn.textContent = 'Center';
+  centerBtn.title = 'グリフの中心を画面中心に揃える';
+  function setAlignMode(mode) {
+    if (animation.alignMode === mode) return;
+    animation.alignMode = mode;
+    baselineBtn.classList.toggle('active', mode !== 'center');
+    centerBtn.classList.toggle('active', mode === 'center');
+    persist(); markDirty(); redrawPreview(); commitHistory('align-mode');
+  }
+  baselineBtn.addEventListener('click', () => setAlignMode('baseline'));
+  centerBtn.addEventListener('click', () => setAlignMode('center'));
+  alignWrap.appendChild(baselineBtn);
+  alignWrap.appendChild(centerBtn);
+  alignRow.appendChild(alignLbl);
+  alignRow.appendChild(alignWrap);
+  textBody.appendChild(alignRow);
   panelText.appendChild(textGroup);
 
   // Animated param sliders
@@ -1177,6 +1214,8 @@ export function renderAnimationPage(app) {
     refreshTextKfBtn();
     hBtn.classList.toggle('active', animation.writingMode === 'horizontal');
     vBtn.classList.toggle('active', animation.writingMode === 'vertical');
+    baselineBtn.classList.toggle('active', animation.alignMode !== 'center');
+    centerBtn.classList.toggle('active', animation.alignMode === 'center');
     bgColorInput.value = animation.bgColor || '#ffffff';
     textColorInput.value = animation.textColor || '#000000';
     if (animation.duration != null && currentTime > animation.duration) {

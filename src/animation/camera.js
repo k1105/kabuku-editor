@@ -18,6 +18,12 @@
  * indistinguishable from the true projection — and projects polygon vertices
  * exactly (`projectPoint`). Both take frame-canvas pixel coordinates (origin
  * top-left) so callers never deal with the centered world frame.
+ *
+ * Screen-space offset: the animatable `baselineY` param (frame px, +down)
+ * shifts the projected image vertically AFTER projection. It is deliberately
+ * not a move on the plane — that would change the text's distance from the
+ * look-at point and so its perspective — so the baseline can be animated
+ * independently of the camera pose. `describe()` (the camera pose) ignores it.
  */
 
 export const CAMERA_PARAM_KEYS = [
@@ -86,6 +92,9 @@ export function createCamera(params, width, height) {
   const tgtX = p.cameraTargetX ?? CAMERA_DEFAULTS.cameraTargetX;
   const tgtY = p.cameraTargetY ?? CAMERA_DEFAULTS.cameraTargetY;
   const roll = ((p.cameraRoll ?? CAMERA_DEFAULTS.cameraRoll) * Math.PI) / 180;
+  // Post-projection vertical shift (see header). Folded into the screen-space
+  // principal point so projectPoint / tangentAt pick it up uniformly.
+  const screenCy = cy + (p.baselineY || 0);
 
   // Camera basis (world units). Forward always has a negative z component
   // (camera above the plane, target on it), so the right vector is well
@@ -127,7 +136,7 @@ export function createCamera(params, width, height) {
     const ny = down[0] * X + down[1] * Y + kD;
     return {
       x: cx + (focal * nx) / depth,
-      y: cy + (focal * ny) / depth,
+      y: screenCy + (focal * ny) / depth,
       depth,
     };
   }
@@ -138,7 +147,7 @@ export function createCamera(params, width, height) {
     const nx = right[0] * X + right[1] * Y + kR;
     const ny = down[0] * X + down[1] * Y + kD;
     const sx = cx + (focal * nx) / depth;
-    const sy = cy + (focal * ny) / depth;
+    const sy = screenCy + (focal * ny) / depth;
     const inv2 = focal / (depth * depth);
     // Partial derivatives of the projection (quotient rule).
     const a = (right[0] * depth - nx * fwd[0]) * inv2; // ∂sx/∂X

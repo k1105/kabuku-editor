@@ -87,6 +87,10 @@ export const ANIMATED_PARAM_KEYS = [
   'textBoxWidth',
   'kerning',
   'lineHeight',
+  // Baseline offset (frame px, +down): screen-space shift of the rendered text
+  // applied after the camera projection (see animation/camera.js), so it is
+  // independent of the camera's look-at point.
+  'baselineY',
   // 3D lookAt camera (see animation/camera.js): position, target, roll, focal.
   ...CAMERA_PARAM_KEYS,
 ];
@@ -101,6 +105,7 @@ export const DEFAULT_ANIMATION_BASE_VALUES = {
   textBoxWidth: 800,
   kerning: 0,
   lineHeight: 1.5,
+  baselineY: 0,
   ...CAMERA_DEFAULTS,
 };
 
@@ -119,6 +124,10 @@ export function createDefaultAnimation() {
     fps: 30,
     text: '',
     writingMode: 'horizontal',
+    // How glyphs are anchored in the frame: 'baseline' sits them on the shared
+    // baseline and centers the em-box block; 'center' centers the union of the
+    // glyphs' ink boxes so the visible body lands on the frame center.
+    alignMode: 'baseline',
     canvasWidth: 1920,
     canvasHeight: 1080,
     // Frame background and glyph fill colors (applied in render.js, so

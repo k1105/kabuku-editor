@@ -13,6 +13,7 @@ import { cellDisplacement } from '../render/transform-utils.js';
 import { connectorQuads, connectHiddenCells, connectRunScales, effectiveCellScale, layerScaleTransform, fillQuad } from '../render/grid-connect.js';
 import { sampleAnimation } from './animation.js';
 import { createCamera } from './camera.js';
+import { layersInkBounds, centerPositionsOnInk } from './ink-bounds.js';
 
 // Threshold for per-frame auto-mesh of animated-grid glyphs. Matches the
 // editor's "Auto Mesh All" default (index-page.js) so animated frames mesh the
@@ -77,12 +78,27 @@ function transformFromParams(p, global) {
   };
 }
 
-export function computeLayout(params, animation, charIds, global) {
+/**
+ * Lay out the animation text for one frame.
+ *
+ * Note: the animatable baseline offset (`params.baselineY`) is NOT applied
+ * here. It is a screen-space shift applied after the camera projection (see
+ * createCamera), so moving the baseline never changes the text's position
+ * relative to the camera's look-at point (no perspective/keystone change).
+ *
+ * `inkBoundsFor(charId)` (em-fraction ink bounds, see ink-bounds.js) is only
+ * consulted when `animation.alignMode === 'center'`: the glyphs are then
+ * shifted so the union of their ink boxes — rather than the em-box block — is
+ * what the frame centering puts at the frame center. Without it (or in the
+ * default 'baseline' mode) glyphs sit on the shared baseline and the em-box
+ * block is centered.
+ */
+export function computeLayout(params, animation, charIds, global, inkBoundsFor = null) {
   // params.text is the step-sampled text at the current time (see
   // sampleAnimation); fall back to the base text for callers that pass raw
   // params without it.
   const text = params.text != null ? params.text : animation.text;
-  const positions = layoutText(text, charIds, {
+  let positions = layoutText(text, charIds, {
     fontSize: params.fontSize,
     // Animation text never wraps — it grows infinitely (line breaks only on an
     // explicit '\n'), and the whole block is centered on the canvas. (The
@@ -102,7 +118,13 @@ export function computeLayout(params, animation, charIds, global) {
   const drawSize = params.fontSize * cacheScale;
   const drawOffset = (drawSize - params.fontSize) / 2;
   const pad = 32 + drawOffset;
+  // Bounds are taken BEFORE any ink-centering shift: cw/ch describe the em-box
+  // block that consumers center within the frame, and the shift below moves the
+  // glyphs relative to that block so the ink union lands on its center.
   const bounds = layoutBounds(positions, params.fontSize);
+  if (animation.alignMode === 'center' && inkBoundsFor) {
+    positions = centerPositionsOnInk(positions, params.fontSize, bounds.width, bounds.height, inkBoundsFor);
+  }
   const cw = Math.max(bounds.width + pad * 2, 200);
   const ch = Math.max(bounds.height + pad * 2, 200);
   return { positions, pad, cw, ch, drawSize, drawOffset };
@@ -253,6 +275,7 @@ function renderGlyphOntoFrame(octx, workCanvas, workCtx, gx, gy, fontSize, layer
  */
 export function createFrameRenderer(animation, ctx) {
   const { project, global } = ctx;
+  const charIds = ctx.charIds || new Set(Object.keys(project.characters));
   const width = canvasWidthOf(animation);
   const height = canvasHeightOf(animation);
 
@@ -269,6 +292,21 @@ export function createFrameRenderer(animation, ctx) {
     const layers = buildRuntimeLayers(global, charData, RENDER_SIZE);
     layersByChar.set(charId, layers.length > 0 ? layers : null);
     return layersByChar.get(charId);
+  }
+
+  // Em-fraction ink bounds per charId (static cells), for the 'center' align
+  // mode — see computeLayout / ink-bounds.js. Cached alongside the layers.
+  const inkBoundsByChar = new Map();
+  function inkBoundsFor(charId) {
+    if (inkBoundsByChar.has(charId)) return inkBoundsByChar.get(charId);
+    const layers = getLayersFor(charId);
+    const b = layers ? layersInkBounds(layers, RENDER_SIZE) : null;
+    inkBoundsByChar.set(charId, b);
+    return b;
+  }
+  /** Frame layout honoring the animation's align mode (baseline / center). */
+  function layoutFor(params) {
+    return computeLayout(params, animation, charIds, global, inkBoundsFor);
   }
 
   // === Animated grid params ===
@@ -432,7 +470,7 @@ export function createFrameRenderer(animation, ctx) {
     }
   }
 
-  return { width, height, renderInto, ready, isReady };
+  return { width, height, renderInto, layoutFor, inkBoundsFor, ready, isReady };
 }
 
 /**
@@ -454,7 +492,7 @@ export function createFrameRenderer(animation, ctx) {
  * frames, so re-running render after editing only re-paints missing entries.
  */
 export async function renderFrames(animation, ctx) {
-  const { global, charIds, onProgress, cache, onCacheUpdate } = ctx;
+  const { onProgress, cache, onCacheUpdate } = ctx;
   const fps = animation.fps;
   const totalFrames = Math.max(1, Math.round(animation.duration * fps));
 
@@ -472,7 +510,7 @@ export async function renderFrames(animation, ctx) {
   for (let i = 0; i < totalFrames; i++) {
     const t = i / fps;
     const params = sampleAnimation(animation, t);
-    const layout = computeLayout(params, animation, charIds, global);
+    const layout = renderer.layoutFor(params);
     perFrame.push({ params, layout });
   }
 

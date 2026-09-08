@@ -223,3 +223,34 @@ describe('createCamera — describe()', () => {
     for (const f of d.frustum) expect(Number.isFinite(f.x) && Number.isFinite(f.z)).toBe(true);
   });
 });
+
+describe('createCamera — baselineY is a post-projection screen shift', () => {
+  it('shifts every projected point by baselineY, independent of the pose', () => {
+    // Oblique pose: keystone distortion would differ if the shift were on the plane.
+    const pose = { cameraX: 600, cameraY: -300, cameraZ: 900, cameraTargetX: 100, cameraTargetY: 50, cameraRoll: 12 };
+    const c0 = cam(pose);
+    const c1 = cam({ ...pose, baselineY: 40 });
+    for (const [x, y] of [[0, 0], [CX, CY], [W, H], [400, 900]]) {
+      const p0 = c0.projectPoint(x, y);
+      const p1 = c1.projectPoint(x, y);
+      expect(p1.x).toBeCloseTo(p0.x, 9);
+      expect(p1.y).toBeCloseTo(p0.y + 40, 9);
+      expect(p1.depth).toBeCloseTo(p0.depth, 9);
+      const t0 = c0.tangentAt(x, y);
+      const t1 = c1.tangentAt(x, y);
+      // Same linear part (no tilt / scale change), only the translation moves.
+      expect(t1.a).toBeCloseTo(t0.a, 12);
+      expect(t1.b).toBeCloseTo(t0.b, 12);
+      expect(t1.c).toBeCloseTo(t0.c, 12);
+      expect(t1.d).toBeCloseTo(t0.d, 12);
+      expect(t1.e).toBeCloseTo(t0.e, 9);
+      expect(t1.f).toBeCloseTo(t0.f + 40, 9);
+    }
+  });
+
+  it('does not affect the described pose', () => {
+    const d0 = cam({ cameraX: 200 }).describe();
+    const d1 = cam({ cameraX: 200, baselineY: 40 }).describe();
+    expect(d1).toEqual(d0);
+  });
+});
